@@ -1,0 +1,16 @@
+# Binaries
+/bin/
+/dist/
+
+# Go
+*.test
+*.out
+.coverprofile
+
+# Editors
+.DS_Store
+.idea/
+.vscode/
+
+# Local runtime state
+.tmp/

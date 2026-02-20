@@ -1,0 +1,48 @@
+# Manifest Spec
+
+Each managed server is stored as a TOML document.
+
+## File Location
+
+`~/.config/madari/servers/<name>.toml`
+
+## Fields
+
+- `name` (string, required): stable logical ID.
+- `command` (string, required): executable or absolute path.
+- `args` (array of strings, optional): command arguments.
+- `enabled` (bool, required): whether this server should be synced into clients.
+- `clients` (array of strings, required): client IDs.
+- `description` (string, optional): friendly description.
+
+### `[env]`
+
+Key/value static environment variables.
+
+### `[required_env]`
+
+- `keys` (array of strings): env vars that must exist in runtime context.
+
+## Example
+
+```toml
+name = "stewreads"
+command = "stewreads-mcp"
+args = []
+enabled = true
+clients = ["claude-desktop"]
+description = "Turn AI conversations into ebooks"
+
+[env]
+STEWREADS_CONFIG_PATH = "~/.config/stewreads/config.toml"
+
+[required_env]
+keys = ["STEWREADS_GMAIL_APP_PASSWORD"]
+```
+
+## Validation Rules
+
+- `name` must be lowercase alphanumeric with `-` allowed.
+- `clients` must contain unique values.
+- Unknown top-level keys are rejected.
+- Empty `command` is invalid.

@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "weather": {
+      "command": "/Users/example/.local/bin/uv",
+      "args": [
+        "--directory",
+        "/Users/example/projects/weather",
+        "run",
+        "weather.py"
+      ]
+    }
+  },
+  "preferences": {
+    "sidebarMode": "chat"
+  }
+}
