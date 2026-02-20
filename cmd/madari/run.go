@@ -28,9 +28,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "version", "--version", "-v":
 		fmt.Fprintln(stdout, version)
 		return 0
-	case "help", "--help", "-h":
+	case "--help", "-h":
 		printHelp(stdout)
 		return 0
+	case "help":
+		if len(args) == 1 {
+			printHelp(stdout)
+			return 0
+		}
+		if len(args) == 2 {
+			if !printCommandHelp(args[1], stdout) {
+				fmt.Fprintf(stderr, "error: unknown command: %s\n", args[1])
+				return 1
+			}
+			return 0
+		}
+		fmt.Fprintln(stderr, "error: usage: madari help [command]")
+		return 1
 	}
 
 	store, err := registry.NewDefaultStore()
@@ -84,10 +98,14 @@ func (a cliApp) cmdAdd(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: madari add <name> --command <cmd> --client <client>")
 	}
+	if isHelpToken(args[0]) {
+		printAddHelp(a.stdout)
+		return nil
+	}
 	name := args[0]
 
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
+	fs.SetOutput(io.Discard)
 
 	var command string
 	var description string
@@ -106,6 +124,10 @@ func (a cliApp) cmdAdd(args []string) error {
 	fs.Var(&requiredEnv, "required-env", "Required environment key (repeatable)")
 
 	if err := fs.Parse(args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printAddHelp(a.stdout)
+			return nil
+		}
 		return err
 	}
 	if fs.NArg() != 0 {
@@ -146,9 +168,17 @@ func (a cliApp) cmdAdd(args []string) error {
 }
 
 func (a cliApp) cmdList(args []string) error {
+	if len(args) == 1 && isHelpToken(args[0]) {
+		printListHelp(a.stdout)
+		return nil
+	}
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
+	fs.SetOutput(io.Discard)
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printListHelp(a.stdout)
+			return nil
+		}
 		return err
 	}
 	if fs.NArg() != 0 {
@@ -178,9 +208,17 @@ func (a cliApp) cmdList(args []string) error {
 }
 
 func (a cliApp) cmdRemove(args []string) error {
+	if len(args) == 1 && isHelpToken(args[0]) {
+		printRemoveHelp(a.stdout)
+		return nil
+	}
 	fs := flag.NewFlagSet("remove", flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
+	fs.SetOutput(io.Discard)
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printRemoveHelp(a.stdout)
+			return nil
+		}
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -203,9 +241,17 @@ func (a cliApp) cmdSetEnabled(args []string, enabled bool) error {
 	if !enabled {
 		command = "disable"
 	}
+	if len(args) == 1 && isHelpToken(args[0]) {
+		printEnableDisableHelp(command, a.stdout)
+		return nil
+	}
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
+	fs.SetOutput(io.Discard)
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printEnableDisableHelp(command, a.stdout)
+			return nil
+		}
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -232,15 +278,23 @@ func (a cliApp) cmdSync(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: madari sync <client> [--dry-run] [--config-path <path>]")
 	}
+	if isHelpToken(args[0]) {
+		printSyncHelp(a.stdout)
+		return nil
+	}
 	target := strings.TrimSpace(args[0])
 
 	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
-	fs.SetOutput(a.stderr)
+	fs.SetOutput(io.Discard)
 	var dryRun bool
 	var configPath string
 	fs.BoolVar(&dryRun, "dry-run", false, "Preview changes without writing files")
 	fs.StringVar(&configPath, "config-path", "", "Override client config path")
 	if err := fs.Parse(args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printSyncHelp(a.stdout)
+			return nil
+		}
 		return err
 	}
 	if fs.NArg() != 0 {
@@ -409,6 +463,88 @@ func formatNameList(names []string) string {
 	return strings.Join(names, ",")
 }
 
+func isHelpToken(value string) bool {
+	return value == "--help" || value == "-h"
+}
+
+func printCommandHelp(command string, out io.Writer) bool {
+	switch strings.TrimSpace(command) {
+	case "add":
+		printAddHelp(out)
+	case "list":
+		printListHelp(out)
+	case "remove":
+		printRemoveHelp(out)
+	case "enable":
+		printEnableDisableHelp("enable", out)
+	case "disable":
+		printEnableDisableHelp("disable", out)
+	case "sync":
+		printSyncHelp(out)
+	default:
+		return false
+	}
+	return true
+}
+
+func printAddHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari add <name> --command <cmd> --client <client> [options]")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Options:")
+	fmt.Fprintln(out, "  --command <cmd>            Server command (required)")
+	fmt.Fprintln(out, "  --client <client>          Target client id (required, repeatable)")
+	fmt.Fprintln(out, "  --arg <value>              Command argument (repeatable)")
+	fmt.Fprintln(out, "  --env KEY=VALUE            Environment variable (repeatable)")
+	fmt.Fprintln(out, "  --required-env <KEY>       Required runtime env key (repeatable)")
+	fmt.Fprintln(out, "  --description <text>       Server description")
+	fmt.Fprintln(out, "  --disabled                 Add server in disabled state")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Examples:")
+	fmt.Fprintln(out, "  madari add stewreads --command stewreads-mcp --client claude-desktop")
+	fmt.Fprintln(out, "  madari add mailer --command ./bin/mailer --client claude-desktop --required-env SMTP_PASSWORD")
+}
+
+func printListHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari list")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  List configured servers with status, command path, and clients.")
+}
+
+func printRemoveHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari remove <name>")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  Remove a server from Madari registry.")
+}
+
+func printEnableDisableHelp(command string, out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintf(out, "  madari %s <name>\n", command)
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	if command == "enable" {
+		fmt.Fprintln(out, "  Enable a server so sync can include it for target clients.")
+		return
+	}
+	fmt.Fprintln(out, "  Disable a server so sync excludes it for target clients.")
+}
+
+func printSyncHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari sync claude-desktop [--dry-run] [--config-path <path>]")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Options:")
+	fmt.Fprintln(out, "  --dry-run                  Preview changes without writing files")
+	fmt.Fprintln(out, "  --config-path <path>       Override Claude config path")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  Sync enabled claude-desktop servers from Madari registry into Claude config.")
+}
+
 func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "madari - local MCP manager")
 	fmt.Fprintln(out)
@@ -421,6 +557,8 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  sync      Sync server manifests to a client config")
 	fmt.Fprintln(out, "  help      Show help")
 	fmt.Fprintln(out, "  version   Show version")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Run `madari help <command>` for command-specific help.")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Examples:")
 	fmt.Fprintln(out, "  madari add stewreads --command stewreads-mcp --client claude-desktop")

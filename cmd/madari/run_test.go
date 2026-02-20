@@ -314,6 +314,74 @@ func TestRunWithStoreCommandUsageValidation(t *testing.T) {
 	}
 }
 
+func TestRunHelpSubcommandOutput(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		contains string
+	}{
+		{name: "help add", args: []string{"help", "add"}, contains: "madari add <name>"},
+		{name: "help sync", args: []string{"help", "sync"}, contains: "madari sync claude-desktop"},
+		{name: "help list", args: []string{"help", "list"}, contains: "madari list"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run(tt.args, &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("expected help to succeed, code=%d stderr=%s", code, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), tt.contains) {
+				t.Fatalf("expected help output to contain %q, got: %s", tt.contains, stdout.String())
+			}
+		})
+	}
+}
+
+func TestRunHelpSubcommandUnknownCommand(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := run([]string{"help", "unknown"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("expected unknown subcommand help to fail")
+	}
+	if !strings.Contains(stderr.String(), "unknown command") {
+		t.Fatalf("expected unknown command error, got: %s", stderr.String())
+	}
+}
+
+func TestRunWithStoreSubcommandHelpFlags(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari add <name>") {
+		t.Fatalf("expected add --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	if result := runCmd(store, "sync", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari sync claude-desktop") {
+		t.Fatalf("expected sync --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	if result := runCmd(store, "list", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari list") {
+		t.Fatalf("expected list --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	if result := runCmd(store, "remove", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari remove <name>") {
+		t.Fatalf("expected remove --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	if result := runCmd(store, "enable", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari enable <name>") {
+		t.Fatalf("expected enable --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	if result := runCmd(store, "disable", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari disable <name>") {
+		t.Fatalf("expected disable --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+
+	// Make sure normal add still works after help coverage.
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-desktop"); result.code != 0 {
+		t.Fatalf("expected add after help checks to work, stderr=%s", result.stderr)
+	}
+}
+
 func TestRunWithStoreSyncDryRun(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
