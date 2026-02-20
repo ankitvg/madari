@@ -5,9 +5,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
+	"github.com/ankitvg/madari/internal/clients/claude"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -68,6 +73,8 @@ func (a cliApp) dispatch(args []string) error {
 		return a.cmdSetEnabled(args[1:], true)
 	case "disable":
 		return a.cmdSetEnabled(args[1:], false)
+	case "sync":
+		return a.cmdSync(args[1:])
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -115,10 +122,14 @@ func (a cliApp) cmdAdd(args []string) error {
 	if err != nil {
 		return err
 	}
+	resolvedCommand, err := resolveCommandPath(command)
+	if err != nil {
+		return err
+	}
 
 	manifest := registry.Manifest{
 		Name:        name,
-		Command:     command,
+		Command:     resolvedCommand,
 		Args:        append([]string(nil), cmdArgs...),
 		Enabled:     !disabled,
 		Clients:     append([]string(nil), clients...),
@@ -217,6 +228,70 @@ func (a cliApp) cmdSetEnabled(args []string, enabled bool) error {
 	return nil
 }
 
+func (a cliApp) cmdSync(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: madari sync <client> [--dry-run] [--config-path <path>]")
+	}
+	target := strings.TrimSpace(args[0])
+
+	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
+	fs.SetOutput(a.stderr)
+	var dryRun bool
+	var configPath string
+	fs.BoolVar(&dryRun, "dry-run", false, "Preview changes without writing files")
+	fs.StringVar(&configPath, "config-path", "", "Override client config path")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	if target != claude.Target {
+		return fmt.Errorf("unsupported sync target %q (supported: %s)", target, claude.Target)
+	}
+
+	manifests, err := a.store.List()
+	if err != nil {
+		return err
+	}
+	syncable, skipped := filterSyncableClaudeManifests(manifests)
+
+	statePath := filepath.Join(filepath.Dir(a.store.ServersDir()), "state", target+"-managed.json")
+	result, err := claude.Sync(syncable, claude.SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+		DryRun:     dryRun,
+	})
+	if err != nil {
+		return err
+	}
+
+	mode := "applied"
+	if result.DryRun {
+		mode = "dry-run"
+	}
+
+	fmt.Fprintf(a.stdout, "sync target: %s\n", target)
+	fmt.Fprintf(a.stdout, "config path: %s\n", result.ConfigPath)
+	fmt.Fprintf(a.stdout, "mode: %s\n", mode)
+	fmt.Fprintf(a.stdout, "added: %s\n", formatNameList(result.Added))
+	fmt.Fprintf(a.stdout, "updated: %s\n", formatNameList(result.Updated))
+	fmt.Fprintf(a.stdout, "removed: %s\n", formatNameList(result.Removed))
+	if len(skipped) > 0 {
+		fmt.Fprintf(a.stdout, "skipped: %s\n", formatNameList(skipped))
+		for _, name := range skipped {
+			fmt.Fprintf(a.stderr, "warning: skipped %s because command path is not an executable file\n", name)
+		}
+	}
+	if len(result.Unchanged) > 0 {
+		fmt.Fprintf(a.stdout, "unchanged: %s\n", formatNameList(result.Unchanged))
+	}
+	if !result.HasChanges() {
+		fmt.Fprintln(a.stdout, "no changes")
+	}
+	return nil
+}
+
 type stringList []string
 
 func (s *stringList) String() string {
@@ -243,6 +318,97 @@ func parseEnvPairs(pairs []string) (map[string]string, error) {
 	return env, nil
 }
 
+func filterSyncableClaudeManifests(manifests []registry.Manifest) ([]registry.Manifest, []string) {
+	out := make([]registry.Manifest, 0, len(manifests))
+	var skipped []string
+	for _, manifest := range manifests {
+		if !manifest.Enabled || !hasClaudeTarget(manifest.Clients) {
+			out = append(out, manifest)
+			continue
+		}
+		if err := validateAbsoluteExecutablePath(manifest.Command); err != nil {
+			skipped = append(skipped, manifest.Name)
+			continue
+		}
+		out = append(out, manifest)
+	}
+	sort.Strings(skipped)
+	return out, skipped
+}
+
+func hasClaudeTarget(clients []string) bool {
+	for _, client := range clients {
+		if strings.EqualFold(strings.TrimSpace(client), claude.Target) {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveCommandPath(command string) (string, error) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return "", fmt.Errorf("--command is required")
+	}
+
+	if filepath.IsAbs(command) || strings.ContainsRune(command, filepath.Separator) {
+		path := command
+		if !filepath.IsAbs(path) {
+			absPath, err := filepath.Abs(path)
+			if err != nil {
+				return "", fmt.Errorf("resolve command %q: %w", command, err)
+			}
+			path = absPath
+		}
+		cleaned := filepath.Clean(path)
+		if err := validateAbsoluteExecutablePath(cleaned); err != nil {
+			return "", fmt.Errorf("resolve command %q: %w", command, err)
+		}
+		return cleaned, nil
+	}
+
+	lookedUp, err := exec.LookPath(command)
+	if err != nil {
+		return "", fmt.Errorf("resolve command %q: not found in PATH", command)
+	}
+	absPath, err := filepath.Abs(lookedUp)
+	if err != nil {
+		return "", fmt.Errorf("resolve command %q: %w", command, err)
+	}
+	cleaned := filepath.Clean(absPath)
+	if err := validateAbsoluteExecutablePath(cleaned); err != nil {
+		return "", fmt.Errorf("resolve command %q: %w", command, err)
+	}
+	return cleaned, nil
+}
+
+func validateAbsoluteExecutablePath(path string) error {
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("path must be absolute")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("path does not exist: %s", path)
+		}
+		return fmt.Errorf("stat path %q: %w", path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("path is a directory: %s", path)
+	}
+	if runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
+		return fmt.Errorf("path is not executable: %s", path)
+	}
+	return nil
+}
+
+func formatNameList(names []string) string {
+	if len(names) == 0 {
+		return "-"
+	}
+	return strings.Join(names, ",")
+}
+
 func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "madari - local MCP manager")
 	fmt.Fprintln(out)
@@ -252,6 +418,7 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  remove    Remove a server manifest")
 	fmt.Fprintln(out, "  enable    Enable a server")
 	fmt.Fprintln(out, "  disable   Disable a server")
+	fmt.Fprintln(out, "  sync      Sync server manifests to a client config")
 	fmt.Fprintln(out, "  help      Show help")
 	fmt.Fprintln(out, "  version   Show version")
 	fmt.Fprintln(out)
@@ -259,6 +426,7 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  madari add stewreads --command stewreads-mcp --client claude-desktop")
 	fmt.Fprintln(out, "  madari list")
 	fmt.Fprintln(out, "  madari disable stewreads")
+	fmt.Fprintln(out, "  madari sync claude-desktop --dry-run")
 	fmt.Fprintln(out)
 	defaultRoot, rootErr := registry.DefaultRootDir()
 	defaultServers, serversErr := registry.DefaultServersDir()

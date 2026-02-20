@@ -9,12 +9,19 @@ Madari is a local MCP manager focused on reliable server registration, lifecycle
 - `madari remove <name>`
 - `madari enable <name>`
 - `madari disable <name>`
+- `madari sync claude-desktop [--dry-run] [--config-path <path>]`
+
+Notes:
+
+- `add` resolves `--command` to an absolute executable path and stores that path in the manifest.
+- `sync` skips servers with missing/non-executable command paths and continues syncing others.
 
 Example:
 
 ```bash
 madari add stewreads --command stewreads-mcp --client claude-desktop
 madari list
+madari sync claude-desktop --dry-run
 ```
 
 ## Development

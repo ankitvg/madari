@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -27,10 +29,37 @@ func newTestStore(t *testing.T) *registry.Store {
 	return registry.NewStore(filepath.Join(t.TempDir(), "servers"))
 }
 
+func mustCurrentExecutable(t *testing.T) string {
+	t.Helper()
+	path, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve current executable: %v", err)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatalf("resolve abs executable path: %v", err)
+	}
+	return abs
+}
+
+func writeTestExecutable(t *testing.T, dir, name string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("windows command fixture handling not needed in this test environment")
+	}
+	path := filepath.Join(dir, name)
+	content := "#!/bin/sh\nexit 0\n"
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("write test executable: %v", err)
+	}
+	return path
+}
+
 func TestRunWithStoreLifecycleCommands(t *testing.T) {
 	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
 
-	result := runCmd(store, "add", "stewreads", "--command", "stewreads-mcp", "--client", "claude-desktop")
+	result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-desktop")
 	if result.code != 0 {
 		t.Fatalf("add command failed with code %d, stderr=%s", result.code, result.stderr)
 	}
@@ -70,11 +99,12 @@ func TestRunWithStoreLifecycleCommands(t *testing.T) {
 
 func TestRunWithStoreAddArgumentCoverage(t *testing.T) {
 	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
 
 	result := runCmd(
 		store,
 		"add", "stewreads",
-		"--command", "stewreads-mcp",
+		"--command", commandPath,
 		"--description", "ebook converter",
 		"--disabled",
 		"--arg", "--stdio",
@@ -94,8 +124,8 @@ func TestRunWithStoreAddArgumentCoverage(t *testing.T) {
 		t.Fatalf("expected manifest to exist: %v", err)
 	}
 
-	if manifest.Command != "stewreads-mcp" {
-		t.Fatalf("expected command to be saved, got: %q", manifest.Command)
+	if manifest.Command != commandPath {
+		t.Fatalf("expected command path to be persisted, got: %q", manifest.Command)
 	}
 	if manifest.Description != "ebook converter" {
 		t.Fatalf("expected description to be saved, got: %q", manifest.Description)
@@ -117,8 +147,48 @@ func TestRunWithStoreAddArgumentCoverage(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreAddResolvesCommandFromPATH(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("PATH executable test is for unix-like environments")
+	}
+	store := newTestStore(t)
+	dir := t.TempDir()
+	_ = writeTestExecutable(t, dir, "fake-mcp")
+	originalPath := os.Getenv("PATH")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+originalPath)
+
+	result := runCmd(store, "add", "stewreads", "--command", "fake-mcp", "--client", "claude-desktop")
+	if result.code != 0 {
+		t.Fatalf("expected add with PATH command to succeed, got stderr=%s", result.stderr)
+	}
+
+	manifest, err := store.Get("stewreads")
+	if err != nil {
+		t.Fatalf("load stored manifest: %v", err)
+	}
+	if !filepath.IsAbs(manifest.Command) {
+		t.Fatalf("expected resolved absolute command path, got: %q", manifest.Command)
+	}
+	if !strings.HasPrefix(manifest.Command, dir+string(filepath.Separator)) {
+		t.Fatalf("expected resolved path in temp dir, got: %q", manifest.Command)
+	}
+}
+
+func TestRunWithStoreAddRejectsMissingCommandBinary(t *testing.T) {
+	store := newTestStore(t)
+
+	result := runCmd(store, "add", "stewreads", "--command", "__definitely_missing_madari_command__", "--client", "claude-desktop")
+	if result.code == 0 {
+		t.Fatalf("expected add to fail for missing command")
+	}
+	if !strings.Contains(result.stderr, "not found in PATH") {
+		t.Fatalf("expected not-found error, got: %s", result.stderr)
+	}
+}
+
 func TestRunWithStoreAddValidatesRequiredFlags(t *testing.T) {
 	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
 
 	tests := []struct {
 		name     string
@@ -137,7 +207,7 @@ func TestRunWithStoreAddValidatesRequiredFlags(t *testing.T) {
 		},
 		{
 			name:     "missing client",
-			args:     []string{"add", "stewreads", "--command", "stewreads-mcp"},
+			args:     []string{"add", "stewreads", "--command", commandPath},
 			expected: "--client",
 		},
 	}
@@ -157,6 +227,7 @@ func TestRunWithStoreAddValidatesRequiredFlags(t *testing.T) {
 
 func TestRunWithStoreAddValidatesEnvAssignments(t *testing.T) {
 	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
 
 	tests := []struct {
 		name     string
@@ -166,7 +237,7 @@ func TestRunWithStoreAddValidatesEnvAssignments(t *testing.T) {
 		{
 			name: "invalid env assignment",
 			args: []string{
-				"add", "stewreads", "--command", "stewreads-mcp", "--client", "claude-desktop",
+				"add", "stewreads", "--command", commandPath, "--client", "claude-desktop",
 				"--env", "BROKEN",
 			},
 			expected: "invalid env assignment",
@@ -174,7 +245,7 @@ func TestRunWithStoreAddValidatesEnvAssignments(t *testing.T) {
 		{
 			name: "duplicate env key",
 			args: []string{
-				"add", "stewreads", "--command", "stewreads-mcp", "--client", "claude-desktop",
+				"add", "stewreads", "--command", commandPath, "--client", "claude-desktop",
 				"--env", "A=1", "--env", "A=2",
 			},
 			expected: "duplicate env key",
@@ -196,11 +267,12 @@ func TestRunWithStoreAddValidatesEnvAssignments(t *testing.T) {
 
 func TestRunWithStoreAddRejectsUnexpectedPositionals(t *testing.T) {
 	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
 
 	result := runCmd(
 		store,
 		"add", "stewreads",
-		"--command", "stewreads-mcp",
+		"--command", commandPath,
 		"--client", "claude-desktop",
 		"extra",
 	)
@@ -224,6 +296,9 @@ func TestRunWithStoreCommandUsageValidation(t *testing.T) {
 		{name: "remove missing name", args: []string{"remove"}, expected: "usage: madari remove <name>"},
 		{name: "enable missing name", args: []string{"enable"}, expected: "usage: madari enable <name>"},
 		{name: "disable missing name", args: []string{"disable"}, expected: "usage: madari disable <name>"},
+		{name: "sync missing target", args: []string{"sync"}, expected: "usage: madari sync <client>"},
+		{name: "sync unsupported target", args: []string{"sync", "cursor"}, expected: "unsupported sync target"},
+		{name: "sync extra positionals", args: []string{"sync", "claude-desktop", "extra"}, expected: "unexpected positional arguments"},
 	}
 
 	for _, tt := range tests {
@@ -236,6 +311,128 @@ func TestRunWithStoreCommandUsageValidation(t *testing.T) {
 				t.Fatalf("expected stderr to contain %q, got: %s", tt.expected, result.stderr)
 			}
 		})
+	}
+}
+
+func TestRunWithStoreSyncDryRun(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	addResult := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-desktop")
+	if addResult.code != 0 {
+		t.Fatalf("setup add failed: %s", addResult.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "claude_desktop_config.json")
+	original := []byte(`{
+  "mcpServers": {
+    "weather": {
+      "command": "uv"
+    }
+  }
+}
+`)
+	if err := os.WriteFile(configPath, original, 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	result := runCmd(store, "sync", "claude-desktop", "--dry-run", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("sync dry-run failed with stderr: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "mode: dry-run") {
+		t.Fatalf("expected dry-run mode output, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "added: stewreads") {
+		t.Fatalf("expected add plan output, got: %s", result.stdout)
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after dry-run: %v", err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("expected dry-run to preserve config file")
+	}
+
+	statePath := filepath.Join(filepath.Dir(store.ServersDir()), "state", "claude-desktop-managed.json")
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Fatalf("expected no state file write on dry-run, got err=%v", err)
+	}
+}
+
+func TestRunWithStoreSyncApply(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	addResult := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-desktop")
+	if addResult.code != 0 {
+		t.Fatalf("setup add failed: %s", addResult.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "claude_desktop_config.json")
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{"weather":{"command":"uv"}}}`), 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	result := runCmd(store, "sync", "claude-desktop", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("sync apply failed with stderr: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "mode: applied") {
+		t.Fatalf("expected applied mode output, got: %s", result.stdout)
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after sync: %v", err)
+	}
+	if !strings.Contains(string(after), "\"stewreads\"") {
+		t.Fatalf("expected synced config to include stewreads server, got: %s", string(after))
+	}
+	if !strings.Contains(string(after), "\"weather\"") {
+		t.Fatalf("expected synced config to preserve existing weather server, got: %s", string(after))
+	}
+}
+
+func TestRunWithStoreSyncSkipsMissingExecutable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("executable fixture handling not needed in this test environment")
+	}
+	store := newTestStore(t)
+	binDir := t.TempDir()
+
+	goodPath := writeTestExecutable(t, binDir, "good-mcp")
+	badPath := writeTestExecutable(t, binDir, "bad-mcp")
+
+	if result := runCmd(store, "add", "good", "--command", goodPath, "--client", "claude-desktop"); result.code != 0 {
+		t.Fatalf("setup add good failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "add", "bad", "--command", badPath, "--client", "claude-desktop"); result.code != 0 {
+		t.Fatalf("setup add bad failed: %s", result.stderr)
+	}
+
+	if err := os.Remove(badPath); err != nil {
+		t.Fatalf("remove bad executable fixture: %v", err)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "claude_desktop_config.json")
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	result := runCmd(store, "sync", "claude-desktop", "--dry-run", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("sync should not fail when one executable is missing, stderr=%s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "added: good") {
+		t.Fatalf("expected valid server to be included in add plan, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "skipped: bad") {
+		t.Fatalf("expected missing executable server to be skipped, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stderr, "warning: skipped bad") {
+		t.Fatalf("expected warning for skipped server, got: %s", result.stderr)
 	}
 }
 
