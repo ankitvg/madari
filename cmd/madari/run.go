@@ -92,6 +92,10 @@ func (a cliApp) dispatch(args []string) error {
 		return a.cmdDoctor(args[1:])
 	case "status":
 		return a.cmdStatus(args[1:])
+	case "export":
+		return a.cmdExport(args[1:])
+	case "import":
+		return a.cmdImport(args[1:])
 	case "sync":
 		return a.cmdSync(args[1:])
 	default:
@@ -477,6 +481,114 @@ func (a cliApp) cmdStatus(args []string) error {
 	return nil
 }
 
+func (a cliApp) cmdExport(args []string) error {
+	if len(args) == 1 && isHelpToken(args[0]) {
+		printExportHelp(a.stdout)
+		return nil
+	}
+
+	fs := flag.NewFlagSet("export", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var filePath string
+	fs.StringVar(&filePath, "file", "", "Write snapshot to file instead of stdout")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printExportHelp(a.stdout)
+			return nil
+		}
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
+	}
+
+	snapshot, err := registry.ExportSnapshot(a.store)
+	if err != nil {
+		return err
+	}
+	payload, err := registry.MarshalSnapshotJSON(snapshot)
+	if err != nil {
+		return err
+	}
+
+	if strings.TrimSpace(filePath) == "" || filePath == "-" {
+		if _, err := a.stdout.Write(payload); err != nil {
+			return fmt.Errorf("write snapshot to stdout: %w", err)
+		}
+		return nil
+	}
+
+	cleanPath := filepath.Clean(filePath)
+	if err := os.MkdirAll(filepath.Dir(cleanPath), 0o755); err != nil {
+		return fmt.Errorf("ensure export directory: %w", err)
+	}
+	if err := os.WriteFile(cleanPath, payload, 0o644); err != nil {
+		return fmt.Errorf("write snapshot file %q: %w", cleanPath, err)
+	}
+	fmt.Fprintf(a.stdout, "exported %d server(s) to %s\n", len(snapshot.Servers), cleanPath)
+	return nil
+}
+
+func (a cliApp) cmdImport(args []string) error {
+	if len(args) == 1 && isHelpToken(args[0]) {
+		printImportHelp(a.stdout)
+		return nil
+	}
+
+	fs := flag.NewFlagSet("import", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var filePath string
+	var apply bool
+	fs.StringVar(&filePath, "file", "", "Read snapshot from file")
+	fs.BoolVar(&apply, "apply", false, "Apply changes (default dry-run)")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printImportHelp(a.stdout)
+			return nil
+		}
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
+	}
+
+	filePath = strings.TrimSpace(filePath)
+	if filePath == "" {
+		return fmt.Errorf("--file is required")
+	}
+
+	payload, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("read snapshot file %q: %w", filePath, err)
+	}
+	snapshot, err := registry.ParseSnapshotJSON(payload)
+	if err != nil {
+		return err
+	}
+
+	result, err := registry.ImportSnapshot(a.store, snapshot, apply)
+	if err != nil {
+		return err
+	}
+
+	mode := "dry-run"
+	if apply {
+		mode = "applied"
+	}
+	fmt.Fprintf(a.stdout, "import file: %s\n", filePath)
+	fmt.Fprintf(a.stdout, "mode: %s\n", mode)
+	fmt.Fprintf(a.stdout, "added: %s\n", formatNameList(result.Added))
+	fmt.Fprintf(a.stdout, "updated: %s\n", formatNameList(result.Updated))
+	fmt.Fprintf(a.stdout, "unchanged: %s\n", formatNameList(result.Unchanged))
+	if !result.HasChanges() {
+		fmt.Fprintln(a.stdout, "no changes")
+	}
+	if !apply && result.HasChanges() {
+		fmt.Fprintln(a.stdout, "hint: rerun with --apply to persist changes")
+	}
+	return nil
+}
+
 type stringList []string
 
 func (s *stringList) String() string {
@@ -616,6 +728,10 @@ func printCommandHelp(command string, out io.Writer) bool {
 		printDoctorHelp(out)
 	case "status":
 		printStatusHelp(out)
+	case "export":
+		printExportHelp(out)
+	case "import":
+		printImportHelp(out)
 	default:
 		return false
 	}
@@ -702,6 +818,30 @@ func printStatusHelp(out io.Writer) {
 	fmt.Fprintln(out, "  Show a concise readiness summary. Use `madari doctor` for full details.")
 }
 
+func printExportHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari export [--file <path>]")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Options:")
+	fmt.Fprintln(out, "  --file <path>              Write snapshot JSON to file (default: stdout)")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  Export all server manifests as a versioned JSON snapshot.")
+}
+
+func printImportHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari import --file <path> [--apply]")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Options:")
+	fmt.Fprintln(out, "  --file <path>              Snapshot JSON file to import (required)")
+	fmt.Fprintln(out, "  --apply                    Apply changes to registry (default: dry-run)")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  Import a snapshot into the registry by adding/updating listed servers.")
+	fmt.Fprintln(out, "  Existing servers not present in the snapshot are left unchanged.")
+}
+
 func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "madari - local MCP manager")
 	fmt.Fprintln(out)
@@ -714,6 +854,8 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  sync      Sync server manifests to a client config")
 	fmt.Fprintln(out, "  doctor    Run diagnostics on local MCP setup")
 	fmt.Fprintln(out, "  status    Show concise readiness summary")
+	fmt.Fprintln(out, "  export    Export registry snapshot")
+	fmt.Fprintln(out, "  import    Import registry snapshot")
 	fmt.Fprintln(out, "  help      Show help")
 	fmt.Fprintln(out, "  version   Show version")
 	fmt.Fprintln(out)
@@ -724,6 +866,9 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  madari list")
 	fmt.Fprintln(out, "  madari disable stewreads")
 	fmt.Fprintln(out, "  madari sync claude-desktop --dry-run")
+	fmt.Fprintln(out, "  madari export --file madari-snapshot.json")
+	fmt.Fprintln(out, "  madari import --file madari-snapshot.json")
+	fmt.Fprintln(out, "  madari import --file madari-snapshot.json --apply")
 	fmt.Fprintln(out)
 	defaultRoot, rootErr := registry.DefaultRootDir()
 	defaultServers, serversErr := registry.DefaultServersDir()

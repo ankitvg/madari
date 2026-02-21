@@ -13,19 +13,19 @@ var (
 
 // Manifest is the canonical configuration for one local MCP server.
 type Manifest struct {
-	Name        string            `toml:"name"`
-	Command     string            `toml:"command"`
-	Args        []string          `toml:"args"`
-	Enabled     bool              `toml:"enabled"`
-	Clients     []string          `toml:"clients"`
-	Description string            `toml:"description,omitempty"`
-	Env         map[string]string `toml:"env,omitempty"`
-	RequiredEnv RequiredEnv       `toml:"required_env,omitempty"`
+	Name        string            `toml:"name" json:"name"`
+	Command     string            `toml:"command" json:"command"`
+	Args        []string          `toml:"args" json:"args"`
+	Enabled     bool              `toml:"enabled" json:"enabled"`
+	Clients     []string          `toml:"clients" json:"clients"`
+	Description string            `toml:"description,omitempty" json:"description,omitempty"`
+	Env         map[string]string `toml:"env,omitempty" json:"env,omitempty"`
+	RequiredEnv RequiredEnv       `toml:"required_env,omitempty" json:"required_env,omitempty"`
 }
 
 // RequiredEnv describes environment variables that must be present at runtime.
 type RequiredEnv struct {
-	Keys []string `toml:"keys,omitempty"`
+	Keys []string `toml:"keys,omitempty" json:"keys,omitempty"`
 }
 
 // Validate enforces manifest-level invariants.

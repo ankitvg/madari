@@ -13,11 +13,15 @@ Pronunciation: `muh-DAA-ree` (`mə-ˈdɑː-ri`).
 - `madari sync claude-desktop [--dry-run] [--config-path <path>]`
 - `madari doctor [--config-path <path>]`
 - `madari status [--config-path <path>]`
+- `madari export [--file <path>]`
+- `madari import --file <path> [--apply]`
 
 Notes:
 
 - `add` resolves `--command` to an absolute executable path and stores that path in the manifest.
 - `sync` skips servers with missing/non-executable command paths and continues syncing others.
+- `export` writes a versioned JSON snapshot for backup/sharing (stdout by default).
+- `import` is dry-run by default and only adds/updates listed servers (`--apply` persists).
 
 Example:
 
@@ -26,6 +30,9 @@ madari add stewreads --command stewreads-mcp --client claude-desktop
 madari list
 madari status
 madari sync claude-desktop --dry-run
+madari export --file madari-snapshot.json
+madari import --file madari-snapshot.json
+madari import --file madari-snapshot.json --apply
 madari doctor
 ```
 

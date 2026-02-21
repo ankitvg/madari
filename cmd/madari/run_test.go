@@ -301,6 +301,9 @@ func TestRunWithStoreCommandUsageValidation(t *testing.T) {
 		{name: "sync extra positionals", args: []string{"sync", "claude-desktop", "extra"}, expected: "unexpected positional arguments"},
 		{name: "doctor extra positionals", args: []string{"doctor", "extra"}, expected: "unexpected positional arguments"},
 		{name: "status extra positionals", args: []string{"status", "extra"}, expected: "unexpected positional arguments"},
+		{name: "export extra positionals", args: []string{"export", "extra"}, expected: "unexpected positional arguments"},
+		{name: "import missing file", args: []string{"import"}, expected: "--file is required"},
+		{name: "import extra positionals", args: []string{"import", "--file", "snapshot.json", "extra"}, expected: "unexpected positional arguments"},
 	}
 
 	for _, tt := range tests {
@@ -327,6 +330,8 @@ func TestRunHelpSubcommandOutput(t *testing.T) {
 		{name: "help list", args: []string{"help", "list"}, contains: "madari list"},
 		{name: "help doctor", args: []string{"help", "doctor"}, contains: "madari doctor"},
 		{name: "help status", args: []string{"help", "status"}, contains: "madari status"},
+		{name: "help export", args: []string{"help", "export"}, contains: "madari export"},
+		{name: "help import", args: []string{"help", "import"}, contains: "madari import"},
 	}
 
 	for _, tt := range tests {
@@ -384,6 +389,12 @@ func TestRunWithStoreSubcommandHelpFlags(t *testing.T) {
 	}
 	if result := runCmd(store, "status", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari status") {
 		t.Fatalf("expected status --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	if result := runCmd(store, "export", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari export") {
+		t.Fatalf("expected export --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	if result := runCmd(store, "import", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari import") {
+		t.Fatalf("expected import --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
 	}
 
 	// Make sure normal add still works after help coverage.
@@ -511,6 +522,135 @@ func TestRunWithStoreSyncSkipsMissingExecutable(t *testing.T) {
 	}
 	if !strings.Contains(result.stderr, "warning: skipped bad") {
 		t.Fatalf("expected warning for skipped server, got: %s", result.stderr)
+	}
+}
+
+func TestRunWithStoreExportStdout(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-desktop"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "export")
+	if result.code != 0 {
+		t.Fatalf("export failed: %s", result.stderr)
+	}
+
+	snapshot, err := registry.ParseSnapshotJSON([]byte(result.stdout))
+	if err != nil {
+		t.Fatalf("parse export output: %v\noutput:\n%s", err, result.stdout)
+	}
+	if snapshot.Version != registry.SnapshotVersion {
+		t.Fatalf("expected snapshot version %d, got %d", registry.SnapshotVersion, snapshot.Version)
+	}
+	if len(snapshot.Servers) != 1 || snapshot.Servers[0].Name != "stewreads" {
+		t.Fatalf("unexpected snapshot servers: %+v", snapshot.Servers)
+	}
+}
+
+func TestRunWithStoreExportFile(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-desktop"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	path := filepath.Join(t.TempDir(), "snapshot.json")
+	result := runCmd(store, "export", "--file", path)
+	if result.code != 0 {
+		t.Fatalf("export --file failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "exported 1 server(s)") {
+		t.Fatalf("expected export summary output, got: %s", result.stdout)
+	}
+
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read export file: %v", err)
+	}
+	snapshot, err := registry.ParseSnapshotJSON(payload)
+	if err != nil {
+		t.Fatalf("parse export file payload: %v", err)
+	}
+	if len(snapshot.Servers) != 1 || snapshot.Servers[0].Name != "stewreads" {
+		t.Fatalf("unexpected snapshot servers: %+v", snapshot.Servers)
+	}
+}
+
+func TestRunWithStoreImportDryRunAndApply(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "alpha", "--command", commandPath, "--client", "claude-desktop"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	snapshot := registry.Snapshot{
+		Version: registry.SnapshotVersion,
+		Servers: []registry.Manifest{
+			{
+				Name:    "alpha",
+				Command: "/bin/echo",
+				Enabled: true,
+				Clients: []string{"claude-desktop"},
+			},
+			{
+				Name:    "beta",
+				Command: "/usr/bin/env",
+				Enabled: true,
+				Clients: []string{"claude-desktop"},
+			},
+		},
+	}
+	payload, err := registry.MarshalSnapshotJSON(snapshot)
+	if err != nil {
+		t.Fatalf("marshal snapshot payload: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "snapshot.json")
+	if err := os.WriteFile(path, payload, 0o644); err != nil {
+		t.Fatalf("write snapshot fixture: %v", err)
+	}
+
+	dryRun := runCmd(store, "import", "--file", path)
+	if dryRun.code != 0 {
+		t.Fatalf("import dry-run failed: %s", dryRun.stderr)
+	}
+	if !strings.Contains(dryRun.stdout, "mode: dry-run") {
+		t.Fatalf("expected dry-run output, got: %s", dryRun.stdout)
+	}
+	if !strings.Contains(dryRun.stdout, "added: beta") || !strings.Contains(dryRun.stdout, "updated: alpha") {
+		t.Fatalf("expected dry-run diff output, got: %s", dryRun.stdout)
+	}
+	alphaAfterDryRun, err := store.Get("alpha")
+	if err != nil {
+		t.Fatalf("load alpha after dry-run: %v", err)
+	}
+	if alphaAfterDryRun.Command != commandPath {
+		t.Fatalf("expected dry-run to preserve alpha command, got: %q", alphaAfterDryRun.Command)
+	}
+	if _, err := store.Get("beta"); err == nil {
+		t.Fatalf("expected dry-run not to create beta")
+	}
+
+	apply := runCmd(store, "import", "--file", path, "--apply")
+	if apply.code != 0 {
+		t.Fatalf("import apply failed: %s", apply.stderr)
+	}
+	if !strings.Contains(apply.stdout, "mode: applied") {
+		t.Fatalf("expected apply output, got: %s", apply.stdout)
+	}
+	alphaAfterApply, err := store.Get("alpha")
+	if err != nil {
+		t.Fatalf("load alpha after apply: %v", err)
+	}
+	if alphaAfterApply.Command != "/bin/echo" {
+		t.Fatalf("expected alpha command update, got: %q", alphaAfterApply.Command)
+	}
+	if _, err := store.Get("beta"); err != nil {
+		t.Fatalf("expected beta after apply: %v", err)
 	}
 }
 
