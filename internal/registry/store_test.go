@@ -2,6 +2,7 @@ package registry
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -55,5 +56,42 @@ func TestStoreLifecycle(t *testing.T) {
 	_, err = store.Get(manifest.Name)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound after remove, got: %v", err)
+	}
+}
+
+func TestDefaultRootDirUsesConfigDirOverride(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve home: %v", err)
+	}
+	t.Setenv(ConfigDirEnvVar, "~/custom-madari")
+
+	root, err := DefaultRootDir()
+	if err != nil {
+		t.Fatalf("default root with override: %v", err)
+	}
+
+	expected := filepath.Join(home, "custom-madari")
+	if root != expected {
+		t.Fatalf("expected override root %q, got %q", expected, root)
+	}
+}
+
+func TestDefaultRootDirUsesUserConfigDir(t *testing.T) {
+	t.Setenv(ConfigDirEnvVar, "")
+
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatalf("resolve user config dir: %v", err)
+	}
+
+	root, err := DefaultRootDir()
+	if err != nil {
+		t.Fatalf("default root: %v", err)
+	}
+
+	expected := filepath.Join(configDir, "madari")
+	if root != expected {
+		t.Fatalf("expected default root %q, got %q", expected, root)
 	}
 }

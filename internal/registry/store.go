@@ -26,7 +26,7 @@ func NewStore(serversDir string) *Store {
 	return &Store{serversDir: filepath.Clean(serversDir)}
 }
 
-// NewDefaultStore creates a store rooted at ~/.config/madari/servers.
+// NewDefaultStore creates a store rooted at <user-config-dir>/madari/servers.
 func NewDefaultStore() (*Store, error) {
 	serversDir, err := DefaultServersDir()
 	if err != nil {
@@ -45,11 +45,11 @@ func DefaultRootDir() (string, error) {
 		return filepath.Clean(resolved), nil
 	}
 
-	home, err := os.UserHomeDir()
+	configDir, err := os.UserConfigDir()
 	if err != nil {
-		return "", fmt.Errorf("resolve user home: %w", err)
+		return "", fmt.Errorf("resolve user config dir: %w", err)
 	}
-	return filepath.Join(home, ".config", "madari"), nil
+	return filepath.Join(configDir, "madari"), nil
 }
 
 // DefaultServersDir resolves the default manifest directory.

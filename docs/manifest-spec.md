@@ -4,7 +4,7 @@ Each managed server is stored as a TOML document.
 
 ## File Location
 
-`~/.config/madari/servers/<name>.toml`
+`<os.UserConfigDir()>/madari/servers/<name>.toml` (or `$MADARI_CONFIG_DIR/servers/<name>.toml`)
 
 ## Fields
 

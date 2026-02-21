@@ -9,7 +9,7 @@
 ## Components
 
 1. Registry
-- Path: `~/.config/madari/servers/*.toml`
+- Path: `<os.UserConfigDir()>/madari/servers/*.toml` (or `$MADARI_CONFIG_DIR/servers/*.toml`)
 - One file per server entry.
 - Human-readable and versionable.
 
