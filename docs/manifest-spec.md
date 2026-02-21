@@ -9,7 +9,7 @@ Each managed server is stored as a TOML document.
 ## Fields
 
 - `name` (string, required): stable logical ID.
-- `command` (string, required): executable or absolute path.
+- `command` (string, required): absolute executable path for reliable sync behavior.
 - `args` (array of strings, optional): command arguments.
 - `enabled` (bool, required): whether this server should be synced into clients.
 - `clients` (array of strings, required): client IDs.
@@ -27,7 +27,7 @@ Key/value static environment variables.
 
 ```toml
 name = "stewreads"
-command = "stewreads-mcp"
+command = "/Users/me/.local/bin/stewreads-mcp"
 args = []
 enabled = true
 clients = ["claude-desktop"]

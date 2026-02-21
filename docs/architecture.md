@@ -32,6 +32,6 @@
 ## Safety Model
 
 - Never overwrite unknown config blocks.
-- Keep managed entries isolated by marker or namespace ownership.
+- Keep managed entries isolated via per-target managed state tracking files.
 - Always backup before write.
 - Fail closed on parse errors.

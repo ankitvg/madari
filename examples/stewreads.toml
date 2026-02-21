@@ -1,5 +1,5 @@
 name = "stewreads"
-command = "stewreads-mcp"
+command = "/Users/me/.local/bin/stewreads-mcp"
 args = []
 enabled = true
 clients = ["claude-desktop"]

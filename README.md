@@ -1,6 +1,21 @@
 # madari (muh-DAA-ree)
 
-Madari is a local MCP manager focused on reliable server registration, lifecycle management, and client config sync.
+Madari is a CLI to deploy MCP servers into your AI client setup with reliable install, registration, and sync.
+
+## Installation
+
+Homebrew (recommended):
+
+```bash
+brew tap ankitvg/tap
+brew install madari
+```
+
+Go:
+
+```bash
+go install github.com/ankitvg/madari/cmd/madari@latest
+```
 
 ## Commands
 
@@ -18,7 +33,8 @@ Madari is a local MCP manager focused on reliable server registration, lifecycle
 
 Notes:
 
-- `install` can run `uv tool install`, auto-register, and sync to Claude in one command.
+- `install` runs `uv tool install`, auto-registers the server, and syncs to Claude in one command.
+- `install` requires `uv` in PATH unless you use `--skip-install` and pass `--command`.
 - `add` resolves `--command` to an absolute executable path and stores that path in the manifest.
 - `sync` skips servers with missing/non-executable command paths and continues syncing others.
 - `export` writes a versioned JSON snapshot for backup/sharing (stdout by default).
@@ -28,7 +44,7 @@ Example:
 
 ```bash
 madari install stewreads-mcp
-madari add stewreads --command stewreads-mcp --client claude-desktop
+madari add stewreads --command /Users/me/.local/bin/stewreads-mcp --client claude-desktop
 madari list
 madari status
 madari sync claude-desktop --dry-run
@@ -51,6 +67,15 @@ Test:
 ```bash
 go test ./...
 ```
+
+## Architecture
+
+- Reads registry state, writes client configs; no daemon or proxy
+- Only touches entries Madari registered; leaves everything else alone
+- Backup + atomic write on every sync; skips invalid entries rather than aborting
+- `doctor` and `status` for diagnostics
+- Works with any package manager (`uv`, `pip`, `npm`, etc.), runtime (Python, Node), or MCP framework
+- macOS, Linux, and Windows; Claude Desktop is the current sync target
 
 ## Principles
 

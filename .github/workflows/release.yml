@@ -39,8 +39,8 @@ jobs:
           # Build binary into a staging directory
           mkdir -p staging
           go build -v -o "staging/madari${EXT}" ./cmd/madari
-          # Copy license and readme
-          cp LICENSE README.md staging/
+          # Copy license, notice, and readme
+          cp LICENSE NOTICE README.md staging/
 
       - name: Package for release
         shell: bash
