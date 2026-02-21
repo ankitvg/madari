@@ -10,6 +10,7 @@ Madari is a local MCP manager focused on reliable server registration, lifecycle
 - `madari enable <name>`
 - `madari disable <name>`
 - `madari sync claude-desktop [--dry-run] [--config-path <path>]`
+- `madari doctor [--config-path <path>]`
 
 Notes:
 
@@ -22,6 +23,7 @@ Example:
 madari add stewreads --command stewreads-mcp --client claude-desktop
 madari list
 madari sync claude-desktop --dry-run
+madari doctor
 ```
 
 ## Development

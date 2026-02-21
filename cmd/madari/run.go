@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/ankitvg/madari/internal/clients/claude"
+	"github.com/ankitvg/madari/internal/doctor"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -87,6 +88,8 @@ func (a cliApp) dispatch(args []string) error {
 		return a.cmdSetEnabled(args[1:], true)
 	case "disable":
 		return a.cmdSetEnabled(args[1:], false)
+	case "doctor":
+		return a.cmdDoctor(args[1:])
 	case "sync":
 		return a.cmdSync(args[1:])
 	default:
@@ -346,6 +349,83 @@ func (a cliApp) cmdSync(args []string) error {
 	return nil
 }
 
+func (a cliApp) cmdDoctor(args []string) error {
+	if len(args) == 1 && isHelpToken(args[0]) {
+		printDoctorHelp(a.stdout)
+		return nil
+	}
+
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var configPath string
+	fs.StringVar(&configPath, "config-path", "", "Override Claude Desktop config path")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printDoctorHelp(a.stdout)
+			return nil
+		}
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
+	}
+
+	report, err := doctor.Run(a.store, doctor.Options{
+		ClaudeConfigPath: configPath,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(a.stdout, "servers directory: %s\n", report.ServersDir)
+	fmt.Fprintf(a.stdout, "claude config: %s [%s]\n", report.ClaudeConfig.Path, report.ClaudeConfig.Status)
+	if report.ClaudeConfig.Message != "" {
+		fmt.Fprintf(a.stdout, "claude detail: %s\n", report.ClaudeConfig.Message)
+	}
+
+	if len(report.ManifestErrors) > 0 {
+		fmt.Fprintln(a.stdout, "manifest errors:")
+		for _, manifestError := range report.ManifestErrors {
+			fmt.Fprintf(a.stdout, "  - %s: %s\n", manifestError.File, manifestError.Message)
+		}
+	}
+
+	if len(report.Servers) == 0 {
+		fmt.Fprintln(a.stdout, "servers: none")
+	} else {
+		fmt.Fprintln(a.stdout, "servers:")
+		for _, server := range report.Servers {
+			fmt.Fprintf(
+				a.stdout,
+				"  - %s [%s] enabled=%t command=%s clients=%s\n",
+				server.Name,
+				server.Status,
+				server.Enabled,
+				server.Command,
+				strings.Join(server.Clients, ","),
+			)
+			for _, issue := range server.Issues {
+				fmt.Fprintf(a.stdout, "      * [%s] %s\n", issue.Severity, issue.Message)
+			}
+		}
+	}
+
+	fmt.Fprintf(
+		a.stdout,
+		"summary: total=%d ready=%d warn=%d error=%d skipped=%d\n",
+		report.Summary.Total,
+		report.Summary.Ready,
+		report.Summary.Warning,
+		report.Summary.Error,
+		report.Summary.Skipped,
+	)
+
+	if report.Summary.Error > 0 {
+		return fmt.Errorf("doctor found %d error(s)", report.Summary.Error)
+	}
+	return nil
+}
+
 type stringList []string
 
 func (s *stringList) String() string {
@@ -481,6 +561,8 @@ func printCommandHelp(command string, out io.Writer) bool {
 		printEnableDisableHelp("disable", out)
 	case "sync":
 		printSyncHelp(out)
+	case "doctor":
+		printDoctorHelp(out)
 	default:
 		return false
 	}
@@ -545,6 +627,17 @@ func printSyncHelp(out io.Writer) {
 	fmt.Fprintln(out, "  Sync enabled claude-desktop servers from Madari registry into Claude config.")
 }
 
+func printDoctorHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari doctor [--config-path <path>]")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Options:")
+	fmt.Fprintln(out, "  --config-path <path>       Override Claude config path for diagnostics")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  Validate server manifests, command paths, required env keys, and Claude config health.")
+}
+
 func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "madari - local MCP manager")
 	fmt.Fprintln(out)
@@ -555,6 +648,7 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  enable    Enable a server")
 	fmt.Fprintln(out, "  disable   Disable a server")
 	fmt.Fprintln(out, "  sync      Sync server manifests to a client config")
+	fmt.Fprintln(out, "  doctor    Run diagnostics on local MCP setup")
 	fmt.Fprintln(out, "  help      Show help")
 	fmt.Fprintln(out, "  version   Show version")
 	fmt.Fprintln(out)
