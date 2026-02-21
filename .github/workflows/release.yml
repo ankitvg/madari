@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build:
+    name: Build Binaries
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install zip for Windows packaging
+        if: matrix.goos == 'windows'
+        run: sudo apt-get update && sudo apt-get install -y zip
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          EXT=""
+          if [ "$GOOS" = "windows" ]; then
+            EXT=".exe"
+          fi
+          # Build binary into a staging directory
+          mkdir -p staging
+          go build -v -o "staging/madari${EXT}" ./cmd/madari
+          # Copy license and readme
+          cp LICENSE README.md staging/
+
+      - name: Package for release
+        shell: bash
+        run: |
+          cd staging
+          ARCHIVE_NAME="madari-${{ matrix.goos }}-${{ matrix.goarch }}"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip -r "../${ARCHIVE_NAME}.zip" *
+          else
+            tar -czvf "../${ARCHIVE_NAME}.tar.gz" *
+          fi
+          cd ..
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: madari-artifact-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            madari-*.tar.gz
+            madari-*.zip
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./dist
+          pattern: madari-artifact-*
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd ./dist
+          sha256sum *.{zip,tar.gz} > SHA256SUMS
+          cd ..
+
+      - name: Create Release and Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ./dist/madari-*.tar.gz
+            ./dist/madari-*.zip
+            ./dist/SHA256SUMS
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
