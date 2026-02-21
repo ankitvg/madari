@@ -300,6 +300,7 @@ func TestRunWithStoreCommandUsageValidation(t *testing.T) {
 		{name: "sync unsupported target", args: []string{"sync", "cursor"}, expected: "unsupported sync target"},
 		{name: "sync extra positionals", args: []string{"sync", "claude-desktop", "extra"}, expected: "unexpected positional arguments"},
 		{name: "doctor extra positionals", args: []string{"doctor", "extra"}, expected: "unexpected positional arguments"},
+		{name: "status extra positionals", args: []string{"status", "extra"}, expected: "unexpected positional arguments"},
 	}
 
 	for _, tt := range tests {
@@ -325,6 +326,7 @@ func TestRunHelpSubcommandOutput(t *testing.T) {
 		{name: "help sync", args: []string{"help", "sync"}, contains: "madari sync claude-desktop"},
 		{name: "help list", args: []string{"help", "list"}, contains: "madari list"},
 		{name: "help doctor", args: []string{"help", "doctor"}, contains: "madari doctor"},
+		{name: "help status", args: []string{"help", "status"}, contains: "madari status"},
 	}
 
 	for _, tt := range tests {
@@ -379,6 +381,9 @@ func TestRunWithStoreSubcommandHelpFlags(t *testing.T) {
 	}
 	if result := runCmd(store, "doctor", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari doctor") {
 		t.Fatalf("expected doctor --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	if result := runCmd(store, "status", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari status") {
+		t.Fatalf("expected status --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
 	}
 
 	// Make sure normal add still works after help coverage.
@@ -550,6 +555,53 @@ func TestRunWithStoreDoctorReturnsErrorForInvalidConfig(t *testing.T) {
 	}
 	if !strings.Contains(result.stderr, "doctor found") {
 		t.Fatalf("expected doctor error summary in stderr, got: %s", result.stderr)
+	}
+}
+
+func TestRunWithStoreStatusHealthy(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-desktop"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "claude_desktop_config.json")
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	result := runCmd(store, "status", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("status expected success, got code=%d stderr=%s stdout=%s", result.code, result.stderr, result.stdout)
+	}
+	if !strings.Contains(result.stdout, "madari: total=1") {
+		t.Fatalf("expected concise status summary, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "hint: run `madari doctor`") {
+		t.Fatalf("expected doctor hint, got: %s", result.stdout)
+	}
+}
+
+func TestRunWithStoreStatusReturnsErrorForInvalidConfig(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-desktop"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "claude_desktop_config.json")
+	if err := os.WriteFile(configPath, []byte("{broken"), 0o644); err != nil {
+		t.Fatalf("write invalid config fixture: %v", err)
+	}
+
+	result := runCmd(store, "status", "--config-path", configPath)
+	if result.code == 0 {
+		t.Fatalf("status expected failure for invalid config")
+	}
+	if !strings.Contains(result.stderr, "status found") {
+		t.Fatalf("expected status error summary in stderr, got: %s", result.stderr)
 	}
 }
 

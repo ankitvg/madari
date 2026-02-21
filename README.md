@@ -12,6 +12,7 @@ Pronunciation: `muh-DAA-ree` (`mə-ˈdɑː-ri`).
 - `madari disable <name>`
 - `madari sync claude-desktop [--dry-run] [--config-path <path>]`
 - `madari doctor [--config-path <path>]`
+- `madari status [--config-path <path>]`
 
 Notes:
 
@@ -23,6 +24,7 @@ Example:
 ```bash
 madari add stewreads --command stewreads-mcp --client claude-desktop
 madari list
+madari status
 madari sync claude-desktop --dry-run
 madari doctor
 ```

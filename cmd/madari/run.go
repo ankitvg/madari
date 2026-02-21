@@ -90,6 +90,8 @@ func (a cliApp) dispatch(args []string) error {
 		return a.cmdSetEnabled(args[1:], false)
 	case "doctor":
 		return a.cmdDoctor(args[1:])
+	case "status":
+		return a.cmdStatus(args[1:])
 	case "sync":
 		return a.cmdSync(args[1:])
 	default:
@@ -426,6 +428,55 @@ func (a cliApp) cmdDoctor(args []string) error {
 	return nil
 }
 
+func (a cliApp) cmdStatus(args []string) error {
+	if len(args) == 1 && isHelpToken(args[0]) {
+		printStatusHelp(a.stdout)
+		return nil
+	}
+
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var configPath string
+	fs.StringVar(&configPath, "config-path", "", "Override Claude Desktop config path")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printStatusHelp(a.stdout)
+			return nil
+		}
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
+	}
+
+	report, err := doctor.Run(a.store, doctor.Options{
+		ClaudeConfigPath: configPath,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(
+		a.stdout,
+		"madari: total=%d ready=%d warn=%d error=%d skipped=%d\n",
+		report.Summary.Total,
+		report.Summary.Ready,
+		report.Summary.Warning,
+		report.Summary.Error,
+		report.Summary.Skipped,
+	)
+	fmt.Fprintf(a.stdout, "claude-config: %s\n", report.ClaudeConfig.Status)
+	if len(report.ManifestErrors) > 0 {
+		fmt.Fprintf(a.stdout, "manifest-errors: %d\n", len(report.ManifestErrors))
+	}
+	fmt.Fprintln(a.stdout, "hint: run `madari doctor` for detailed diagnostics")
+
+	if report.Summary.Error > 0 {
+		return fmt.Errorf("status found %d error(s)", report.Summary.Error)
+	}
+	return nil
+}
+
 type stringList []string
 
 func (s *stringList) String() string {
@@ -563,6 +614,8 @@ func printCommandHelp(command string, out io.Writer) bool {
 		printSyncHelp(out)
 	case "doctor":
 		printDoctorHelp(out)
+	case "status":
+		printStatusHelp(out)
 	default:
 		return false
 	}
@@ -638,6 +691,17 @@ func printDoctorHelp(out io.Writer) {
 	fmt.Fprintln(out, "  Validate server manifests, command paths, required env keys, and Claude config health.")
 }
 
+func printStatusHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari status [--config-path <path>]")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Options:")
+	fmt.Fprintln(out, "  --config-path <path>       Override Claude config path for status checks")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  Show a concise readiness summary. Use `madari doctor` for full details.")
+}
+
 func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "madari - local MCP manager")
 	fmt.Fprintln(out)
@@ -649,6 +713,7 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  disable   Disable a server")
 	fmt.Fprintln(out, "  sync      Sync server manifests to a client config")
 	fmt.Fprintln(out, "  doctor    Run diagnostics on local MCP setup")
+	fmt.Fprintln(out, "  status    Show concise readiness summary")
 	fmt.Fprintln(out, "  help      Show help")
 	fmt.Fprintln(out, "  version   Show version")
 	fmt.Fprintln(out)
