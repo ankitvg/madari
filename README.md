@@ -5,6 +5,7 @@ Pronunciation: `muh-DAA-ree` (`mə-ˈdɑː-ri`).
 
 ## Commands
 
+- `madari install <package> [options]`
 - `madari add <name> --command <cmd> --client <client>`
 - `madari list`
 - `madari remove <name>`
@@ -18,6 +19,7 @@ Pronunciation: `muh-DAA-ree` (`mə-ˈdɑː-ri`).
 
 Notes:
 
+- `install` can run `uv tool install`, auto-register, and sync to Claude in one command.
 - `add` resolves `--command` to an absolute executable path and stores that path in the manifest.
 - `sync` skips servers with missing/non-executable command paths and continues syncing others.
 - `export` writes a versioned JSON snapshot for backup/sharing (stdout by default).
@@ -26,6 +28,7 @@ Notes:
 Example:
 
 ```bash
+madari install stewreads-mcp
 madari add stewreads --command stewreads-mcp --client claude-desktop
 madari list
 madari status

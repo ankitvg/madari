@@ -292,6 +292,7 @@ func TestRunWithStoreCommandUsageValidation(t *testing.T) {
 		args     []string
 		expected string
 	}{
+		{name: "install missing package", args: []string{"install"}, expected: "usage: madari install <package>"},
 		{name: "list with arg", args: []string{"list", "oops"}, expected: "usage: madari list"},
 		{name: "remove missing name", args: []string{"remove"}, expected: "usage: madari remove <name>"},
 		{name: "enable missing name", args: []string{"enable"}, expected: "usage: madari enable <name>"},
@@ -325,6 +326,7 @@ func TestRunHelpSubcommandOutput(t *testing.T) {
 		args     []string
 		contains string
 	}{
+		{name: "help install", args: []string{"help", "install"}, contains: "madari install <package>"},
 		{name: "help add", args: []string{"help", "add"}, contains: "madari add <name>"},
 		{name: "help sync", args: []string{"help", "sync"}, contains: "madari sync claude-desktop"},
 		{name: "help list", args: []string{"help", "list"}, contains: "madari list"},
@@ -369,6 +371,9 @@ func TestRunWithStoreSubcommandHelpFlags(t *testing.T) {
 	if result := runCmd(store, "add", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari add <name>") {
 		t.Fatalf("expected add --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
 	}
+	if result := runCmd(store, "install", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari install <package>") {
+		t.Fatalf("expected install --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
 	if result := runCmd(store, "sync", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari sync claude-desktop") {
 		t.Fatalf("expected sync --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
 	}
@@ -400,6 +405,128 @@ func TestRunWithStoreSubcommandHelpFlags(t *testing.T) {
 	// Make sure normal add still works after help coverage.
 	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-desktop"); result.code != 0 {
 		t.Fatalf("expected add after help checks to work, stderr=%s", result.stderr)
+	}
+}
+
+func TestRunWithStoreInstallSkipInstallAndNoSync(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	result := runCmd(
+		store,
+		"install", "stewreads-mcp",
+		"--skip-install",
+		"--no-sync",
+		"--command", commandPath,
+	)
+	if result.code != 0 {
+		t.Fatalf("install failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "skipped package install: stewreads-mcp") {
+		t.Fatalf("expected skip-install output, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "added stewreads") {
+		t.Fatalf("expected derived manifest name output, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "sync skipped") {
+		t.Fatalf("expected no-sync output, got: %s", result.stdout)
+	}
+
+	manifest, err := store.Get("stewreads")
+	if err != nil {
+		t.Fatalf("expected manifest to exist: %v", err)
+	}
+	if manifest.Command != commandPath {
+		t.Fatalf("expected command path %q, got: %q", commandPath, manifest.Command)
+	}
+	if len(manifest.Clients) != 1 || manifest.Clients[0] != "claude-desktop" {
+		t.Fatalf("expected default client claude-desktop, got: %#v", manifest.Clients)
+	}
+}
+
+func TestRunWithStoreInstallRunsUVInstaller(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture for uv installer test is unix-specific")
+	}
+
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+	binDir := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "uv-args.log")
+	uvPath := filepath.Join(binDir, "uv")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + logPath + "'\n"
+	if err := os.WriteFile(uvPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake uv: %v", err)
+	}
+
+	originalPath := os.Getenv("PATH")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+originalPath)
+
+	result := runCmd(
+		store,
+		"install", "stewreads-mcp",
+		"--no-sync",
+		"--command", commandPath,
+	)
+	if result.code != 0 {
+		t.Fatalf("install with uv failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "installed package: stewreads-mcp") {
+		t.Fatalf("expected install output, got: %s", result.stdout)
+	}
+
+	argsPayload, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read fake uv args log: %v", err)
+	}
+	argsText := string(argsPayload)
+	if !strings.Contains(argsText, "tool") || !strings.Contains(argsText, "install") || !strings.Contains(argsText, "stewreads-mcp") {
+		t.Fatalf("expected uv args to include `tool install stewreads-mcp`, got: %s", argsText)
+	}
+}
+
+func TestRunWithStoreInstallErrorsWhenUVMissing(t *testing.T) {
+	store := newTestStore(t)
+	t.Setenv("PATH", "")
+
+	result := runCmd(store, "install", "stewreads-mcp", "--no-sync")
+	if result.code == 0 {
+		t.Fatalf("expected install to fail when uv is missing")
+	}
+	if !strings.Contains(result.stderr, "uv not found in PATH") {
+		t.Fatalf("expected uv missing error, got: %s", result.stderr)
+	}
+}
+
+func TestRunWithStoreInstallAutoSyncByDefault(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	configPath := filepath.Join(t.TempDir(), "claude_desktop_config.json")
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{"weather":{"command":"uv"}}}`), 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	result := runCmd(
+		store,
+		"install", "stewreads-mcp",
+		"--skip-install",
+		"--command", commandPath,
+		"--config-path", configPath,
+	)
+	if result.code != 0 {
+		t.Fatalf("install auto-sync failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "sync target: claude-desktop") {
+		t.Fatalf("expected sync output, got: %s", result.stdout)
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after install sync: %v", err)
+	}
+	if !strings.Contains(string(after), "\"stewreads\"") {
+		t.Fatalf("expected synced config to include stewreads server, got: %s", string(after))
 	}
 }
 

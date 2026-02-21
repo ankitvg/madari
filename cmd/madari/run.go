@@ -78,6 +78,8 @@ func (a cliApp) dispatch(args []string) error {
 	}
 
 	switch args[0] {
+	case "install":
+		return a.cmdInstall(args[1:])
 	case "add":
 		return a.cmdAdd(args[1:])
 	case "list":
@@ -101,6 +103,128 @@ func (a cliApp) dispatch(args []string) error {
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
+}
+
+func (a cliApp) cmdInstall(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: madari install <package> [options]")
+	}
+	if len(args) == 1 && isHelpToken(args[0]) {
+		printInstallHelp(a.stdout)
+		return nil
+	}
+
+	packageName := strings.TrimSpace(args[0])
+	if packageName == "" {
+		return fmt.Errorf("package is required")
+	}
+
+	fs := flag.NewFlagSet("install", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	var name string
+	var command string
+	var description string
+	var disabled bool
+	var noSync bool
+	var skipInstall bool
+	var configPath string
+	var manager string
+	var cmdArgs stringList
+	var clients stringList
+	var envPairs stringList
+	var requiredEnv stringList
+
+	fs.StringVar(&name, "name", "", "Server name (defaults from package)")
+	fs.StringVar(&command, "command", "", "Server command (defaults to package name)")
+	fs.StringVar(&description, "description", "", "Server description")
+	fs.StringVar(&manager, "manager", "uv", "Package manager used for installation")
+	fs.StringVar(&configPath, "config-path", "", "Override Claude config path for sync")
+	fs.BoolVar(&disabled, "disabled", false, "Create server in disabled state")
+	fs.BoolVar(&noSync, "no-sync", false, "Skip automatic sync after install")
+	fs.BoolVar(&skipInstall, "skip-install", false, "Skip package installation step")
+	fs.Var(&cmdArgs, "arg", "Command argument (repeatable)")
+	fs.Var(&clients, "client", "Client id (repeatable, default: claude-desktop)")
+	fs.Var(&envPairs, "env", "Environment variable KEY=VALUE (repeatable)")
+	fs.Var(&requiredEnv, "required-env", "Required runtime env key (repeatable)")
+
+	if err := fs.Parse(args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printInstallHelp(a.stdout)
+			return nil
+		}
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
+	}
+
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = deriveServerName(packageName)
+	}
+	if name == "" {
+		return fmt.Errorf("unable to derive server name from package %q, pass --name", packageName)
+	}
+
+	if len(clients) == 0 {
+		clients = append(clients, claude.Target)
+	}
+
+	if !skipInstall {
+		if err := runPackageInstall(manager, packageName, a.stdout, a.stderr); err != nil {
+			return err
+		}
+		fmt.Fprintf(a.stdout, "installed package: %s\n", packageName)
+	} else {
+		fmt.Fprintf(a.stdout, "skipped package install: %s\n", packageName)
+	}
+
+	command = strings.TrimSpace(command)
+	if command == "" {
+		command = packageName
+	}
+	resolvedCommand, err := resolveCommandPath(command)
+	if err != nil {
+		return err
+	}
+
+	env, err := parseEnvPairs(envPairs)
+	if err != nil {
+		return err
+	}
+
+	manifest := registry.Manifest{
+		Name:        name,
+		Command:     resolvedCommand,
+		Args:        append([]string(nil), cmdArgs...),
+		Enabled:     !disabled,
+		Clients:     append([]string(nil), clients...),
+		Description: description,
+		Env:         env,
+		RequiredEnv: registry.RequiredEnv{Keys: append([]string(nil), requiredEnv...)},
+	}
+
+	if err := a.store.Add(manifest); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.stdout, "added %s\n", name)
+
+	if noSync {
+		fmt.Fprintln(a.stdout, "sync skipped")
+		return nil
+	}
+
+	if !hasClaudeTarget(manifest.Clients) {
+		fmt.Fprintln(a.stdout, "sync skipped (no claude-desktop client configured)")
+		return nil
+	}
+
+	syncArgs := []string{claude.Target}
+	if strings.TrimSpace(configPath) != "" {
+		syncArgs = append(syncArgs, "--config-path", configPath)
+	}
+	return a.cmdSync(syncArgs)
 }
 
 func (a cliApp) cmdAdd(args []string) error {
@@ -679,6 +803,42 @@ func resolveCommandPath(command string) (string, error) {
 	return cleaned, nil
 }
 
+func runPackageInstall(manager, packageName string, stdout, stderr io.Writer) error {
+	manager = strings.TrimSpace(strings.ToLower(manager))
+	switch manager {
+	case "uv":
+		if _, err := exec.LookPath("uv"); err != nil {
+			return fmt.Errorf("uv not found in PATH; install uv or rerun with --skip-install and --command <path>")
+		}
+		cmd := exec.Command("uv", "tool", "install", packageName)
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("run uv tool install %q: %w", packageName, err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported package manager %q (supported: uv)", manager)
+	}
+}
+
+func deriveServerName(packageName string) string {
+	name := strings.TrimSpace(packageName)
+	if name == "" {
+		return ""
+	}
+	if strings.Contains(name, "/") {
+		parts := strings.Split(name, "/")
+		name = parts[len(parts)-1]
+	}
+	name = strings.ToLower(name)
+	name = strings.ReplaceAll(name, "_", "-")
+	name = strings.TrimSpace(name)
+	name = strings.TrimSuffix(name, "-mcp")
+	name = strings.Trim(name, "-")
+	return name
+}
+
 func validateAbsoluteExecutablePath(path string) error {
 	if !filepath.IsAbs(path) {
 		return fmt.Errorf("path must be absolute")
@@ -712,6 +872,8 @@ func isHelpToken(value string) bool {
 
 func printCommandHelp(command string, out io.Writer) bool {
 	switch strings.TrimSpace(command) {
+	case "install":
+		printInstallHelp(out)
 	case "add":
 		printAddHelp(out)
 	case "list":
@@ -754,6 +916,33 @@ func printAddHelp(out io.Writer) {
 	fmt.Fprintln(out, "Examples:")
 	fmt.Fprintln(out, "  madari add stewreads --command stewreads-mcp --client claude-desktop")
 	fmt.Fprintln(out, "  madari add mailer --command ./bin/mailer --client claude-desktop --required-env SMTP_PASSWORD")
+}
+
+func printInstallHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari install <package> [options]")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Options:")
+	fmt.Fprintln(out, "  --name <name>              Server name (default: derived from package)")
+	fmt.Fprintln(out, "  --command <cmd>            Server command (default: package name)")
+	fmt.Fprintln(out, "  --manager <name>           Package manager (default: uv)")
+	fmt.Fprintln(out, "  --client <client>          Target client id (repeatable, default: claude-desktop)")
+	fmt.Fprintln(out, "  --arg <value>              Command argument (repeatable)")
+	fmt.Fprintln(out, "  --env KEY=VALUE            Environment variable (repeatable)")
+	fmt.Fprintln(out, "  --required-env <KEY>       Required runtime env key (repeatable)")
+	fmt.Fprintln(out, "  --description <text>       Server description")
+	fmt.Fprintln(out, "  --disabled                 Add server in disabled state")
+	fmt.Fprintln(out, "  --skip-install             Skip package installation")
+	fmt.Fprintln(out, "  --no-sync                  Skip automatic claude-desktop sync")
+	fmt.Fprintln(out, "  --config-path <path>       Override Claude config path for sync")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  Install a local MCP package, register it in Madari, and sync it to Claude Desktop.")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Examples:")
+	fmt.Fprintln(out, "  madari install stewreads-mcp")
+	fmt.Fprintln(out, "  madari install stewreads-mcp --required-env STEWREADS_GMAIL_APP_PASSWORD")
+	fmt.Fprintln(out, "  madari install stewreads-mcp --skip-install --command /Users/me/.local/bin/stewreads-mcp")
 }
 
 func printListHelp(out io.Writer) {
@@ -846,6 +1035,7 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "madari - local MCP manager")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Commands:")
+	fmt.Fprintln(out, "  install   Install and register a server")
 	fmt.Fprintln(out, "  add       Add a server manifest")
 	fmt.Fprintln(out, "  list      List configured servers")
 	fmt.Fprintln(out, "  remove    Remove a server manifest")
@@ -862,6 +1052,7 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "Run `madari help <command>` for command-specific help.")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Examples:")
+	fmt.Fprintln(out, "  madari install stewreads-mcp")
 	fmt.Fprintln(out, "  madari add stewreads --command stewreads-mcp --client claude-desktop")
 	fmt.Fprintln(out, "  madari list")
 	fmt.Fprintln(out, "  madari disable stewreads")
