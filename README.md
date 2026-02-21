@@ -1,6 +1,7 @@
 # madari
 
 Madari is a local MCP manager focused on reliable server registration, lifecycle management, and client config sync.
+Pronunciation: `muh-DAA-ree` (`mə-ˈdɑː-ri`).
 
 ## Commands
 
