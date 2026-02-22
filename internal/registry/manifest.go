@@ -7,7 +7,7 @@ import (
 )
 
 var (
-	manifestNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+	manifestNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:[.-][a-z0-9]+)*$`)
 	envKeyPattern       = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 )
 

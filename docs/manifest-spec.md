@@ -42,7 +42,7 @@ keys = ["STEWREADS_GMAIL_APP_PASSWORD"]
 
 ## Validation Rules
 
-- `name` must be lowercase alphanumeric with `-` allowed.
+- `name` must be lowercase alphanumeric with `-` and `.` allowed as separators.
 - `clients` must contain unique values.
 - Unknown top-level keys are rejected.
 - Empty `command` is invalid.

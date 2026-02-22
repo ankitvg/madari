@@ -444,6 +444,41 @@ func TestRunWithStoreInstallSkipInstallAndNoSync(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreInstallDerivesNameFromDottedPackage(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	result := runCmd(
+		store,
+		"install", "awslabs.core-mcp-server",
+		"--skip-install",
+		"--no-sync",
+		"--command", commandPath,
+	)
+	if result.code != 0 {
+		t.Fatalf("install failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "added awslabs.core-mcp-server") {
+		t.Fatalf("expected derived manifest name output, got: %s", result.stdout)
+	}
+
+	manifest, err := store.Get("awslabs.core-mcp-server")
+	if err != nil {
+		t.Fatalf("expected manifest to exist: %v", err)
+	}
+	if manifest.Command != commandPath {
+		t.Fatalf("expected command path %q, got: %q", commandPath, manifest.Command)
+	}
+
+	removeResult := runCmd(store, "remove", "awslabs.core-mcp-server")
+	if removeResult.code != 0 {
+		t.Fatalf("remove failed: %s", removeResult.stderr)
+	}
+	if !strings.Contains(removeResult.stdout, "removed awslabs.core-mcp-server") {
+		t.Fatalf("expected remove output, got: %s", removeResult.stdout)
+	}
+}
+
 func TestRunWithStoreInstallRunsUVInstaller(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture for uv installer test is unix-specific")
@@ -890,5 +925,53 @@ func TestRunHelpMentionsConfigDefaults(t *testing.T) {
 	}
 	if !strings.Contains(output, "MADARI_CONFIG_DIR") {
 		t.Fatalf("expected help output to mention MADARI_CONFIG_DIR override, got: %s", output)
+	}
+}
+
+func TestDeriveServerName(t *testing.T) {
+	tests := []struct {
+		name        string
+		packageName string
+		expected    string
+	}{
+		{
+			name:        "strips mcp suffix",
+			packageName: "stewreads-mcp",
+			expected:    "stewreads",
+		},
+		{
+			name:        "preserves dots",
+			packageName: "awslabs.core-mcp-server",
+			expected:    "awslabs.core-mcp-server",
+		},
+		{
+			name:        "normalizes underscores and preserves dots",
+			packageName: "foo_bar.baz",
+			expected:    "foo-bar.baz",
+		},
+		{
+			name:        "uses final slash segment",
+			packageName: "@modelcontextprotocol/server-sequential-thinking",
+			expected:    "server-sequential-thinking",
+		},
+		{
+			name:        "collapses repeated separators",
+			packageName: "foo...__bar",
+			expected:    "foo.bar",
+		},
+		{
+			name:        "returns empty when no valid characters",
+			packageName: "._/@",
+			expected:    "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual := deriveServerName(tt.packageName)
+			if actual != tt.expected {
+				t.Fatalf("deriveServerName(%q) = %q, expected %q", tt.packageName, actual, tt.expected)
+			}
+		})
 	}
 }
