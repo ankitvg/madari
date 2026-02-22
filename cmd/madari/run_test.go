@@ -520,6 +520,74 @@ func TestRunWithStoreInstallRunsUVInstaller(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreInstallRunsNPMInstaller(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture for npm installer test is unix-specific")
+	}
+
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+	binDir := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "npm-args.log")
+	npmPath := filepath.Join(binDir, "npm")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + logPath + "'\n"
+	if err := os.WriteFile(npmPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake npm: %v", err)
+	}
+
+	originalPath := os.Getenv("PATH")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+originalPath)
+
+	packageName := "@modelcontextprotocol/server-sequential-thinking"
+	result := runCmd(
+		store,
+		"install", packageName,
+		"--manager", "npm",
+		"--no-sync",
+		"--command", commandPath,
+	)
+	if result.code != 0 {
+		t.Fatalf("install with npm failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "installed package: "+packageName) {
+		t.Fatalf("expected install output, got: %s", result.stdout)
+	}
+
+	argsPayload, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read fake npm args log: %v", err)
+	}
+	argsText := string(argsPayload)
+	if !strings.Contains(argsText, "install") || !strings.Contains(argsText, "-g") || !strings.Contains(argsText, packageName) {
+		t.Fatalf("expected npm args to include `install -g %s`, got: %s", packageName, argsText)
+	}
+}
+
+func TestRunWithStoreInstallNPMRequiresCommand(t *testing.T) {
+	store := newTestStore(t)
+
+	result := runCmd(store, "install", "stewreads-mcp", "--manager", "npm", "--no-sync")
+	if result.code == 0 {
+		t.Fatalf("expected install to fail when npm command is omitted")
+	}
+	if !strings.Contains(result.stderr, "--command is required when --manager npm") {
+		t.Fatalf("expected npm command requirement error, got: %s", result.stderr)
+	}
+}
+
+func TestRunWithStoreInstallRejectsUnsupportedManager(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	result := runCmd(store, "install", "stewreads-mcp", "--manager", "pipx", "--no-sync", "--command", commandPath)
+	if result.code == 0 {
+		t.Fatalf("expected install to fail for unsupported manager")
+	}
+	if !strings.Contains(result.stderr, "unsupported package manager \"pipx\" (supported: uv, npm)") {
+		t.Fatalf("expected unsupported manager error, got: %s", result.stderr)
+	}
+}
+
 func TestRunWithStoreInstallErrorsWhenUVMissing(t *testing.T) {
 	store := newTestStore(t)
 	t.Setenv("PATH", "")
@@ -530,6 +598,20 @@ func TestRunWithStoreInstallErrorsWhenUVMissing(t *testing.T) {
 	}
 	if !strings.Contains(result.stderr, "uv not found in PATH") {
 		t.Fatalf("expected uv missing error, got: %s", result.stderr)
+	}
+}
+
+func TestRunWithStoreInstallErrorsWhenNPMMissing(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+	t.Setenv("PATH", "")
+
+	result := runCmd(store, "install", "stewreads-mcp", "--manager", "npm", "--no-sync", "--command", commandPath)
+	if result.code == 0 {
+		t.Fatalf("expected install to fail when npm is missing")
+	}
+	if !strings.Contains(result.stderr, "npm not found in PATH") {
+		t.Fatalf("expected npm missing error, got: %s", result.stderr)
 	}
 }
 

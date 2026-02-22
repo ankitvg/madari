@@ -159,6 +159,17 @@ func (a cliApp) cmdInstall(args []string) error {
 		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
 	}
 
+	manager = strings.TrimSpace(strings.ToLower(manager))
+	if manager == "" {
+		manager = "uv"
+	}
+	if !isSupportedInstallManager(manager) {
+		return fmt.Errorf("unsupported package manager %q (supported: uv, npm)", manager)
+	}
+	if manager == "npm" && strings.TrimSpace(command) == "" {
+		return fmt.Errorf("--command is required when --manager npm because npm package names may differ from executable names")
+	}
+
 	name = strings.TrimSpace(name)
 	if name == "" {
 		name = deriveServerName(packageName)
@@ -817,8 +828,28 @@ func runPackageInstall(manager, packageName string, stdout, stderr io.Writer) er
 			return fmt.Errorf("run uv tool install %q: %w", packageName, err)
 		}
 		return nil
+	case "npm":
+		if _, err := exec.LookPath("npm"); err != nil {
+			return fmt.Errorf("npm not found in PATH; install npm or rerun with --skip-install and --command <path>")
+		}
+		cmd := exec.Command("npm", "install", "-g", packageName)
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("run npm install -g %q: %w", packageName, err)
+		}
+		return nil
 	default:
-		return fmt.Errorf("unsupported package manager %q (supported: uv)", manager)
+		return fmt.Errorf("unsupported package manager %q (supported: uv, npm)", manager)
+	}
+}
+
+func isSupportedInstallManager(manager string) bool {
+	switch manager {
+	case "uv", "npm":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -944,8 +975,8 @@ func printInstallHelp(out io.Writer) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
 	fmt.Fprintln(out, "  --name <name>              Server name (default: derived from package)")
-	fmt.Fprintln(out, "  --command <cmd>            Server command (default: package name)")
-	fmt.Fprintln(out, "  --manager <name>           Package manager (default: uv)")
+	fmt.Fprintln(out, "  --command <cmd>            Server command (default: package name; required for --manager npm)")
+	fmt.Fprintln(out, "  --manager <name>           Package manager (default: uv; supported: uv, npm)")
 	fmt.Fprintln(out, "  --client <client>          Target client id (repeatable, default: claude-desktop)")
 	fmt.Fprintln(out, "  --arg <value>              Command argument (repeatable)")
 	fmt.Fprintln(out, "  --env KEY=VALUE            Environment variable (repeatable)")
@@ -963,6 +994,7 @@ func printInstallHelp(out io.Writer) {
 	fmt.Fprintln(out, "  madari install stewreads-mcp")
 	fmt.Fprintln(out, "  madari install stewreads-mcp --required-env STEWREADS_GMAIL_APP_PASSWORD")
 	fmt.Fprintln(out, "  madari install stewreads-mcp --skip-install --command /Users/me/.local/bin/stewreads-mcp")
+	fmt.Fprintln(out, "  madari install @modelcontextprotocol/server-sequential-thinking --manager npm --command mcp-server-sequential-thinking")
 }
 
 func printListHelp(out io.Writer) {

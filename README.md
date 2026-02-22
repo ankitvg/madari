@@ -33,8 +33,9 @@ go install github.com/ankitvg/madari/cmd/madari@latest
 
 Notes:
 
-- `install` runs `uv tool install`, auto-registers the server, and syncs to Claude in one command.
-- `install` requires `uv` in PATH unless you use `--skip-install` and pass `--command`.
+- `install` runs package-manager install (`uv` by default, or `npm` via `--manager npm`), auto-registers the server, and syncs to Claude in one command.
+- `install` requires the selected package manager in PATH unless you use `--skip-install` and pass `--command`.
+- `install --manager npm` requires `--command` because npm package names can differ from executable names.
 - `add` resolves `--command` to an absolute executable path and stores that path in the manifest.
 - `sync` skips servers with missing/non-executable command paths and continues syncing others.
 - `export` writes a versioned JSON snapshot for backup/sharing (stdout by default).
@@ -44,6 +45,7 @@ Example:
 
 ```bash
 madari install stewreads-mcp
+madari install @modelcontextprotocol/server-sequential-thinking --manager npm --command mcp-server-sequential-thinking
 madari add stewreads --command /Users/me/.local/bin/stewreads-mcp --client claude-desktop
 madari list
 madari status
@@ -74,7 +76,7 @@ go test ./...
 - Only touches entries Madari registered; leaves everything else alone
 - Backup + atomic write on every sync; skips invalid entries rather than aborting
 - `doctor` and `status` for diagnostics
-- Works with any package manager (`uv`, `pip`, `npm`, etc.), runtime (Python, Node), or MCP framework
+- Supports `uv` and `npm` package manager installs, plus manual `add` for any runtime/framework
 - macOS, Linux, and Windows; Claude Desktop is the current sync target
 
 ## Principles
