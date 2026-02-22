@@ -26,6 +26,14 @@ func TestManifestValidateOK(t *testing.T) {
 	}
 }
 
+func TestManifestValidateAllowsDotsInName(t *testing.T) {
+	m := baseManifest()
+	m.Name = "awslabs.core-mcp-server"
+	if err := m.Validate(); err != nil {
+		t.Fatalf("expected dotted name to validate, got error: %v", err)
+	}
+}
+
 func TestManifestValidateErrors(t *testing.T) {
 	tests := []struct {
 		name    string

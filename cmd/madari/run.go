@@ -832,10 +832,30 @@ func deriveServerName(packageName string) string {
 		name = parts[len(parts)-1]
 	}
 	name = strings.ToLower(name)
-	name = strings.ReplaceAll(name, "_", "-")
 	name = strings.TrimSpace(name)
+
+	var normalized strings.Builder
+	normalized.Grow(len(name))
+	prevSeparator := false
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			normalized.WriteRune(r)
+			prevSeparator = false
+			continue
+		}
+		separator := '-'
+		if r == '.' || r == '-' {
+			separator = r
+		}
+		if !prevSeparator {
+			normalized.WriteRune(separator)
+			prevSeparator = true
+		}
+	}
+
+	name = normalized.String()
 	name = strings.TrimSuffix(name, "-mcp")
-	name = strings.Trim(name, "-")
+	name = strings.Trim(name, "-.")
 	return name
 }
 
