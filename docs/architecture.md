@@ -15,7 +15,7 @@
 
 2. Client Adapters
 - Translate registry entries into client-specific config.
-- Current adapter: Claude Desktop.
+- Current adapters: Claude Desktop and Claude Code.
 - Adapters own read/merge/write behavior for their client format.
 
 3. Sync Engine
