@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/ankitvg/madari/internal/clients/claude"
+	"github.com/ankitvg/madari/internal/clients/claudecode"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -66,16 +67,18 @@ type Summary struct {
 }
 
 type Report struct {
-	ServersDir     string
-	Servers        []ServerReport
-	ManifestErrors []ManifestError
-	ClaudeConfig   ClaudeConfigReport
-	Summary        Summary
+	ServersDir       string
+	Servers          []ServerReport
+	ManifestErrors   []ManifestError
+	ClaudeConfig     ClaudeConfigReport
+	ClaudeCodeConfig ClaudeConfigReport
+	Summary          Summary
 }
 
 type Options struct {
-	ClaudeConfigPath string
-	EnvLookup        func(string) string
+	ClaudeConfigPath     string
+	ClaudeCodeConfigPath string
+	EnvLookup            func(string) string
 }
 
 func Run(store *registry.Store, opts Options) (Report, error) {
@@ -110,6 +113,16 @@ func Run(store *registry.Store, opts Options) (Report, error) {
 		return report.Servers[i].Name < report.Servers[j].Name
 	})
 
+	if hasTargetInManifests(manifests, claudecode.Target) {
+		claudeCodePath, err := resolveClaudeCodePath(opts.ClaudeCodeConfigPath)
+		if err != nil {
+			return Report{}, err
+		}
+		report.ClaudeCodeConfig = inspectClaudeConfig(claudeCodePath)
+	} else {
+		report.ClaudeCodeConfig = ClaudeConfigReport{Status: StatusSkipped}
+	}
+
 	report.Summary = summarize(report)
 	return report, nil
 }
@@ -135,6 +148,11 @@ func summarize(report Report) Summary {
 	} else if report.ClaudeConfig.Status == StatusWarning {
 		summary.Warning++
 	}
+	if report.ClaudeCodeConfig.Status == StatusError {
+		summary.Error++
+	} else if report.ClaudeCodeConfig.Status == StatusWarning {
+		summary.Warning++
+	}
 	return summary
 }
 
@@ -148,7 +166,7 @@ func inspectServer(manifest registry.Manifest, envLookup func(string) string) Se
 		Issues:  []Issue{},
 	}
 
-	if !manifest.Enabled || !hasClaudeTarget(manifest.Clients) {
+	if !manifest.Enabled || !hasSyncTarget(manifest.Clients) {
 		return report
 	}
 
@@ -183,6 +201,17 @@ func resolveClaudePath(path string) (string, error) {
 		return filepath.Clean(resolved), nil
 	}
 	return claude.DefaultDesktopConfigPath()
+}
+
+func resolveClaudeCodePath(path string) (string, error) {
+	if strings.TrimSpace(path) != "" {
+		resolved, err := expandHome(path)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Clean(resolved), nil
+	}
+	return claudecode.DefaultProjectConfigPath()
 }
 
 func inspectClaudeConfig(path string) ClaudeConfigReport {
@@ -275,9 +304,22 @@ func loadManifests(serversDir string) ([]registry.Manifest, []ManifestError, err
 	return manifests, manifestErrors, nil
 }
 
-func hasClaudeTarget(clients []string) bool {
+func hasSyncTarget(clients []string) bool {
+	return hasTargetClient(clients, claude.Target) || hasTargetClient(clients, claudecode.Target)
+}
+
+func hasTargetClient(clients []string, target string) bool {
 	for _, client := range clients {
-		if strings.EqualFold(strings.TrimSpace(client), claude.Target) {
+		if strings.EqualFold(strings.TrimSpace(client), target) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasTargetInManifests(manifests []registry.Manifest, target string) bool {
+	for _, manifest := range manifests {
+		if hasTargetClient(manifest.Clients, target) {
 			return true
 		}
 	}

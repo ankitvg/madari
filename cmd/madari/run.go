@@ -13,11 +13,17 @@ import (
 	"strings"
 
 	"github.com/ankitvg/madari/internal/clients/claude"
+	"github.com/ankitvg/madari/internal/clients/claudecode"
 	"github.com/ankitvg/madari/internal/doctor"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
 const version = "0.0.0-dev"
+
+var supportedSyncTargets = []string{
+	claude.Target,
+	claudecode.Target,
+}
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -226,16 +232,25 @@ func (a cliApp) cmdInstall(args []string) error {
 		return nil
 	}
 
-	if !hasClaudeTarget(manifest.Clients) {
-		fmt.Fprintln(a.stdout, "sync skipped (no claude-desktop client configured)")
+	targets := syncTargetsForClients(manifest.Clients)
+	if len(targets) == 0 {
+		fmt.Fprintln(a.stdout, "sync skipped (no supported sync client configured)")
 		return nil
 	}
 
-	syncArgs := []string{claude.Target}
-	if strings.TrimSpace(configPath) != "" {
-		syncArgs = append(syncArgs, "--config-path", configPath)
+	if strings.TrimSpace(configPath) != "" && len(targets) > 1 {
+		return fmt.Errorf("--config-path cannot be used when automatic sync has multiple target clients; run `madari sync <client> --config-path <path>` per target")
 	}
-	return a.cmdSync(syncArgs)
+	for _, target := range targets {
+		syncArgs := []string{target}
+		if strings.TrimSpace(configPath) != "" {
+			syncArgs = append(syncArgs, "--config-path", configPath)
+		}
+		if err := a.cmdSync(syncArgs); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a cliApp) cmdAdd(args []string) error {
@@ -444,50 +459,43 @@ func (a cliApp) cmdSync(args []string) error {
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	if target != claude.Target {
-		return fmt.Errorf("unsupported sync target %q (supported: %s)", target, claude.Target)
+	if !isSupportedSyncTarget(target) {
+		return fmt.Errorf("unsupported sync target %q (supported: %s)", target, strings.Join(supportedSyncTargets, ", "))
 	}
 
 	manifests, err := a.store.List()
 	if err != nil {
 		return err
 	}
-	syncable, skipped := filterSyncableClaudeManifests(manifests)
+	syncable, skipped := filterSyncableManifests(manifests, target)
 
 	statePath := filepath.Join(filepath.Dir(a.store.ServersDir()), "state", target+"-managed.json")
-	result, err := claude.Sync(syncable, claude.SyncOptions{
-		ConfigPath: configPath,
-		StatePath:  statePath,
-		DryRun:     dryRun,
-	})
-	if err != nil {
-		return err
-	}
-
-	mode := "applied"
-	if result.DryRun {
-		mode = "dry-run"
-	}
-
-	fmt.Fprintf(a.stdout, "sync target: %s\n", target)
-	fmt.Fprintf(a.stdout, "config path: %s\n", result.ConfigPath)
-	fmt.Fprintf(a.stdout, "mode: %s\n", mode)
-	fmt.Fprintf(a.stdout, "added: %s\n", formatNameList(result.Added))
-	fmt.Fprintf(a.stdout, "updated: %s\n", formatNameList(result.Updated))
-	fmt.Fprintf(a.stdout, "removed: %s\n", formatNameList(result.Removed))
-	if len(skipped) > 0 {
-		fmt.Fprintf(a.stdout, "skipped: %s\n", formatNameList(skipped))
-		for _, name := range skipped {
-			fmt.Fprintf(a.stderr, "warning: skipped %s because command path is not an executable file\n", name)
+	switch target {
+	case claude.Target:
+		result, err := claude.Sync(syncable, claude.SyncOptions{
+			ConfigPath: configPath,
+			StatePath:  statePath,
+			DryRun:     dryRun,
+		})
+		if err != nil {
+			return err
 		}
+		printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, skipped)
+		return nil
+	case claudecode.Target:
+		result, err := claudecode.Sync(syncable, claudecode.SyncOptions{
+			ConfigPath: configPath,
+			StatePath:  statePath,
+			DryRun:     dryRun,
+		})
+		if err != nil {
+			return err
+		}
+		printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, skipped)
+		return nil
+	default:
+		return fmt.Errorf("unsupported sync target %q (supported: %s)", target, strings.Join(supportedSyncTargets, ", "))
 	}
-	if len(result.Unchanged) > 0 {
-		fmt.Fprintf(a.stdout, "unchanged: %s\n", formatNameList(result.Unchanged))
-	}
-	if !result.HasChanges() {
-		fmt.Fprintln(a.stdout, "no changes")
-	}
-	return nil
 }
 
 func (a cliApp) cmdDoctor(args []string) error {
@@ -499,7 +507,9 @@ func (a cliApp) cmdDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var configPath string
+	var claudeCodeConfigPath string
 	fs.StringVar(&configPath, "config-path", "", "Override Claude Desktop config path")
+	fs.StringVar(&claudeCodeConfigPath, "claude-code-config-path", "", "Override Claude Code config path")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printDoctorHelp(a.stdout)
@@ -512,7 +522,8 @@ func (a cliApp) cmdDoctor(args []string) error {
 	}
 
 	report, err := doctor.Run(a.store, doctor.Options{
-		ClaudeConfigPath: configPath,
+		ClaudeConfigPath:     configPath,
+		ClaudeCodeConfigPath: claudeCodeConfigPath,
 	})
 	if err != nil {
 		return err
@@ -522,6 +533,12 @@ func (a cliApp) cmdDoctor(args []string) error {
 	fmt.Fprintf(a.stdout, "claude config: %s [%s]\n", report.ClaudeConfig.Path, report.ClaudeConfig.Status)
 	if report.ClaudeConfig.Message != "" {
 		fmt.Fprintf(a.stdout, "claude detail: %s\n", report.ClaudeConfig.Message)
+	}
+	if report.ClaudeCodeConfig.Status != "" && report.ClaudeCodeConfig.Status != doctor.StatusSkipped {
+		fmt.Fprintf(a.stdout, "claude-code config: %s [%s]\n", report.ClaudeCodeConfig.Path, report.ClaudeCodeConfig.Status)
+		if report.ClaudeCodeConfig.Message != "" {
+			fmt.Fprintf(a.stdout, "claude-code detail: %s\n", report.ClaudeCodeConfig.Message)
+		}
 	}
 
 	if len(report.ManifestErrors) > 0 {
@@ -576,7 +593,9 @@ func (a cliApp) cmdStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var configPath string
+	var claudeCodeConfigPath string
 	fs.StringVar(&configPath, "config-path", "", "Override Claude Desktop config path")
+	fs.StringVar(&claudeCodeConfigPath, "claude-code-config-path", "", "Override Claude Code config path")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printStatusHelp(a.stdout)
@@ -589,7 +608,8 @@ func (a cliApp) cmdStatus(args []string) error {
 	}
 
 	report, err := doctor.Run(a.store, doctor.Options{
-		ClaudeConfigPath: configPath,
+		ClaudeConfigPath:     configPath,
+		ClaudeCodeConfigPath: claudeCodeConfigPath,
 	})
 	if err != nil {
 		return err
@@ -605,6 +625,9 @@ func (a cliApp) cmdStatus(args []string) error {
 		report.Summary.Skipped,
 	)
 	fmt.Fprintf(a.stdout, "claude-config: %s\n", report.ClaudeConfig.Status)
+	if report.ClaudeCodeConfig.Status != "" && report.ClaudeCodeConfig.Status != doctor.StatusSkipped {
+		fmt.Fprintf(a.stdout, "claude-code-config: %s\n", report.ClaudeCodeConfig.Status)
+	}
 	if len(report.ManifestErrors) > 0 {
 		fmt.Fprintf(a.stdout, "manifest-errors: %d\n", len(report.ManifestErrors))
 	}
@@ -750,11 +773,11 @@ func parseEnvPairs(pairs []string) (map[string]string, error) {
 	return env, nil
 }
 
-func filterSyncableClaudeManifests(manifests []registry.Manifest) ([]registry.Manifest, []string) {
+func filterSyncableManifests(manifests []registry.Manifest, target string) ([]registry.Manifest, []string) {
 	out := make([]registry.Manifest, 0, len(manifests))
 	var skipped []string
 	for _, manifest := range manifests {
-		if !manifest.Enabled || !hasClaudeTarget(manifest.Clients) {
+		if !manifest.Enabled || !hasClientTarget(manifest.Clients, target) {
 			out = append(out, manifest)
 			continue
 		}
@@ -768,9 +791,28 @@ func filterSyncableClaudeManifests(manifests []registry.Manifest) ([]registry.Ma
 	return out, skipped
 }
 
-func hasClaudeTarget(clients []string) bool {
+func hasClientTarget(clients []string, target string) bool {
 	for _, client := range clients {
-		if strings.EqualFold(strings.TrimSpace(client), claude.Target) {
+		if strings.EqualFold(strings.TrimSpace(client), target) {
+			return true
+		}
+	}
+	return false
+}
+
+func syncTargetsForClients(clients []string) []string {
+	targets := make([]string, 0, len(supportedSyncTargets))
+	for _, target := range supportedSyncTargets {
+		if hasClientTarget(clients, target) {
+			targets = append(targets, target)
+		}
+	}
+	return targets
+}
+
+func isSupportedSyncTarget(target string) bool {
+	for _, supported := range supportedSyncTargets {
+		if target == supported {
 			return true
 		}
 	}
@@ -917,6 +959,32 @@ func formatNameList(names []string) string {
 	return strings.Join(names, ",")
 }
 
+func printSyncSummary(stdout, stderr io.Writer, target, configPath string, dryRun bool, added, updated, removed, unchanged, skipped []string) {
+	mode := "applied"
+	if dryRun {
+		mode = "dry-run"
+	}
+
+	fmt.Fprintf(stdout, "sync target: %s\n", target)
+	fmt.Fprintf(stdout, "config path: %s\n", configPath)
+	fmt.Fprintf(stdout, "mode: %s\n", mode)
+	fmt.Fprintf(stdout, "added: %s\n", formatNameList(added))
+	fmt.Fprintf(stdout, "updated: %s\n", formatNameList(updated))
+	fmt.Fprintf(stdout, "removed: %s\n", formatNameList(removed))
+	if len(skipped) > 0 {
+		fmt.Fprintf(stdout, "skipped: %s\n", formatNameList(skipped))
+		for _, name := range skipped {
+			fmt.Fprintf(stderr, "warning: skipped %s because command path is not an executable file\n", name)
+		}
+	}
+	if len(unchanged) > 0 {
+		fmt.Fprintf(stdout, "unchanged: %s\n", formatNameList(unchanged))
+	}
+	if len(added)+len(updated)+len(removed) == 0 {
+		fmt.Fprintln(stdout, "no changes")
+	}
+}
+
 func isHelpToken(value string) bool {
 	return value == "--help" || value == "-h"
 }
@@ -984,11 +1052,11 @@ func printInstallHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --description <text>       Server description")
 	fmt.Fprintln(out, "  --disabled                 Add server in disabled state")
 	fmt.Fprintln(out, "  --skip-install             Skip package installation")
-	fmt.Fprintln(out, "  --no-sync                  Skip automatic claude-desktop sync")
-	fmt.Fprintln(out, "  --config-path <path>       Override Claude config path for sync")
+	fmt.Fprintln(out, "  --no-sync                  Skip automatic sync after install")
+	fmt.Fprintln(out, "  --config-path <path>       Override target config path for sync (single target only)")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Install a local MCP package, register it in Madari, and sync it to Claude Desktop.")
+	fmt.Fprintln(out, "  Install a local MCP package, register it in Madari, and sync it to configured clients.")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Examples:")
 	fmt.Fprintln(out, "  madari install stewreads-mcp")
@@ -1027,33 +1095,36 @@ func printEnableDisableHelp(command string, out io.Writer) {
 
 func printSyncHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  madari sync claude-desktop [--dry-run] [--config-path <path>]")
+	fmt.Fprintln(out, "  madari sync <client> [--dry-run] [--config-path <path>]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
 	fmt.Fprintln(out, "  --dry-run                  Preview changes without writing files")
-	fmt.Fprintln(out, "  --config-path <path>       Override Claude config path")
+	fmt.Fprintln(out, "  --config-path <path>       Override target client config path")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Sync enabled claude-desktop servers from Madari registry into Claude config.")
+	fmt.Fprintln(out, "  Sync enabled servers from Madari registry into a target client config.")
+	fmt.Fprintln(out, "  Supported clients: claude-desktop, claude-code.")
 }
 
 func printDoctorHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  madari doctor [--config-path <path>]")
+	fmt.Fprintln(out, "  madari doctor [--config-path <path>] [--claude-code-config-path <path>]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
-	fmt.Fprintln(out, "  --config-path <path>       Override Claude config path for diagnostics")
+	fmt.Fprintln(out, "  --config-path <path>                Override Claude Desktop config path for diagnostics")
+	fmt.Fprintln(out, "  --claude-code-config-path <path>    Override Claude Code config path for diagnostics")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Validate server manifests, command paths, required env keys, and Claude config health.")
+	fmt.Fprintln(out, "  Validate server manifests, command paths, required env keys, and client config health.")
 }
 
 func printStatusHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  madari status [--config-path <path>]")
+	fmt.Fprintln(out, "  madari status [--config-path <path>] [--claude-code-config-path <path>]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
-	fmt.Fprintln(out, "  --config-path <path>       Override Claude config path for status checks")
+	fmt.Fprintln(out, "  --config-path <path>                Override Claude Desktop config path for status checks")
+	fmt.Fprintln(out, "  --claude-code-config-path <path>    Override Claude Code config path for status checks")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Show a concise readiness summary. Use `madari doctor` for full details.")
@@ -1109,6 +1180,7 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  madari list")
 	fmt.Fprintln(out, "  madari disable stewreads")
 	fmt.Fprintln(out, "  madari sync claude-desktop --dry-run")
+	fmt.Fprintln(out, "  madari sync claude-code --dry-run")
 	fmt.Fprintln(out, "  madari export --file madari-snapshot.json")
 	fmt.Fprintln(out, "  madari import --file madari-snapshot.json")
 	fmt.Fprintln(out, "  madari import --file madari-snapshot.json --apply")

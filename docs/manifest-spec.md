@@ -15,6 +15,11 @@ Each managed server is stored as a TOML document.
 - `clients` (array of strings, required): client IDs.
 - `description` (string, optional): friendly description.
 
+Supported client IDs:
+
+- `claude-desktop`
+- `claude-code`
+
 ### `[env]`
 
 Key/value static environment variables.

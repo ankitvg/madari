@@ -25,21 +25,42 @@ go install github.com/ankitvg/madari/cmd/madari@latest
 - `madari remove <name>`
 - `madari enable <name>`
 - `madari disable <name>`
-- `madari sync claude-desktop [--dry-run] [--config-path <path>]`
-- `madari doctor [--config-path <path>]`
-- `madari status [--config-path <path>]`
+- `madari sync <client> [--dry-run] [--config-path <path>]`
+- `madari doctor [--config-path <path>] [--claude-code-config-path <path>]`
+- `madari status [--config-path <path>] [--claude-code-config-path <path>]`
 - `madari export [--file <path>]`
 - `madari import --file <path> [--apply]`
 
 Notes:
 
-- `install` runs package-manager install (`uv` by default, or `npm` via `--manager npm`), auto-registers the server, and syncs to Claude in one command.
+- `install` runs package-manager install (`uv` by default, or `npm` via `--manager npm`), auto-registers the server, and syncs to configured clients in one command.
 - `install` requires the selected package manager in PATH unless you use `--skip-install` and pass `--command`.
 - `install --manager npm` requires `--command` because npm package names can differ from executable names.
 - `add` resolves `--command` to an absolute executable path and stores that path in the manifest.
 - `sync` skips servers with missing/non-executable command paths and continues syncing others.
+- Supported sync clients: `claude-desktop` and `claude-code`.
+- Default sync config paths:
+  - `claude-desktop`: platform-specific Claude Desktop config path.
+  - `claude-code`: `<current working directory>/.mcp.json`.
+- `install --config-path` can only be used when exactly one sync target is selected.
 - `export` writes a versioned JSON snapshot for backup/sharing (stdout by default).
 - `import` is dry-run by default and only adds/updates listed servers (`--apply` persists).
+
+Claude Code project config shape (`.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "stewreads": {
+      "command": "/Users/me/.local/bin/stewreads-mcp",
+      "args": ["--stdio"],
+      "env": {
+        "STEWREADS_CONFIG_PATH": "~/.config/stewreads/config.toml"
+      }
+    }
+  }
+}
+```
 
 Example:
 
@@ -47,9 +68,11 @@ Example:
 madari install stewreads-mcp
 madari install @modelcontextprotocol/server-sequential-thinking --manager npm --command mcp-server-sequential-thinking
 madari add stewreads --command /Users/me/.local/bin/stewreads-mcp --client claude-desktop
+madari add stewreads --command /Users/me/.local/bin/stewreads-mcp --client claude-code
 madari list
 madari status
 madari sync claude-desktop --dry-run
+madari sync claude-code --dry-run
 madari export --file madari-snapshot.json
 madari import --file madari-snapshot.json
 madari import --file madari-snapshot.json --apply
@@ -77,7 +100,7 @@ go test ./...
 - Backup + atomic write on every sync; skips invalid entries rather than aborting
 - `doctor` and `status` for diagnostics
 - Supports `uv` and `npm` package manager installs, plus manual `add` for any runtime/framework
-- macOS, Linux, and Windows; Claude Desktop is the current sync target
+- macOS, Linux, and Windows; supports Claude Desktop and Claude Code sync targets
 
 ## Principles
 

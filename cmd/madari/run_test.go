@@ -328,7 +328,7 @@ func TestRunHelpSubcommandOutput(t *testing.T) {
 	}{
 		{name: "help install", args: []string{"help", "install"}, contains: "madari install <package>"},
 		{name: "help add", args: []string{"help", "add"}, contains: "madari add <name>"},
-		{name: "help sync", args: []string{"help", "sync"}, contains: "madari sync claude-desktop"},
+		{name: "help sync", args: []string{"help", "sync"}, contains: "madari sync <client>"},
 		{name: "help list", args: []string{"help", "list"}, contains: "madari list"},
 		{name: "help doctor", args: []string{"help", "doctor"}, contains: "madari doctor"},
 		{name: "help status", args: []string{"help", "status"}, contains: "madari status"},
@@ -374,7 +374,7 @@ func TestRunWithStoreSubcommandHelpFlags(t *testing.T) {
 	if result := runCmd(store, "install", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari install <package>") {
 		t.Fatalf("expected install --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
 	}
-	if result := runCmd(store, "sync", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari sync claude-desktop") {
+	if result := runCmd(store, "sync", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari sync <client>") {
 		t.Fatalf("expected sync --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
 	}
 	if result := runCmd(store, "list", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari list") {
@@ -647,6 +647,39 @@ func TestRunWithStoreInstallAutoSyncByDefault(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreInstallAutoSyncClaudeCode(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	configPath := filepath.Join(t.TempDir(), ".mcp.json")
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{"weather":{"command":"uv"}}}`), 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	result := runCmd(
+		store,
+		"install", "stewreads-mcp",
+		"--skip-install",
+		"--command", commandPath,
+		"--client", "claude-code",
+		"--config-path", configPath,
+	)
+	if result.code != 0 {
+		t.Fatalf("install auto-sync failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "sync target: claude-code") {
+		t.Fatalf("expected claude-code sync output, got: %s", result.stdout)
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after install sync: %v", err)
+	}
+	if !strings.Contains(string(after), "\"stewreads\"") {
+		t.Fatalf("expected synced config to include stewreads server, got: %s", string(after))
+	}
+}
+
 func TestRunWithStoreSyncDryRun(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
@@ -714,6 +747,43 @@ func TestRunWithStoreSyncApply(t *testing.T) {
 	}
 	if !strings.Contains(result.stdout, "mode: applied") {
 		t.Fatalf("expected applied mode output, got: %s", result.stdout)
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after sync: %v", err)
+	}
+	if !strings.Contains(string(after), "\"stewreads\"") {
+		t.Fatalf("expected synced config to include stewreads server, got: %s", string(after))
+	}
+	if !strings.Contains(string(after), "\"weather\"") {
+		t.Fatalf("expected synced config to preserve existing weather server, got: %s", string(after))
+	}
+}
+
+func TestRunWithStoreSyncClaudeCodeApply(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	addResult := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-code")
+	if addResult.code != 0 {
+		t.Fatalf("setup add failed: %s", addResult.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), ".mcp.json")
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{"weather":{"command":"uv"}}}`), 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	result := runCmd(store, "sync", "claude-code", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("sync apply failed with stderr: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "mode: applied") {
+		t.Fatalf("expected applied mode output, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "sync target: claude-code") {
+		t.Fatalf("expected claude-code target output, got: %s", result.stdout)
 	}
 
 	after, err := os.ReadFile(configPath)
@@ -942,6 +1012,40 @@ func TestRunWithStoreDoctorReturnsErrorForInvalidConfig(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreDoctorReturnsErrorForInvalidClaudeCodeConfig(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	desktopConfigPath := filepath.Join(t.TempDir(), "claude_desktop_config.json")
+	if err := os.WriteFile(desktopConfigPath, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
+		t.Fatalf("write desktop config fixture: %v", err)
+	}
+	claudeCodeConfigPath := filepath.Join(t.TempDir(), ".mcp.json")
+	if err := os.WriteFile(claudeCodeConfigPath, []byte("{broken"), 0o644); err != nil {
+		t.Fatalf("write invalid Claude Code config fixture: %v", err)
+	}
+
+	result := runCmd(
+		store,
+		"doctor",
+		"--config-path", desktopConfigPath,
+		"--claude-code-config-path", claudeCodeConfigPath,
+	)
+	if result.code == 0 {
+		t.Fatalf("doctor expected failure for invalid Claude Code config")
+	}
+	if !strings.Contains(result.stderr, "doctor found") {
+		t.Fatalf("expected doctor error summary in stderr, got: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "claude-code config:") {
+		t.Fatalf("expected doctor output to include claude-code config details, got: %s", result.stdout)
+	}
+}
+
 func TestRunWithStoreStatusHealthy(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
@@ -986,6 +1090,37 @@ func TestRunWithStoreStatusReturnsErrorForInvalidConfig(t *testing.T) {
 	}
 	if !strings.Contains(result.stderr, "status found") {
 		t.Fatalf("expected status error summary in stderr, got: %s", result.stderr)
+	}
+}
+
+func TestRunWithStoreStatusShowsClaudeCodeConfigWhenTargetPresent(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	desktopConfigPath := filepath.Join(t.TempDir(), "claude_desktop_config.json")
+	if err := os.WriteFile(desktopConfigPath, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
+		t.Fatalf("write desktop config fixture: %v", err)
+	}
+	claudeCodeConfigPath := filepath.Join(t.TempDir(), ".mcp.json")
+	if err := os.WriteFile(claudeCodeConfigPath, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
+		t.Fatalf("write Claude Code config fixture: %v", err)
+	}
+
+	result := runCmd(
+		store,
+		"status",
+		"--config-path", desktopConfigPath,
+		"--claude-code-config-path", claudeCodeConfigPath,
+	)
+	if result.code != 0 {
+		t.Fatalf("status expected success, got code=%d stderr=%s stdout=%s", result.code, result.stderr, result.stdout)
+	}
+	if !strings.Contains(result.stdout, "claude-code-config: ready") {
+		t.Fatalf("expected status output to include claude-code-config readiness, got: %s", result.stdout)
 	}
 }
 
