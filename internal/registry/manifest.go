@@ -31,6 +31,7 @@ type RequiredEnv struct {
 // HasClient reports whether target appears in the manifest's client list.
 // Comparison is case-insensitive and trims surrounding whitespace.
 func (m Manifest) HasClient(target string) bool {
+	target = strings.TrimSpace(target)
 	for _, c := range m.Clients {
 		if strings.EqualFold(strings.TrimSpace(c), target) {
 			return true

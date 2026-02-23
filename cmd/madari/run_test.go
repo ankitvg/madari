@@ -1128,6 +1128,9 @@ func TestRunWithStoreStatusHealthy(t *testing.T) {
 	if !strings.Contains(result.stdout, "hint: run `madari doctor`") {
 		t.Fatalf("expected doctor hint, got: %s", result.stdout)
 	}
+	if !strings.Contains(result.stdout, "`madari clients`") {
+		t.Fatalf("expected clients hint, got: %s", result.stdout)
+	}
 }
 
 func TestRunWithStoreStatusReturnsErrorForInvalidConfig(t *testing.T) {
