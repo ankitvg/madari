@@ -114,6 +114,8 @@ go test ./...
 
 - `docs/architecture.md`
 - `docs/manifest-spec.md`
+- `docs/cli-reference.md`
+- `docs/troubleshooting.md`
 
 ## License
 
