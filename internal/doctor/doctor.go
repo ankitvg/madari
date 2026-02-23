@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ankitvg/madari/internal/clients/claude"
+	claudedesktop "github.com/ankitvg/madari/internal/clients/claude-desktop"
 	"github.com/ankitvg/madari/internal/clients/claudecode"
 	"github.com/ankitvg/madari/internal/registry"
 )
@@ -200,7 +200,7 @@ func resolveClaudePath(path string) (string, error) {
 		}
 		return filepath.Clean(resolved), nil
 	}
-	return claude.DefaultDesktopConfigPath()
+	return claudedesktop.DefaultDesktopConfigPath()
 }
 
 func resolveClaudeCodePath(path string) (string, error) {
@@ -305,7 +305,7 @@ func loadManifests(serversDir string) ([]registry.Manifest, []ManifestError, err
 }
 
 func hasSyncTarget(clients []string) bool {
-	return hasTargetClient(clients, claude.Target) || hasTargetClient(clients, claudecode.Target)
+	return hasTargetClient(clients, claudedesktop.Target) || hasTargetClient(clients, claudecode.Target)
 }
 
 func hasTargetClient(clients []string, target string) bool {
