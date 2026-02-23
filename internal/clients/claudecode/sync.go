@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ankitvg/madari/internal/clients"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -18,29 +19,13 @@ const (
 	Target = "claude-code"
 )
 
-var ErrConflict = errors.New("sync conflict with unmanaged server")
+var ErrConflict = clients.ErrConflict
 
 // SyncOptions configures sync behavior.
-type SyncOptions struct {
-	ConfigPath string
-	StatePath  string
-	DryRun     bool
-}
+type SyncOptions = clients.SyncOptions
 
 // SyncResult captures the computed or applied mutation plan.
-type SyncResult struct {
-	ConfigPath string
-	DryRun     bool
-	Added      []string
-	Updated    []string
-	Removed    []string
-	Unchanged  []string
-}
-
-// HasChanges reports whether sync produces any mutation.
-func (r SyncResult) HasChanges() bool {
-	return len(r.Added)+len(r.Updated)+len(r.Removed) > 0
-}
+type SyncResult = clients.SyncResult
 
 // Sync synchronizes enabled Claude Code-targeted manifests into the Claude Code config file.
 func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {

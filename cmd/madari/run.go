@@ -21,9 +21,18 @@ import (
 
 const version = "0.0.0-dev"
 
-var supportedSyncTargets = []string{
-	claudedesktop.Target,
-	claudecode.Target,
+var syncAdapters = map[string]clients.ClientAdapter{
+	claudedesktop.Target: claudedesktop.Adapter{},
+	claudecode.Target:    claudecode.Adapter{},
+}
+
+func supportedSyncTargets() []string {
+	targets := make([]string, 0, len(syncAdapters))
+	for target := range syncAdapters {
+		targets = append(targets, target)
+	}
+	sort.Strings(targets)
+	return targets
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
@@ -460,8 +469,9 @@ func (a cliApp) cmdSync(args []string) error {
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	if !isSupportedSyncTarget(target) {
-		return fmt.Errorf("unsupported sync target %q (supported: %s)", target, strings.Join(supportedSyncTargets, ", "))
+	adapter, ok := syncAdapters[target]
+	if !ok {
+		return fmt.Errorf("unsupported sync target %q (supported: %s)", target, strings.Join(supportedSyncTargets(), ", "))
 	}
 
 	manifests, err := a.store.List()
@@ -471,32 +481,16 @@ func (a cliApp) cmdSync(args []string) error {
 	syncable, skipped := filterSyncableManifests(manifests, target)
 
 	statePath := filepath.Join(filepath.Dir(a.store.ServersDir()), "state", target+"-managed.json")
-	switch target {
-	case claudedesktop.Target:
-		result, err := claudedesktop.Adapter{}.Sync(syncable, clients.SyncOptions{
-			ConfigPath: configPath,
-			StatePath:  statePath,
-			DryRun:     dryRun,
-		})
-		if err != nil {
-			return err
-		}
-		printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, skipped)
-		return nil
-	case claudecode.Target:
-		result, err := claudecode.Sync(syncable, claudecode.SyncOptions{
-			ConfigPath: configPath,
-			StatePath:  statePath,
-			DryRun:     dryRun,
-		})
-		if err != nil {
-			return err
-		}
-		printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, skipped)
-		return nil
-	default:
-		return fmt.Errorf("unsupported sync target %q (supported: %s)", target, strings.Join(supportedSyncTargets, ", "))
+	result, err := adapter.Sync(syncable, clients.SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+		DryRun:     dryRun,
+	})
+	if err != nil {
+		return err
 	}
+	printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, skipped)
+	return nil
 }
 
 func (a cliApp) cmdDoctor(args []string) error {
@@ -802,22 +796,14 @@ func hasClientTarget(clients []string, target string) bool {
 }
 
 func syncTargetsForClients(clients []string) []string {
-	targets := make([]string, 0, len(supportedSyncTargets))
-	for _, target := range supportedSyncTargets {
+	supported := supportedSyncTargets()
+	targets := make([]string, 0, len(supported))
+	for _, target := range supported {
 		if hasClientTarget(clients, target) {
 			targets = append(targets, target)
 		}
 	}
 	return targets
-}
-
-func isSupportedSyncTarget(target string) bool {
-	for _, supported := range supportedSyncTargets {
-		if target == supported {
-			return true
-		}
-	}
-	return false
 }
 
 func resolveCommandPath(command string) (string, error) {
@@ -1104,7 +1090,7 @@ func printSyncHelp(out io.Writer) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Sync enabled servers from Madari registry into a target client config.")
-	fmt.Fprintln(out, "  Supported clients: claude-desktop, claude-code.")
+	fmt.Fprintf(out, "  Supported clients: %s.\n", strings.Join(supportedSyncTargets(), ", "))
 }
 
 func printDoctorHelp(out io.Writer) {
