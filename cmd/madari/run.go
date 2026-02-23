@@ -501,10 +501,8 @@ func (a cliApp) cmdDoctor(args []string) error {
 
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	var configPath string
-	var claudeCodeConfigPath string
-	fs.StringVar(&configPath, "config-path", "", "Override Claude Desktop config path")
-	fs.StringVar(&claudeCodeConfigPath, "claude-code-config-path", "", "Override Claude Code config path")
+	var clientConfigs stringList
+	fs.Var(&clientConfigs, "client-config", "Override config path for a client: target=path (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printDoctorHelp(a.stdout)
@@ -516,23 +514,28 @@ func (a cliApp) cmdDoctor(args []string) error {
 		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
 	}
 
+	configPathOverrides, err := parseClientConfigOverrides(clientConfigs)
+	if err != nil {
+		return err
+	}
+
+	adapters := sortedAdapters()
 	report, err := doctor.Run(a.store, doctor.Options{
-		ClaudeConfigPath:     configPath,
-		ClaudeCodeConfigPath: claudeCodeConfigPath,
+		Adapters:            adapters,
+		ConfigPathOverrides: configPathOverrides,
 	})
 	if err != nil {
 		return err
 	}
 
 	fmt.Fprintf(a.stdout, "servers directory: %s\n", report.ServersDir)
-	fmt.Fprintf(a.stdout, "claude config: %s [%s]\n", report.ClaudeConfig.Path, report.ClaudeConfig.Status)
-	if report.ClaudeConfig.Message != "" {
-		fmt.Fprintf(a.stdout, "claude detail: %s\n", report.ClaudeConfig.Message)
-	}
-	if report.ClaudeCodeConfig.Status != "" && report.ClaudeCodeConfig.Status != doctor.StatusSkipped {
-		fmt.Fprintf(a.stdout, "claude-code config: %s [%s]\n", report.ClaudeCodeConfig.Path, report.ClaudeCodeConfig.Status)
-		if report.ClaudeCodeConfig.Message != "" {
-			fmt.Fprintf(a.stdout, "claude-code detail: %s\n", report.ClaudeCodeConfig.Message)
+	for _, cc := range report.ClientConfigs {
+		if cc.Status == doctor.StatusSkipped {
+			continue
+		}
+		fmt.Fprintf(a.stdout, "%s config: %s [%s]\n", cc.Target, cc.Path, cc.Status)
+		if cc.Message != "" {
+			fmt.Fprintf(a.stdout, "%s detail: %s\n", cc.Target, cc.Message)
 		}
 	}
 
@@ -587,10 +590,8 @@ func (a cliApp) cmdStatus(args []string) error {
 
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	var configPath string
-	var claudeCodeConfigPath string
-	fs.StringVar(&configPath, "config-path", "", "Override Claude Desktop config path")
-	fs.StringVar(&claudeCodeConfigPath, "claude-code-config-path", "", "Override Claude Code config path")
+	var clientConfigs stringList
+	fs.Var(&clientConfigs, "client-config", "Override config path for a client: target=path (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printStatusHelp(a.stdout)
@@ -602,9 +603,15 @@ func (a cliApp) cmdStatus(args []string) error {
 		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
 	}
 
+	configPathOverrides, err := parseClientConfigOverrides(clientConfigs)
+	if err != nil {
+		return err
+	}
+
+	adapters := sortedAdapters()
 	report, err := doctor.Run(a.store, doctor.Options{
-		ClaudeConfigPath:     configPath,
-		ClaudeCodeConfigPath: claudeCodeConfigPath,
+		Adapters:            adapters,
+		ConfigPathOverrides: configPathOverrides,
 	})
 	if err != nil {
 		return err
@@ -619,9 +626,10 @@ func (a cliApp) cmdStatus(args []string) error {
 		report.Summary.Error,
 		report.Summary.Skipped,
 	)
-	fmt.Fprintf(a.stdout, "claude-config: %s\n", report.ClaudeConfig.Status)
-	if report.ClaudeCodeConfig.Status != "" && report.ClaudeCodeConfig.Status != doctor.StatusSkipped {
-		fmt.Fprintf(a.stdout, "claude-code-config: %s\n", report.ClaudeCodeConfig.Status)
+	for _, cc := range report.ClientConfigs {
+		if cc.Status != doctor.StatusSkipped {
+			fmt.Fprintf(a.stdout, "%s-config: %s\n", cc.Target, cc.Status)
+		}
 	}
 	if len(report.ManifestErrors) > 0 {
 		fmt.Fprintf(a.stdout, "manifest-errors: %d\n", len(report.ManifestErrors))
@@ -751,6 +759,34 @@ func (s *stringList) String() string {
 func (s *stringList) Set(value string) error {
 	*s = append(*s, value)
 	return nil
+}
+
+func sortedAdapters() []clients.ClientAdapter {
+	targets := supportedSyncTargets()
+	adapters := make([]clients.ClientAdapter, 0, len(targets))
+	for _, t := range targets {
+		adapters = append(adapters, syncAdapters[t])
+	}
+	return adapters
+}
+
+func parseClientConfigOverrides(pairs []string) (map[string]string, error) {
+	overrides := map[string]string{}
+	for _, pair := range pairs {
+		target, path, ok := strings.Cut(pair, "=")
+		target = strings.TrimSpace(target)
+		if !ok || target == "" {
+			return nil, fmt.Errorf("invalid client config override %q, expected target=path", pair)
+		}
+		if _, known := syncAdapters[target]; !known {
+			return nil, fmt.Errorf("unknown client config target %q (supported: %s)", target, strings.Join(supportedSyncTargets(), ", "))
+		}
+		if _, exists := overrides[target]; exists {
+			return nil, fmt.Errorf("duplicate client config override for target %q", target)
+		}
+		overrides[target] = path
+	}
+	return overrides, nil
 }
 
 func parseEnvPairs(pairs []string) (map[string]string, error) {
@@ -1095,23 +1131,26 @@ func printSyncHelp(out io.Writer) {
 
 func printDoctorHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  madari doctor [--config-path <path>] [--claude-code-config-path <path>]")
+	fmt.Fprintln(out, "  madari doctor [--client-config target=path ...]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
-	fmt.Fprintln(out, "  --config-path <path>                Override Claude Desktop config path for diagnostics")
-	fmt.Fprintln(out, "  --claude-code-config-path <path>    Override Claude Code config path for diagnostics")
+	fmt.Fprintln(out, "  --client-config target=path    Override config path for a client (repeatable)")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Validate server manifests, command paths, required env keys, and client config health.")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Examples:")
+	fmt.Fprintln(out, "  madari doctor")
+	fmt.Fprintln(out, "  madari doctor --client-config claude-desktop=/tmp/test.json")
+	fmt.Fprintln(out, "  madari doctor --client-config claude-desktop=/p1 --client-config claude-code=/p2")
 }
 
 func printStatusHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  madari status [--config-path <path>] [--claude-code-config-path <path>]")
+	fmt.Fprintln(out, "  madari status [--client-config target=path ...]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
-	fmt.Fprintln(out, "  --config-path <path>                Override Claude Desktop config path for status checks")
-	fmt.Fprintln(out, "  --claude-code-config-path <path>    Override Claude Code config path for status checks")
+	fmt.Fprintln(out, "  --client-config target=path    Override config path for a client (repeatable)")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Show a concise readiness summary. Use `madari doctor` for full details.")

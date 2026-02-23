@@ -6,8 +6,30 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/ankitvg/madari/internal/clients"
 	"github.com/ankitvg/madari/internal/registry"
 )
+
+// testAdapter is a minimal ClientAdapter for use in doctor tests.
+type testAdapter struct {
+	target     string
+	configPath string
+}
+
+func (a testAdapter) Target() string                    { return a.target }
+func (a testAdapter) DefaultConfigPath() (string, error) { return a.configPath, nil }
+func (a testAdapter) Sync(_ []registry.Manifest, _ clients.SyncOptions) (clients.SyncResult, error) {
+	return clients.SyncResult{}, nil
+}
+
+func findClientConfig(report Report, target string) (ClientConfigReport, bool) {
+	for _, cc := range report.ClientConfigs {
+		if cc.Target == target {
+			return cc, true
+		}
+	}
+	return ClientConfigReport{}, false
+}
 
 func TestRunHealthyServer(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -31,7 +53,8 @@ func TestRunHealthyServer(t *testing.T) {
 		t.Fatalf("write config fixture: %v", err)
 	}
 
-	report, err := Run(store, Options{ClaudeConfigPath: configPath})
+	adapter := testAdapter{target: "claude-desktop", configPath: configPath}
+	report, err := Run(store, Options{Adapters: []clients.ClientAdapter{adapter}})
 	if err != nil {
 		t.Fatalf("doctor run failed: %v", err)
 	}
@@ -42,8 +65,12 @@ func TestRunHealthyServer(t *testing.T) {
 	if len(report.Servers) != 1 || report.Servers[0].Status != StatusReady {
 		t.Fatalf("unexpected server report: %+v", report.Servers)
 	}
-	if report.ClaudeConfig.Status != StatusReady {
-		t.Fatalf("expected ready claude config status, got: %+v", report.ClaudeConfig)
+	cc, ok := findClientConfig(report, "claude-desktop")
+	if !ok {
+		t.Fatalf("expected claude-desktop client config report, got: %+v", report.ClientConfigs)
+	}
+	if cc.Status != StatusReady {
+		t.Fatalf("expected ready claude-desktop config status, got: %+v", cc)
 	}
 }
 
@@ -72,8 +99,9 @@ func TestRunMissingRequiredEnvWarns(t *testing.T) {
 		t.Fatalf("write config fixture: %v", err)
 	}
 
+	adapter := testAdapter{target: "claude-desktop", configPath: configPath}
 	report, err := Run(store, Options{
-		ClaudeConfigPath: configPath,
+		Adapters: []clients.ClientAdapter{adapter},
 		EnvLookup: func(string) string {
 			return ""
 		},
@@ -101,13 +129,19 @@ func TestRunCapturesManifestAndConfigErrors(t *testing.T) {
 	if err := os.WriteFile(badManifestPath, []byte("name = \"broken\"\nunknown = 1\n"), 0o644); err != nil {
 		t.Fatalf("write bad manifest: %v", err)
 	}
+	// A valid manifest targeting the adapter is required so the config inspection runs.
+	validManifestPath := filepath.Join(store.ServersDir(), "ok.toml")
+	if err := os.WriteFile(validManifestPath, []byte("name = \"ok\"\ncommand = \"/nonexistent\"\nenabled = true\nclients = [\"claude-desktop\"]\n"), 0o644); err != nil {
+		t.Fatalf("write valid manifest: %v", err)
+	}
 
 	configPath := filepath.Join(tmp, "claude_desktop_config.json")
 	if err := os.WriteFile(configPath, []byte("{invalid-json"), 0o644); err != nil {
 		t.Fatalf("write invalid config: %v", err)
 	}
 
-	report, err := Run(store, Options{ClaudeConfigPath: configPath})
+	adapter := testAdapter{target: "claude-desktop", configPath: configPath}
+	report, err := Run(store, Options{Adapters: []clients.ClientAdapter{adapter}})
 	if err != nil {
 		t.Fatalf("doctor run failed: %v", err)
 	}
@@ -115,8 +149,12 @@ func TestRunCapturesManifestAndConfigErrors(t *testing.T) {
 	if len(report.ManifestErrors) != 1 {
 		t.Fatalf("expected one manifest error, got: %+v", report.ManifestErrors)
 	}
-	if report.ClaudeConfig.Status != StatusError {
-		t.Fatalf("expected config error status, got: %+v", report.ClaudeConfig)
+	cc, ok := findClientConfig(report, "claude-desktop")
+	if !ok {
+		t.Fatalf("expected claude-desktop client config report, got: %+v", report.ClientConfigs)
+	}
+	if cc.Status != StatusError {
+		t.Fatalf("expected config error status, got: %+v", cc)
 	}
 	if report.Summary.Error < 2 {
 		t.Fatalf("expected at least two errors (manifest + config), got: %+v", report.Summary)
