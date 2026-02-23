@@ -164,7 +164,7 @@ func inspectServer(manifest registry.Manifest, envLookup func(string) string, ad
 		Issues:  []Issue{},
 	}
 
-	if !manifest.Enabled || !hasSyncTarget(manifest.Clients, adapters) {
+	if !manifest.Enabled || !hasSyncTarget(manifest, adapters) {
 		return report
 	}
 
@@ -295,18 +295,9 @@ func loadManifests(serversDir string) ([]registry.Manifest, []ManifestError, err
 	return manifests, manifestErrors, nil
 }
 
-func hasSyncTarget(clientIDs []string, adapters []clients.ClientAdapter) bool {
+func hasSyncTarget(manifest registry.Manifest, adapters []clients.ClientAdapter) bool {
 	for _, adapter := range adapters {
-		if hasTargetClient(clientIDs, adapter.Target()) {
-			return true
-		}
-	}
-	return false
-}
-
-func hasTargetClient(clients []string, target string) bool {
-	for _, client := range clients {
-		if strings.EqualFold(strings.TrimSpace(client), target) {
+		if manifest.HasClient(adapter.Target()) {
 			return true
 		}
 	}
@@ -315,7 +306,7 @@ func hasTargetClient(clients []string, target string) bool {
 
 func hasTargetInManifests(manifests []registry.Manifest, target string) bool {
 	for _, manifest := range manifests {
-		if hasTargetClient(manifest.Clients, target) {
+		if manifest.HasClient(target) {
 			return true
 		}
 	}

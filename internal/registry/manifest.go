@@ -28,6 +28,17 @@ type RequiredEnv struct {
 	Keys []string `toml:"keys,omitempty" json:"keys,omitempty"`
 }
 
+// HasClient reports whether target appears in the manifest's client list.
+// Comparison is case-insensitive and trims surrounding whitespace.
+func (m Manifest) HasClient(target string) bool {
+	for _, c := range m.Clients {
+		if strings.EqualFold(strings.TrimSpace(c), target) {
+			return true
+		}
+	}
+	return false
+}
+
 // Validate enforces manifest-level invariants.
 func (m Manifest) Validate() error {
 	var errs []string

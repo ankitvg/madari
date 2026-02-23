@@ -301,6 +301,8 @@ func TestRunWithStoreCommandUsageValidation(t *testing.T) {
 		{name: "sync unsupported target", args: []string{"sync", "cursor"}, expected: "unsupported sync target"},
 		{name: "sync extra positionals", args: []string{"sync", "claude-desktop", "extra"}, expected: "unexpected positional arguments"},
 		{name: "clients extra positionals", args: []string{"clients", "extra"}, expected: "unexpected positional arguments"},
+		{name: "doctor unknown client-config target", args: []string{"doctor", "--client-config", "cursor=/tmp/x"}, expected: "unknown client config target"},
+		{name: "status unknown client-config target", args: []string{"status", "--client-config", "cursor=/tmp/x"}, expected: "unknown client config target"},
 		{name: "doctor extra positionals", args: []string{"doctor", "extra"}, expected: "unexpected positional arguments"},
 		{name: "status extra positionals", args: []string{"status", "extra"}, expected: "unexpected positional arguments"},
 		{name: "export extra positionals", args: []string{"export", "extra"}, expected: "unexpected positional arguments"},

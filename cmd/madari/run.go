@@ -244,7 +244,7 @@ func (a cliApp) cmdInstall(args []string) error {
 		return nil
 	}
 
-	targets := syncTargetsForClients(manifest.Clients)
+	targets := syncTargetsForClients(manifest)
 	if len(targets) == 0 {
 		fmt.Fprintln(a.stdout, "sync skipped (no supported sync client configured)")
 		return nil
@@ -705,7 +705,7 @@ func (a cliApp) cmdStatus(args []string) error {
 	if len(report.ManifestErrors) > 0 {
 		fmt.Fprintf(a.stdout, "manifest-errors: %d\n", len(report.ManifestErrors))
 	}
-	fmt.Fprintln(a.stdout, "hint: run `madari doctor` for detailed diagnostics")
+	fmt.Fprintln(a.stdout, "hint: run `madari doctor` for detailed diagnostics, `madari clients` for client config health")
 
 	if report.Summary.Error > 0 {
 		return fmt.Errorf("status found %d error(s)", report.Summary.Error)
@@ -879,7 +879,7 @@ func filterSyncableManifests(manifests []registry.Manifest, target string) ([]re
 	out := make([]registry.Manifest, 0, len(manifests))
 	var skipped []string
 	for _, manifest := range manifests {
-		if !manifest.Enabled || !hasClientTarget(manifest.Clients, target) {
+		if !manifest.Enabled || !manifest.HasClient(target) {
 			out = append(out, manifest)
 			continue
 		}
@@ -893,20 +893,11 @@ func filterSyncableManifests(manifests []registry.Manifest, target string) ([]re
 	return out, skipped
 }
 
-func hasClientTarget(clients []string, target string) bool {
-	for _, client := range clients {
-		if strings.EqualFold(strings.TrimSpace(client), target) {
-			return true
-		}
-	}
-	return false
-}
-
-func syncTargetsForClients(clients []string) []string {
+func syncTargetsForClients(manifest registry.Manifest) []string {
 	supported := supportedSyncTargets()
 	targets := make([]string, 0, len(supported))
 	for _, target := range supported {
-		if hasClientTarget(clients, target) {
+		if manifest.HasClient(target) {
 			targets = append(targets, target)
 		}
 	}
