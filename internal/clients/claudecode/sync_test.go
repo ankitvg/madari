@@ -5,7 +5,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/ankitvg/madari/internal/clients"
@@ -190,7 +192,135 @@ func TestSyncRejectsUnmanagedNameCollision(t *testing.T) {
 	}
 }
 
-func readServers(t *testing.T, configPath string) map[string]serverConfig {
+func TestSyncApplyPreservesUnknownTopLevelBlocks(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+
+	config := []byte(`{
+  "mcpServers": {
+    "weather": {
+      "command": "uv"
+    }
+  },
+  "preferences": {
+    "sidebarMode": "chat",
+    "theme": "solarized"
+  },
+  "project": {
+    "name": "madari"
+  }
+}
+`)
+	if err := os.WriteFile(configPath, config, 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	if _, err := Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	}); err != nil {
+		t.Fatalf("sync apply failed: %v", err)
+	}
+
+	root := readRoot(t, configPath)
+
+	gotPrefs, ok := root["preferences"]
+	if !ok {
+		t.Fatalf("expected preferences block to be preserved")
+	}
+	assertJSONEqual(t, []byte(`{"sidebarMode":"chat","theme":"solarized"}`), gotPrefs)
+
+	gotProject, ok := root["project"]
+	if !ok {
+		t.Fatalf("expected project block to be preserved")
+	}
+	assertJSONEqual(t, []byte(`{"name":"madari"}`), gotProject)
+}
+
+func TestSyncApplyFailsClosedOnInvalidJSON(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+
+	invalid := []byte("{broken")
+	if err := os.WriteFile(configPath, invalid, 0o644); err != nil {
+		t.Fatalf("write invalid config fixture: %v", err)
+	}
+
+	_, err := Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err == nil {
+		t.Fatalf("expected sync apply to fail on invalid JSON")
+	}
+	if !strings.Contains(err.Error(), "parse Claude Code config JSON") {
+		t.Fatalf("expected parse error, got: %v", err)
+	}
+
+	after, readErr := os.ReadFile(configPath)
+	if readErr != nil {
+		t.Fatalf("read config after failed sync: %v", readErr)
+	}
+	if string(after) != string(invalid) {
+		t.Fatalf("expected fail-closed behavior with unchanged config")
+	}
+	if _, statErr := os.Stat(statePath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected no state file write on failure, got err=%v", statErr)
+	}
+
+	backups, globErr := filepath.Glob(configPath + ".bak.*")
+	if globErr != nil {
+		t.Fatalf("glob backup files: %v", globErr)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("expected no backup files on parse failure, got: %#v", backups)
+	}
+}
+
+func TestSyncApplyCreatesBackup(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+
+	original := []byte(`{
+  "mcpServers": {
+    "weather": {
+      "command": "uv"
+    }
+  }
+}
+`)
+	if err := os.WriteFile(configPath, original, 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	if _, err := Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	}); err != nil {
+		t.Fatalf("sync apply failed: %v", err)
+	}
+
+	backups, err := filepath.Glob(configPath + ".bak.*")
+	if err != nil {
+		t.Fatalf("glob backup files: %v", err)
+	}
+	if len(backups) == 0 {
+		t.Fatalf("expected backup file to be created")
+	}
+
+	backupPayload, err := os.ReadFile(backups[0])
+	if err != nil {
+		t.Fatalf("read backup file: %v", err)
+	}
+	if string(backupPayload) != string(original) {
+		t.Fatalf("expected backup content to match original config")
+	}
+}
+
+func readRoot(t *testing.T, configPath string) map[string]json.RawMessage {
 	t.Helper()
 	payload, err := os.ReadFile(configPath)
 	if err != nil {
@@ -200,6 +330,12 @@ func readServers(t *testing.T, configPath string) map[string]serverConfig {
 	if err := json.Unmarshal(payload, &root); err != nil {
 		t.Fatalf("parse root config: %v", err)
 	}
+	return root
+}
+
+func readServers(t *testing.T, configPath string) map[string]serverConfig {
+	t.Helper()
+	root := readRoot(t, configPath)
 	servers := map[string]serverConfig{}
 	if err := json.Unmarshal(root["mcpServers"], &servers); err != nil {
 		t.Fatalf("parse mcpServers: %v", err)
@@ -213,13 +349,32 @@ func readManagedNames(t *testing.T, statePath string) []string {
 	if err != nil {
 		t.Fatalf("read managed state: %v", err)
 	}
-	state := managedState{}
+	state := managedStateFile{}
 	if err := json.Unmarshal(payload, &state); err != nil {
 		t.Fatalf("parse managed state: %v", err)
 	}
 	sorted := append([]string(nil), state.ManagedServers...)
 	slices.Sort(sorted)
 	return sorted
+}
+
+func assertJSONEqual(t *testing.T, want, got []byte) {
+	t.Helper()
+	var wantJSON any
+	var gotJSON any
+	if err := json.Unmarshal(want, &wantJSON); err != nil {
+		t.Fatalf("parse expected JSON: %v", err)
+	}
+	if err := json.Unmarshal(got, &gotJSON); err != nil {
+		t.Fatalf("parse actual JSON: %v", err)
+	}
+	if !reflect.DeepEqual(wantJSON, gotJSON) {
+		t.Fatalf("JSON mismatch: want=%s got=%s", string(want), string(got))
+	}
+}
+
+type managedStateFile struct {
+	ManagedServers []string `json:"managed_servers"`
 }
 
 func newStewreadsManifest() registry.Manifest {
