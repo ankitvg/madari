@@ -12,7 +12,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ankitvg/madari/internal/clients/claude"
+	"github.com/ankitvg/madari/internal/clients"
+	claudedesktop "github.com/ankitvg/madari/internal/clients/claude-desktop"
 	"github.com/ankitvg/madari/internal/clients/claudecode"
 	"github.com/ankitvg/madari/internal/doctor"
 	"github.com/ankitvg/madari/internal/registry"
@@ -21,7 +22,7 @@ import (
 const version = "0.0.0-dev"
 
 var supportedSyncTargets = []string{
-	claude.Target,
+	claudedesktop.Target,
 	claudecode.Target,
 }
 
@@ -185,7 +186,7 @@ func (a cliApp) cmdInstall(args []string) error {
 	}
 
 	if len(clients) == 0 {
-		clients = append(clients, claude.Target)
+		clients = append(clients, claudedesktop.Target)
 	}
 
 	if !skipInstall {
@@ -471,8 +472,8 @@ func (a cliApp) cmdSync(args []string) error {
 
 	statePath := filepath.Join(filepath.Dir(a.store.ServersDir()), "state", target+"-managed.json")
 	switch target {
-	case claude.Target:
-		result, err := claude.Sync(syncable, claude.SyncOptions{
+	case claudedesktop.Target:
+		result, err := claudedesktop.Adapter{}.Sync(syncable, clients.SyncOptions{
 			ConfigPath: configPath,
 			StatePath:  statePath,
 			DryRun:     dryRun,

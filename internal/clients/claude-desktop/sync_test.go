@@ -1,4 +1,4 @@
-package claude
+package claudedesktop
 
 import (
 	"encoding/json"
@@ -8,6 +8,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/ankitvg/madari/internal/clients"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -183,6 +184,9 @@ func TestSyncRejectsUnmanagedNameCollision(t *testing.T) {
 	}
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("expected ErrConflict, got: %v", err)
+	}
+	if !errors.Is(err, clients.ErrConflict) {
+		t.Fatalf("expected clients.ErrConflict compatibility, got: %v", err)
 	}
 }
 
