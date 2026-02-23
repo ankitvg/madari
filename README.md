@@ -26,8 +26,8 @@ go install github.com/ankitvg/madari/cmd/madari@latest
 - `madari enable <name>`
 - `madari disable <name>`
 - `madari sync <client> [--dry-run] [--config-path <path>]`
-- `madari doctor [--config-path <path>] [--claude-code-config-path <path>]`
-- `madari status [--config-path <path>] [--claude-code-config-path <path>]`
+- `madari doctor [--client-config target=path ...]`
+- `madari status [--client-config target=path ...]`
 - `madari export [--file <path>]`
 - `madari import --file <path> [--apply]`
 

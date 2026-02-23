@@ -981,7 +981,7 @@ func TestRunWithStoreDoctorHealthy(t *testing.T) {
 		t.Fatalf("write config fixture: %v", err)
 	}
 
-	result := runCmd(store, "doctor", "--config-path", configPath)
+	result := runCmd(store, "doctor", "--client-config", "claude-desktop="+configPath)
 	if result.code != 0 {
 		t.Fatalf("doctor expected success, got code=%d stderr=%s stdout=%s", result.code, result.stderr, result.stdout)
 	}
@@ -1003,7 +1003,7 @@ func TestRunWithStoreDoctorReturnsErrorForInvalidConfig(t *testing.T) {
 		t.Fatalf("write invalid config fixture: %v", err)
 	}
 
-	result := runCmd(store, "doctor", "--config-path", configPath)
+	result := runCmd(store, "doctor", "--client-config", "claude-desktop="+configPath)
 	if result.code == 0 {
 		t.Fatalf("doctor expected failure for invalid config")
 	}
@@ -1020,10 +1020,6 @@ func TestRunWithStoreDoctorReturnsErrorForInvalidClaudeCodeConfig(t *testing.T) 
 		t.Fatalf("setup add failed: %s", result.stderr)
 	}
 
-	desktopConfigPath := filepath.Join(t.TempDir(), "claude_desktop_config.json")
-	if err := os.WriteFile(desktopConfigPath, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
-		t.Fatalf("write desktop config fixture: %v", err)
-	}
 	claudeCodeConfigPath := filepath.Join(t.TempDir(), ".mcp.json")
 	if err := os.WriteFile(claudeCodeConfigPath, []byte("{broken"), 0o644); err != nil {
 		t.Fatalf("write invalid Claude Code config fixture: %v", err)
@@ -1032,8 +1028,7 @@ func TestRunWithStoreDoctorReturnsErrorForInvalidClaudeCodeConfig(t *testing.T) 
 	result := runCmd(
 		store,
 		"doctor",
-		"--config-path", desktopConfigPath,
-		"--claude-code-config-path", claudeCodeConfigPath,
+		"--client-config", "claude-code="+claudeCodeConfigPath,
 	)
 	if result.code == 0 {
 		t.Fatalf("doctor expected failure for invalid Claude Code config")
@@ -1059,7 +1054,7 @@ func TestRunWithStoreStatusHealthy(t *testing.T) {
 		t.Fatalf("write config fixture: %v", err)
 	}
 
-	result := runCmd(store, "status", "--config-path", configPath)
+	result := runCmd(store, "status", "--client-config", "claude-desktop="+configPath)
 	if result.code != 0 {
 		t.Fatalf("status expected success, got code=%d stderr=%s stdout=%s", result.code, result.stderr, result.stdout)
 	}
@@ -1084,7 +1079,7 @@ func TestRunWithStoreStatusReturnsErrorForInvalidConfig(t *testing.T) {
 		t.Fatalf("write invalid config fixture: %v", err)
 	}
 
-	result := runCmd(store, "status", "--config-path", configPath)
+	result := runCmd(store, "status", "--client-config", "claude-desktop="+configPath)
 	if result.code == 0 {
 		t.Fatalf("status expected failure for invalid config")
 	}
@@ -1101,10 +1096,6 @@ func TestRunWithStoreStatusShowsClaudeCodeConfigWhenTargetPresent(t *testing.T) 
 		t.Fatalf("setup add failed: %s", result.stderr)
 	}
 
-	desktopConfigPath := filepath.Join(t.TempDir(), "claude_desktop_config.json")
-	if err := os.WriteFile(desktopConfigPath, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
-		t.Fatalf("write desktop config fixture: %v", err)
-	}
 	claudeCodeConfigPath := filepath.Join(t.TempDir(), ".mcp.json")
 	if err := os.WriteFile(claudeCodeConfigPath, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
 		t.Fatalf("write Claude Code config fixture: %v", err)
@@ -1113,8 +1104,7 @@ func TestRunWithStoreStatusShowsClaudeCodeConfigWhenTargetPresent(t *testing.T) 
 	result := runCmd(
 		store,
 		"status",
-		"--config-path", desktopConfigPath,
-		"--claude-code-config-path", claudeCodeConfigPath,
+		"--client-config", "claude-code="+claudeCodeConfigPath,
 	)
 	if result.code != 0 {
 		t.Fatalf("status expected success, got code=%d stderr=%s stdout=%s", result.code, result.stderr, result.stdout)
