@@ -106,6 +106,8 @@ func (a cliApp) dispatch(args []string) error {
 		return a.cmdSetEnabled(args[1:], true)
 	case "disable":
 		return a.cmdSetEnabled(args[1:], false)
+	case "clients":
+		return a.cmdClients(args[1:])
 	case "doctor":
 		return a.cmdDoctor(args[1:])
 	case "status":
@@ -490,6 +492,75 @@ func (a cliApp) cmdSync(args []string) error {
 		return err
 	}
 	printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, skipped)
+	return nil
+}
+
+func (a cliApp) cmdClients(args []string) error {
+	if len(args) == 1 && isHelpToken(args[0]) {
+		printClientsHelp(a.stdout)
+		return nil
+	}
+
+	fs := flag.NewFlagSet("clients", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printClientsHelp(a.stdout)
+			return nil
+		}
+		return err
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
+	}
+
+	type clientRow struct {
+		target string
+		path   string
+		cr     doctor.ClientConfigReport
+	}
+
+	adapters := sortedAdapters()
+	rows := make([]clientRow, 0, len(adapters))
+	for _, adapter := range adapters {
+		path, err := adapter.DefaultConfigPath()
+		if err != nil {
+			rows = append(rows, clientRow{
+				target: adapter.Target(),
+				cr: doctor.ClientConfigReport{
+					Target:  adapter.Target(),
+					Status:  doctor.StatusError,
+					Message: fmt.Sprintf("resolve default config path: %v", err),
+				},
+			})
+			continue
+		}
+		cr := doctor.InspectConfigPath(path)
+		cr.Target = adapter.Target()
+		rows = append(rows, clientRow{target: adapter.Target(), path: path, cr: cr})
+	}
+
+	statusRank := map[doctor.Status]int{
+		doctor.StatusError:   0,
+		doctor.StatusReady:   1,
+		doctor.StatusWarning: 2,
+		doctor.StatusSkipped: 3,
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		ri, rj := statusRank[rows[i].cr.Status], statusRank[rows[j].cr.Status]
+		if ri != rj {
+			return ri < rj
+		}
+		return rows[i].target < rows[j].target
+	})
+
+	fmt.Fprintln(a.stdout, "CLIENT\tSTATUS\tCONFIG")
+	for _, r := range rows {
+		fmt.Fprintf(a.stdout, "%s\t[%s]\t%s\n", r.target, r.cr.Status, r.path)
+		if r.cr.Message != "" && r.cr.Status != doctor.StatusReady {
+			fmt.Fprintf(a.stdout, "\t\t%s\n", r.cr.Message)
+		}
+	}
 	return nil
 }
 
@@ -1028,6 +1099,8 @@ func printCommandHelp(command string, out io.Writer) bool {
 		printEnableDisableHelp("disable", out)
 	case "sync":
 		printSyncHelp(out)
+	case "clients":
+		printClientsHelp(out)
 	case "doctor":
 		printDoctorHelp(out)
 	case "status":
@@ -1129,6 +1202,15 @@ func printSyncHelp(out io.Writer) {
 	fmt.Fprintf(out, "  Supported clients: %s.\n", strings.Join(supportedSyncTargets(), ", "))
 }
 
+func printClientsHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari clients")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  List all supported MCP clients with their config path and readiness status.")
+	fmt.Fprintln(out, "  Output is sorted by status: error first, then ready, then warn.")
+}
+
 func printDoctorHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
 	fmt.Fprintln(out, "  madari doctor [--client-config target=path ...]")
@@ -1191,6 +1273,7 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  enable    Enable a server")
 	fmt.Fprintln(out, "  disable   Disable a server")
 	fmt.Fprintln(out, "  sync      Sync server manifests to a client config")
+	fmt.Fprintln(out, "  clients   List supported clients and config readiness")
 	fmt.Fprintln(out, "  doctor    Run diagnostics on local MCP setup")
 	fmt.Fprintln(out, "  status    Show concise readiness summary")
 	fmt.Fprintln(out, "  export    Export registry snapshot")
