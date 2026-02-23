@@ -201,6 +201,10 @@ func resolveAdapterConfigPath(adapter clients.ClientAdapter, overrides map[strin
 	return adapter.DefaultConfigPath()
 }
 
+func InspectConfigPath(path string) ClientConfigReport {
+	return inspectClientConfig(path)
+}
+
 func inspectClientConfig(path string) ClientConfigReport {
 	report := ClientConfigReport{Path: path}
 	payload, err := os.ReadFile(path)

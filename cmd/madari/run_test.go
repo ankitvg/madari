@@ -300,6 +300,7 @@ func TestRunWithStoreCommandUsageValidation(t *testing.T) {
 		{name: "sync missing target", args: []string{"sync"}, expected: "usage: madari sync <client>"},
 		{name: "sync unsupported target", args: []string{"sync", "cursor"}, expected: "unsupported sync target"},
 		{name: "sync extra positionals", args: []string{"sync", "claude-desktop", "extra"}, expected: "unexpected positional arguments"},
+		{name: "clients extra positionals", args: []string{"clients", "extra"}, expected: "unexpected positional arguments"},
 		{name: "doctor extra positionals", args: []string{"doctor", "extra"}, expected: "unexpected positional arguments"},
 		{name: "status extra positionals", args: []string{"status", "extra"}, expected: "unexpected positional arguments"},
 		{name: "export extra positionals", args: []string{"export", "extra"}, expected: "unexpected positional arguments"},
@@ -326,6 +327,7 @@ func TestRunHelpSubcommandOutput(t *testing.T) {
 		args     []string
 		contains string
 	}{
+		{name: "help clients", args: []string{"help", "clients"}, contains: "madari clients"},
 		{name: "help install", args: []string{"help", "install"}, contains: "madari install <package>"},
 		{name: "help add", args: []string{"help", "add"}, contains: "madari add <name>"},
 		{name: "help sync", args: []string{"help", "sync"}, contains: "madari sync <client>"},
@@ -388,6 +390,9 @@ func TestRunWithStoreSubcommandHelpFlags(t *testing.T) {
 	}
 	if result := runCmd(store, "disable", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari disable <name>") {
 		t.Fatalf("expected disable --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	if result := runCmd(store, "clients", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari clients") {
+		t.Fatalf("expected clients --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
 	}
 	if result := runCmd(store, "doctor", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari doctor") {
 		t.Fatalf("expected doctor --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
@@ -965,6 +970,63 @@ func TestRunWithStoreImportDryRunAndApply(t *testing.T) {
 	}
 	if _, err := store.Get("beta"); err != nil {
 		t.Fatalf("expected beta after apply: %v", err)
+	}
+}
+
+func TestRunWithStoreClientsListsAllAdapters(t *testing.T) {
+	store := newTestStore(t)
+
+	result := runCmd(store, "clients")
+	if result.code != 0 {
+		t.Fatalf("clients expected success, got code=%d stderr=%s stdout=%s", result.code, result.stderr, result.stdout)
+	}
+	if !strings.Contains(result.stdout, "claude-desktop") {
+		t.Fatalf("expected claude-desktop in clients output, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "claude-code") {
+		t.Fatalf("expected claude-code in clients output, got: %s", result.stdout)
+	}
+}
+
+func TestRunWithStoreClientsShowsHeaderAndStatus(t *testing.T) {
+	store := newTestStore(t)
+
+	result := runCmd(store, "clients")
+	if result.code != 0 {
+		t.Fatalf("clients expected success, got code=%d stderr=%s", result.code, result.stderr)
+	}
+	lines := strings.Split(strings.TrimSpace(result.stdout), "\n")
+	if len(lines) < 3 {
+		// header + at least 2 adapter rows
+		t.Fatalf("expected header + adapter rows, got: %s", result.stdout)
+	}
+	if !strings.HasPrefix(lines[0], "CLIENT") {
+		t.Fatalf("expected header row first, got: %s", lines[0])
+	}
+	// Every non-header row must carry a bracketed status token.
+	for _, line := range lines[1:] {
+		if line == "" {
+			continue
+		}
+		// Detail lines (indented) are allowed to not have a status token.
+		if strings.HasPrefix(line, "\t") {
+			continue
+		}
+		if !strings.Contains(line, "[ready]") && !strings.Contains(line, "[warn]") && !strings.Contains(line, "[error]") {
+			t.Fatalf("expected status token in client row, got: %s", line)
+		}
+	}
+}
+
+func TestRunWithStoreClientsRejectsPositionals(t *testing.T) {
+	store := newTestStore(t)
+
+	result := runCmd(store, "clients", "extra")
+	if result.code == 0 {
+		t.Fatalf("expected clients to fail with positional argument")
+	}
+	if !strings.Contains(result.stderr, "unexpected positional arguments") {
+		t.Fatalf("expected positional argument error, got: %s", result.stderr)
 	}
 }
 
