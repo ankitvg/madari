@@ -79,3 +79,82 @@ foo = "bar"
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestParseManifestInlineCommentsPreserveQuotedHashes(t *testing.T) {
+	manifest := `
+name = "stewreads" # service id
+command = "/usr/local/bin/stewreads-mcp" # executable path
+args = ["--stdio"] # transport arg
+enabled = true # enabled by default
+clients = ["claude-desktop"] # one client for now
+description = "works with #hashtags" # inline comment after quoted hash
+`
+
+	got, err := ParseManifest([]byte(manifest))
+	if err != nil {
+		t.Fatalf("expected parse success, got: %v", err)
+	}
+	if got.Description != "works with #hashtags" {
+		t.Fatalf("expected quoted hash to be preserved, got: %q", got.Description)
+	}
+}
+
+func TestParseManifestRejectsUnknownRequiredEnvKey(t *testing.T) {
+	manifest := `
+name = "stewreads"
+command = "/usr/local/bin/stewreads-mcp"
+args = []
+enabled = true
+clients = ["claude-desktop"]
+
+[required_env]
+unexpected = ["MISSING_KEY"]
+`
+
+	_, err := ParseManifest([]byte(manifest))
+	if err == nil {
+		t.Fatalf("expected parse error for unknown required_env key")
+	}
+	if !strings.Contains(err.Error(), "unknown key") || !strings.Contains(err.Error(), "[required_env]") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseManifestRejectsMalformedStringArrays(t *testing.T) {
+	tests := []struct {
+		name           string
+		clientsLine    string
+		expectedErrSub string
+	}{
+		{
+			name:           "missing comma",
+			clientsLine:    `clients = ["claude-desktop" "claude-code"]`,
+			expectedErrSub: "expected comma between array values",
+		},
+		{
+			name:           "unquoted value",
+			clientsLine:    `clients = [claude-desktop]`,
+			expectedErrSub: "array values must be quoted strings",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manifest := `
+name = "stewreads"
+command = "/usr/local/bin/stewreads-mcp"
+args = []
+enabled = true
+` + tt.clientsLine + `
+`
+
+			_, err := ParseManifest([]byte(manifest))
+			if err == nil {
+				t.Fatalf("expected parse error")
+			}
+			if !strings.Contains(err.Error(), tt.expectedErrSub) {
+				t.Fatalf("expected error containing %q, got: %v", tt.expectedErrSub, err)
+			}
+		})
+	}
+}
