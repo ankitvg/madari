@@ -161,6 +161,126 @@ func TestRunCapturesManifestAndConfigErrors(t *testing.T) {
 	}
 }
 
+func TestRunSkipsClientConfigWhenTargetUnused(t *testing.T) {
+	tmp := t.TempDir()
+	store := registry.NewStore(filepath.Join(tmp, "servers"))
+
+	if err := store.Save(registry.Manifest{
+		Name:    "code-only",
+		Command: "not-used-for-skipped-check",
+		Enabled: true,
+		Clients: []string{"claude-code"},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+
+	adapter := testAdapter{
+		target:     "claude-desktop",
+		configPath: filepath.Join(tmp, "claude_desktop_config.json"),
+	}
+	report, err := Run(store, Options{Adapters: []clients.ClientAdapter{adapter}})
+	if err != nil {
+		t.Fatalf("doctor run failed: %v", err)
+	}
+
+	if len(report.Servers) != 1 || report.Servers[0].Status != StatusSkipped {
+		t.Fatalf("expected skipped server status, got: %+v", report.Servers)
+	}
+	cc, ok := findClientConfig(report, "claude-desktop")
+	if !ok {
+		t.Fatalf("expected claude-desktop client config report, got: %+v", report.ClientConfigs)
+	}
+	if cc.Status != StatusSkipped {
+		t.Fatalf("expected skipped client config report, got: %+v", cc)
+	}
+	if report.Summary.Skipped != 1 {
+		t.Fatalf("expected one skipped summary entry, got: %+v", report.Summary)
+	}
+}
+
+func TestRunUsesConfigPathOverride(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix fixture mode bits are used in this test")
+	}
+	tmp := t.TempDir()
+	store := registry.NewStore(filepath.Join(tmp, "servers"))
+
+	commandPath := writeTestExecutable(t, tmp, "override-mcp")
+	if err := store.Save(registry.Manifest{
+		Name:    "override",
+		Command: commandPath,
+		Enabled: true,
+		Clients: []string{"claude-desktop"},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+
+	overridePath := filepath.Join(tmp, "override_config.json")
+	if err := os.WriteFile(overridePath, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
+		t.Fatalf("write override config: %v", err)
+	}
+
+	defaultPath := filepath.Join(tmp, "missing_default_config.json")
+	adapter := testAdapter{
+		target:     "claude-desktop",
+		configPath: defaultPath,
+	}
+	report, err := Run(store, Options{
+		Adapters:            []clients.ClientAdapter{adapter},
+		ConfigPathOverrides: map[string]string{"claude-desktop": overridePath},
+	})
+	if err != nil {
+		t.Fatalf("doctor run failed: %v", err)
+	}
+
+	cc, ok := findClientConfig(report, "claude-desktop")
+	if !ok {
+		t.Fatalf("expected claude-desktop client config report, got: %+v", report.ClientConfigs)
+	}
+	if cc.Path != overridePath {
+		t.Fatalf("expected override path %q, got %q", overridePath, cc.Path)
+	}
+	if cc.Status != StatusReady {
+		t.Fatalf("expected ready status from override config, got: %+v", cc)
+	}
+}
+
+func TestRunMissingClientConfigWarns(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix fixture mode bits are used in this test")
+	}
+	tmp := t.TempDir()
+	store := registry.NewStore(filepath.Join(tmp, "servers"))
+
+	commandPath := writeTestExecutable(t, tmp, "missing-config-mcp")
+	if err := store.Save(registry.Manifest{
+		Name:    "missing-config",
+		Command: commandPath,
+		Enabled: true,
+		Clients: []string{"claude-desktop"},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+
+	missingPath := filepath.Join(tmp, "does-not-exist.json")
+	adapter := testAdapter{target: "claude-desktop", configPath: missingPath}
+	report, err := Run(store, Options{Adapters: []clients.ClientAdapter{adapter}})
+	if err != nil {
+		t.Fatalf("doctor run failed: %v", err)
+	}
+
+	cc, ok := findClientConfig(report, "claude-desktop")
+	if !ok {
+		t.Fatalf("expected claude-desktop client config report, got: %+v", report.ClientConfigs)
+	}
+	if cc.Status != StatusWarning {
+		t.Fatalf("expected warning status for missing config, got: %+v", cc)
+	}
+	if cc.Message != "config file not found" {
+		t.Fatalf("expected missing config message, got: %q", cc.Message)
+	}
+}
+
 func writeTestExecutable(t *testing.T, dir, name string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
