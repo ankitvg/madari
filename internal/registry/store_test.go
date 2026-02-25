@@ -95,3 +95,58 @@ func TestDefaultRootDirUsesUserConfigDir(t *testing.T) {
 		t.Fatalf("expected default root %q, got %q", expected, root)
 	}
 }
+
+func TestDefaultRootDirOverrideTrimsAndCleansPath(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve home: %v", err)
+	}
+	t.Setenv(ConfigDirEnvVar, "  ~/madari-space/../madari-space  ")
+
+	root, err := DefaultRootDir()
+	if err != nil {
+		t.Fatalf("default root with spaced override: %v", err)
+	}
+
+	expected := filepath.Join(home, "madari-space")
+	if root != expected {
+		t.Fatalf("expected cleaned override root %q, got %q", expected, root)
+	}
+}
+
+func TestDefaultServersDirUsesOverrideRoot(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("resolve home: %v", err)
+	}
+	t.Setenv(ConfigDirEnvVar, "~/custom-madari")
+
+	serversDir, err := DefaultServersDir()
+	if err != nil {
+		t.Fatalf("default servers dir with override: %v", err)
+	}
+
+	expected := filepath.Join(home, "custom-madari", "servers")
+	if serversDir != expected {
+		t.Fatalf("expected override servers dir %q, got %q", expected, serversDir)
+	}
+}
+
+func TestDefaultServersDirUsesUserConfigRoot(t *testing.T) {
+	t.Setenv(ConfigDirEnvVar, "")
+
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatalf("resolve user config dir: %v", err)
+	}
+
+	serversDir, err := DefaultServersDir()
+	if err != nil {
+		t.Fatalf("default servers dir: %v", err)
+	}
+
+	expected := filepath.Join(configDir, "madari", "servers")
+	if serversDir != expected {
+		t.Fatalf("expected default servers dir %q, got %q", expected, serversDir)
+	}
+}
