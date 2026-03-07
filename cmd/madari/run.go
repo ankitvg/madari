@@ -42,18 +42,41 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	switch args[0] {
-	case "version", "--version", "-v":
-		fmt.Fprintln(stdout, version)
-		return 0
+	case "version":
+		if len(args) == 1 {
+			fmt.Fprintln(stdout, version)
+			return 0
+		}
+		if len(args) == 2 && isHelpToken(args[1]) {
+			printVersionHelp(stdout)
+			return 0
+		}
+		fmt.Fprintln(stderr, "error: usage: madari version")
+		return 1
+	case "--version", "-v":
+		if len(args) == 1 {
+			fmt.Fprintln(stdout, version)
+			return 0
+		}
+		fmt.Fprintf(stderr, "error: usage: madari %s\n", args[0])
+		return 1
 	case "--help", "-h":
-		printHelp(stdout)
-		return 0
+		if len(args) == 1 {
+			printHelp(stdout)
+			return 0
+		}
+		fmt.Fprintln(stderr, "error: usage: madari help [command]")
+		return 1
 	case "help":
 		if len(args) == 1 {
 			printHelp(stdout)
 			return 0
 		}
 		if len(args) == 2 {
+			if isHelpToken(args[1]) {
+				printHelpHelp(stdout)
+				return 0
+			}
 			if !printCommandHelp(args[1], stdout) {
 				fmt.Fprintf(stderr, "error: unknown command: %s\n", args[1])
 				return 1
@@ -1100,10 +1123,39 @@ func printCommandHelp(command string, out io.Writer) bool {
 		printExportHelp(out)
 	case "import":
 		printImportHelp(out)
+	case "help":
+		printHelpHelp(out)
+	case "version":
+		printVersionHelp(out)
 	default:
 		return false
 	}
 	return true
+}
+
+func printHelpHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari help [command]")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  Show general help or command-specific help for any top-level command.")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Examples:")
+	fmt.Fprintln(out, "  madari help")
+	fmt.Fprintln(out, "  madari help install")
+	fmt.Fprintln(out, "  madari help version")
+}
+
+func printVersionHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari version")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  Show the Madari CLI version.")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Aliases:")
+	fmt.Fprintln(out, "  madari --version")
+	fmt.Fprintln(out, "  madari -v")
 }
 
 func printAddHelp(out io.Writer) {

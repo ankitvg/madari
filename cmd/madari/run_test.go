@@ -330,6 +330,7 @@ func TestRunHelpSubcommandOutput(t *testing.T) {
 		contains string
 	}{
 		{name: "help clients", args: []string{"help", "clients"}, contains: "madari clients"},
+		{name: "help help", args: []string{"help", "help"}, contains: "madari help [command]"},
 		{name: "help install", args: []string{"help", "install"}, contains: "madari install <package>"},
 		{name: "help add", args: []string{"help", "add"}, contains: "madari add <name>"},
 		{name: "help sync", args: []string{"help", "sync"}, contains: "madari sync <client>"},
@@ -338,6 +339,7 @@ func TestRunHelpSubcommandOutput(t *testing.T) {
 		{name: "help status", args: []string{"help", "status"}, contains: "madari status"},
 		{name: "help export", args: []string{"help", "export"}, contains: "madari export"},
 		{name: "help import", args: []string{"help", "import"}, contains: "madari import"},
+		{name: "help version", args: []string{"help", "version"}, contains: "madari version"},
 	}
 
 	for _, tt := range tests {
@@ -365,6 +367,71 @@ func TestRunHelpSubcommandUnknownCommand(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "unknown command") {
 		t.Fatalf("expected unknown command error, got: %s", stderr.String())
+	}
+}
+
+func TestRunTopLevelHelpAndVersionArgumentValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		args        []string
+		wantCode    int
+		stdoutMatch string
+		stderrMatch string
+	}{
+		{
+			name:        "help help flag",
+			args:        []string{"help", "--help"},
+			wantCode:    0,
+			stdoutMatch: "madari help [command]",
+		},
+		{
+			name:        "version help flag",
+			args:        []string{"version", "--help"},
+			wantCode:    0,
+			stdoutMatch: "madari version",
+		},
+		{
+			name:        "version extra arg",
+			args:        []string{"version", "extra"},
+			wantCode:    1,
+			stderrMatch: "usage: madari version",
+		},
+		{
+			name:        "short version extra arg",
+			args:        []string{"-v", "extra"},
+			wantCode:    1,
+			stderrMatch: "usage: madari -v",
+		},
+		{
+			name:        "long version extra arg",
+			args:        []string{"--version", "extra"},
+			wantCode:    1,
+			stderrMatch: "usage: madari --version",
+		},
+		{
+			name:        "top level help extra arg",
+			args:        []string{"--help", "extra"},
+			wantCode:    1,
+			stderrMatch: "usage: madari help [command]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			code := run(tt.args, &stdout, &stderr)
+			if code != tt.wantCode {
+				t.Fatalf("expected code %d, got %d stdout=%s stderr=%s", tt.wantCode, code, stdout.String(), stderr.String())
+			}
+			if tt.stdoutMatch != "" && !strings.Contains(stdout.String(), tt.stdoutMatch) {
+				t.Fatalf("expected stdout to contain %q, got: %s", tt.stdoutMatch, stdout.String())
+			}
+			if tt.stderrMatch != "" && !strings.Contains(stderr.String(), tt.stderrMatch) {
+				t.Fatalf("expected stderr to contain %q, got: %s", tt.stderrMatch, stderr.String())
+			}
+		})
 	}
 }
 
