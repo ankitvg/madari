@@ -19,7 +19,7 @@ import (
 	"github.com/ankitvg/madari/internal/registry"
 )
 
-const version = "0.0.0-dev"
+var version = "0.0.0-dev"
 
 var syncAdapters = map[string]clients.ClientAdapter{
 	claudedesktop.Target: claudedesktop.Adapter{},

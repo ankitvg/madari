@@ -1202,6 +1202,32 @@ func TestRunHelpMentionsConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestRunVersionCommandsUseDefaultBuildVersion(t *testing.T) {
+	tests := [][]string{
+		{"version"},
+		{"--version"},
+		{"-v"},
+	}
+
+	for _, args := range tests {
+		t.Run(strings.Join(args, "_"), func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			code := run(args, &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("expected version command to succeed, got code=%d stderr=%s", code, stderr.String())
+			}
+			if got := strings.TrimSpace(stdout.String()); got != "0.0.0-dev" {
+				t.Fatalf("expected default build version, got %q", got)
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("expected empty stderr, got: %s", stderr.String())
+			}
+		})
+	}
+}
+
 func TestDeriveServerName(t *testing.T) {
 	tests := []struct {
 		name        string
