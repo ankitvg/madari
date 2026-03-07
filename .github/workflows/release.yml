@@ -38,7 +38,7 @@ jobs:
           fi
           # Build binary into a staging directory
           mkdir -p staging
-          go build -v -o "staging/madari${EXT}" ./cmd/madari
+          go build -v -ldflags "-X main.version=${GITHUB_REF_NAME}" -o "staging/madari${EXT}" ./cmd/madari
           # Copy license, notice, and readme
           cp LICENSE NOTICE README.md staging/
 
