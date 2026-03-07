@@ -288,26 +288,27 @@ func TestRunWithStoreCommandUsageValidation(t *testing.T) {
 	store := newTestStore(t)
 
 	tests := []struct {
-		name     string
-		args     []string
-		expected string
+		name        string
+		args        []string
+		expected    string
+		helpCommand string
 	}{
-		{name: "install missing package", args: []string{"install"}, expected: "usage: madari install <package>"},
+		{name: "install missing package", args: []string{"install"}, expected: "usage: madari install <package>", helpCommand: "install"},
 		{name: "list with arg", args: []string{"list", "oops"}, expected: "usage: madari list"},
 		{name: "remove missing name", args: []string{"remove"}, expected: "usage: madari remove <name>"},
 		{name: "enable missing name", args: []string{"enable"}, expected: "usage: madari enable <name>"},
 		{name: "disable missing name", args: []string{"disable"}, expected: "usage: madari disable <name>"},
-		{name: "sync missing target", args: []string{"sync"}, expected: "usage: madari sync <client>"},
-		{name: "sync unsupported target", args: []string{"sync", "cursor"}, expected: "unsupported sync target"},
-		{name: "sync extra positionals", args: []string{"sync", "claude-desktop", "extra"}, expected: "unexpected positional arguments"},
+		{name: "sync missing target", args: []string{"sync"}, expected: "usage: madari sync <client>", helpCommand: "sync"},
+		{name: "sync unsupported target", args: []string{"sync", "cursor"}, expected: "unsupported sync target", helpCommand: "sync"},
+		{name: "sync extra positionals", args: []string{"sync", "claude-desktop", "extra"}, expected: "unexpected positional arguments", helpCommand: "sync"},
 		{name: "clients extra positionals", args: []string{"clients", "extra"}, expected: "unexpected positional arguments"},
-		{name: "doctor unknown client-config target", args: []string{"doctor", "--client-config", "cursor=/tmp/x"}, expected: "unknown client config target"},
-		{name: "status unknown client-config target", args: []string{"status", "--client-config", "cursor=/tmp/x"}, expected: "unknown client config target"},
-		{name: "doctor extra positionals", args: []string{"doctor", "extra"}, expected: "unexpected positional arguments"},
-		{name: "status extra positionals", args: []string{"status", "extra"}, expected: "unexpected positional arguments"},
-		{name: "export extra positionals", args: []string{"export", "extra"}, expected: "unexpected positional arguments"},
-		{name: "import missing file", args: []string{"import"}, expected: "--file is required"},
-		{name: "import extra positionals", args: []string{"import", "--file", "snapshot.json", "extra"}, expected: "unexpected positional arguments"},
+		{name: "doctor unknown client-config target", args: []string{"doctor", "--client-config", "cursor=/tmp/x"}, expected: "unknown client config target", helpCommand: "doctor"},
+		{name: "status unknown client-config target", args: []string{"status", "--client-config", "cursor=/tmp/x"}, expected: "unknown client config target", helpCommand: "status"},
+		{name: "doctor extra positionals", args: []string{"doctor", "extra"}, expected: "unexpected positional arguments", helpCommand: "doctor"},
+		{name: "status extra positionals", args: []string{"status", "extra"}, expected: "unexpected positional arguments", helpCommand: "status"},
+		{name: "export extra positionals", args: []string{"export", "extra"}, expected: "unexpected positional arguments", helpCommand: "export"},
+		{name: "import missing file", args: []string{"import"}, expected: "--file is required", helpCommand: "import"},
+		{name: "import extra positionals", args: []string{"import", "--file", "snapshot.json", "extra"}, expected: "unexpected positional arguments", helpCommand: "import"},
 	}
 
 	for _, tt := range tests {
@@ -318,6 +319,41 @@ func TestRunWithStoreCommandUsageValidation(t *testing.T) {
 			}
 			if !strings.Contains(result.stderr, tt.expected) {
 				t.Fatalf("expected stderr to contain %q, got: %s", tt.expected, result.stderr)
+			}
+			if tt.helpCommand != "" && !strings.Contains(result.stderr, "madari help "+tt.helpCommand) {
+				t.Fatalf("expected stderr to mention command help for %q, got: %s", tt.helpCommand, result.stderr)
+			}
+		})
+	}
+}
+
+func TestRunWithStoreCommandFlagParsingShowsHelpHint(t *testing.T) {
+	store := newTestStore(t)
+
+	tests := []struct {
+		name        string
+		args        []string
+		helpCommand string
+	}{
+		{name: "install unknown flag", args: []string{"install", "stewreads-mcp", "--bogus"}, helpCommand: "install"},
+		{name: "sync unknown flag", args: []string{"sync", "claude-desktop", "--bogus"}, helpCommand: "sync"},
+		{name: "doctor unknown flag", args: []string{"doctor", "--bogus"}, helpCommand: "doctor"},
+		{name: "status unknown flag", args: []string{"status", "--bogus"}, helpCommand: "status"},
+		{name: "export unknown flag", args: []string{"export", "--bogus"}, helpCommand: "export"},
+		{name: "import unknown flag", args: []string{"import", "--bogus"}, helpCommand: "import"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := runCmd(store, tt.args...)
+			if result.code == 0 {
+				t.Fatalf("expected command to fail")
+			}
+			if !strings.Contains(result.stderr, "flag provided but not defined") {
+				t.Fatalf("expected unknown flag error, got: %s", result.stderr)
+			}
+			if !strings.Contains(result.stderr, "madari help "+tt.helpCommand) {
+				t.Fatalf("expected help hint for %q, got: %s", tt.helpCommand, result.stderr)
 			}
 		})
 	}
@@ -330,6 +366,7 @@ func TestRunHelpSubcommandOutput(t *testing.T) {
 		contains string
 	}{
 		{name: "help clients", args: []string{"help", "clients"}, contains: "madari clients"},
+		{name: "help help", args: []string{"help", "help"}, contains: "madari help [command]"},
 		{name: "help install", args: []string{"help", "install"}, contains: "madari install <package>"},
 		{name: "help add", args: []string{"help", "add"}, contains: "madari add <name>"},
 		{name: "help sync", args: []string{"help", "sync"}, contains: "madari sync <client>"},
@@ -338,6 +375,7 @@ func TestRunHelpSubcommandOutput(t *testing.T) {
 		{name: "help status", args: []string{"help", "status"}, contains: "madari status"},
 		{name: "help export", args: []string{"help", "export"}, contains: "madari export"},
 		{name: "help import", args: []string{"help", "import"}, contains: "madari import"},
+		{name: "help version", args: []string{"help", "version"}, contains: "madari version"},
 	}
 
 	for _, tt := range tests {
@@ -365,6 +403,71 @@ func TestRunHelpSubcommandUnknownCommand(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "unknown command") {
 		t.Fatalf("expected unknown command error, got: %s", stderr.String())
+	}
+}
+
+func TestRunTopLevelHelpAndVersionArgumentValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		args        []string
+		wantCode    int
+		stdoutMatch string
+		stderrMatch string
+	}{
+		{
+			name:        "help help flag",
+			args:        []string{"help", "--help"},
+			wantCode:    0,
+			stdoutMatch: "madari help [command]",
+		},
+		{
+			name:        "version help flag",
+			args:        []string{"version", "--help"},
+			wantCode:    0,
+			stdoutMatch: "madari version",
+		},
+		{
+			name:        "version extra arg",
+			args:        []string{"version", "extra"},
+			wantCode:    1,
+			stderrMatch: "usage: madari version",
+		},
+		{
+			name:        "short version extra arg",
+			args:        []string{"-v", "extra"},
+			wantCode:    1,
+			stderrMatch: "usage: madari -v",
+		},
+		{
+			name:        "long version extra arg",
+			args:        []string{"--version", "extra"},
+			wantCode:    1,
+			stderrMatch: "usage: madari --version",
+		},
+		{
+			name:        "top level help extra arg",
+			args:        []string{"--help", "extra"},
+			wantCode:    1,
+			stderrMatch: "usage: madari help [command]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			code := run(tt.args, &stdout, &stderr)
+			if code != tt.wantCode {
+				t.Fatalf("expected code %d, got %d stdout=%s stderr=%s", tt.wantCode, code, stdout.String(), stderr.String())
+			}
+			if tt.stdoutMatch != "" && !strings.Contains(stdout.String(), tt.stdoutMatch) {
+				t.Fatalf("expected stdout to contain %q, got: %s", tt.stdoutMatch, stdout.String())
+			}
+			if tt.stderrMatch != "" && !strings.Contains(stderr.String(), tt.stderrMatch) {
+				t.Fatalf("expected stderr to contain %q, got: %s", tt.stderrMatch, stderr.String())
+			}
+		})
 	}
 }
 

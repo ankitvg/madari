@@ -42,18 +42,41 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	switch args[0] {
-	case "version", "--version", "-v":
-		fmt.Fprintln(stdout, version)
-		return 0
+	case "version":
+		if len(args) == 1 {
+			fmt.Fprintln(stdout, version)
+			return 0
+		}
+		if len(args) == 2 && isHelpToken(args[1]) {
+			printVersionHelp(stdout)
+			return 0
+		}
+		fmt.Fprintln(stderr, "error: usage: madari version")
+		return 1
+	case "--version", "-v":
+		if len(args) == 1 {
+			fmt.Fprintln(stdout, version)
+			return 0
+		}
+		fmt.Fprintf(stderr, "error: usage: madari %s\n", args[0])
+		return 1
 	case "--help", "-h":
-		printHelp(stdout)
-		return 0
+		if len(args) == 1 {
+			printHelp(stdout)
+			return 0
+		}
+		fmt.Fprintln(stderr, "error: usage: madari help [command]")
+		return 1
 	case "help":
 		if len(args) == 1 {
 			printHelp(stdout)
 			return 0
 		}
 		if len(args) == 2 {
+			if isHelpToken(args[1]) {
+				printHelpHelp(stdout)
+				return 0
+			}
 			if !printCommandHelp(args[1], stdout) {
 				fmt.Fprintf(stderr, "error: unknown command: %s\n", args[1])
 				return 1
@@ -125,7 +148,7 @@ func (a cliApp) dispatch(args []string) error {
 
 func (a cliApp) cmdInstall(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: madari install <package> [options]")
+		return commandUsageError("install", "madari install <package> [options]")
 	}
 	if len(args) == 1 && isHelpToken(args[0]) {
 		printInstallHelp(a.stdout)
@@ -171,10 +194,10 @@ func (a cliApp) cmdInstall(args []string) error {
 			printInstallHelp(a.stdout)
 			return nil
 		}
-		return err
+		return commandInputError("install", err.Error())
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
+		return commandUnexpectedArgsError("install", fs.Args())
 	}
 
 	manager = strings.TrimSpace(strings.ToLower(manager))
@@ -182,10 +205,10 @@ func (a cliApp) cmdInstall(args []string) error {
 		manager = "uv"
 	}
 	if !isSupportedInstallManager(manager) {
-		return fmt.Errorf("unsupported package manager %q (supported: uv, npm)", manager)
+		return commandInputError("install", fmt.Sprintf("unsupported package manager %q (supported: uv, npm)", manager))
 	}
 	if manager == "npm" && strings.TrimSpace(command) == "" {
-		return fmt.Errorf("--command is required when --manager npm because npm package names may differ from executable names")
+		return commandInputError("install", "--command is required when --manager npm because npm package names may differ from executable names")
 	}
 
 	name = strings.TrimSpace(name)
@@ -193,7 +216,7 @@ func (a cliApp) cmdInstall(args []string) error {
 		name = deriveServerName(packageName)
 	}
 	if name == "" {
-		return fmt.Errorf("unable to derive server name from package %q, pass --name", packageName)
+		return commandInputError("install", fmt.Sprintf("unable to derive server name from package %q, pass --name", packageName))
 	}
 
 	if len(clients) == 0 {
@@ -447,7 +470,7 @@ func (a cliApp) cmdSetEnabled(args []string, enabled bool) error {
 
 func (a cliApp) cmdSync(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: madari sync <client> [--dry-run] [--config-path <path>]")
+		return commandUsageError("sync", "madari sync <client> [--dry-run] [--config-path <path>]")
 	}
 	if isHelpToken(args[0]) {
 		printSyncHelp(a.stdout)
@@ -466,14 +489,14 @@ func (a cliApp) cmdSync(args []string) error {
 			printSyncHelp(a.stdout)
 			return nil
 		}
-		return err
+		return commandInputError("sync", err.Error())
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
+		return commandUnexpectedArgsError("sync", fs.Args())
 	}
 	adapter, ok := syncAdapters[target]
 	if !ok {
-		return fmt.Errorf("unsupported sync target %q (supported: %s)", target, strings.Join(supportedSyncTargets(), ", "))
+		return commandInputError("sync", fmt.Sprintf("unsupported sync target %q (supported: %s)", target, strings.Join(supportedSyncTargets(), ", ")))
 	}
 
 	manifests, err := a.store.List()
@@ -579,15 +602,15 @@ func (a cliApp) cmdDoctor(args []string) error {
 			printDoctorHelp(a.stdout)
 			return nil
 		}
-		return err
+		return commandInputError("doctor", err.Error())
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
+		return commandUnexpectedArgsError("doctor", fs.Args())
 	}
 
 	configPathOverrides, err := parseClientConfigOverrides(clientConfigs)
 	if err != nil {
-		return err
+		return commandInputError("doctor", err.Error())
 	}
 
 	adapters := sortedAdapters()
@@ -668,15 +691,15 @@ func (a cliApp) cmdStatus(args []string) error {
 			printStatusHelp(a.stdout)
 			return nil
 		}
-		return err
+		return commandInputError("status", err.Error())
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
+		return commandUnexpectedArgsError("status", fs.Args())
 	}
 
 	configPathOverrides, err := parseClientConfigOverrides(clientConfigs)
 	if err != nil {
-		return err
+		return commandInputError("status", err.Error())
 	}
 
 	adapters := sortedAdapters()
@@ -728,10 +751,10 @@ func (a cliApp) cmdExport(args []string) error {
 			printExportHelp(a.stdout)
 			return nil
 		}
-		return err
+		return commandInputError("export", err.Error())
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
+		return commandUnexpectedArgsError("export", fs.Args())
 	}
 
 	snapshot, err := registry.ExportSnapshot(a.store)
@@ -778,15 +801,15 @@ func (a cliApp) cmdImport(args []string) error {
 			printImportHelp(a.stdout)
 			return nil
 		}
-		return err
+		return commandInputError("import", err.Error())
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
+		return commandUnexpectedArgsError("import", fs.Args())
 	}
 
 	filePath = strings.TrimSpace(filePath)
 	if filePath == "" {
-		return fmt.Errorf("--file is required")
+		return commandInputError("import", "--file is required")
 	}
 
 	payload, err := os.ReadFile(filePath)
@@ -1074,6 +1097,18 @@ func isHelpToken(value string) bool {
 	return value == "--help" || value == "-h"
 }
 
+func commandUsageError(command, usage string) error {
+	return fmt.Errorf("usage: %s (run `madari help %s` for details)", usage, command)
+}
+
+func commandInputError(command, message string) error {
+	return fmt.Errorf("%s (run `madari help %s` for details)", message, command)
+}
+
+func commandUnexpectedArgsError(command string, args []string) error {
+	return commandInputError(command, fmt.Sprintf("unexpected positional arguments: %s", strings.Join(args, " ")))
+}
+
 func printCommandHelp(command string, out io.Writer) bool {
 	switch strings.TrimSpace(command) {
 	case "install":
@@ -1100,10 +1135,39 @@ func printCommandHelp(command string, out io.Writer) bool {
 		printExportHelp(out)
 	case "import":
 		printImportHelp(out)
+	case "help":
+		printHelpHelp(out)
+	case "version":
+		printVersionHelp(out)
 	default:
 		return false
 	}
 	return true
+}
+
+func printHelpHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari help [command]")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  Show general help or command-specific help for any top-level command.")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Examples:")
+	fmt.Fprintln(out, "  madari help")
+	fmt.Fprintln(out, "  madari help install")
+	fmt.Fprintln(out, "  madari help version")
+}
+
+func printVersionHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari version")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  Show the Madari CLI version.")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Aliases:")
+	fmt.Fprintln(out, "  madari --version")
+	fmt.Fprintln(out, "  madari -v")
 }
 
 func printAddHelp(out io.Writer) {
