@@ -31,6 +31,8 @@ go install github.com/ankitvg/madari/cmd/madari@latest
 - `madari status [--client-config target=path ...]`
 - `madari export [--file <path>]`
 - `madari import --file <path> [--apply]`
+- `madari help [command]`
+- `madari version`
 
 Notes:
 
@@ -78,6 +80,8 @@ madari export --file madari-snapshot.json
 madari import --file madari-snapshot.json
 madari import --file madari-snapshot.json --apply
 madari doctor
+madari help install
+madari version
 ```
 
 ## Development
