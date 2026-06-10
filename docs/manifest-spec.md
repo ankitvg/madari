@@ -28,6 +28,13 @@ Key/value static environment variables.
 
 - `keys` (array of strings): env vars that must exist in runtime context.
 
+### `[secret_env]`
+
+- `keys` (array of strings): env vars whose values are secrets. Sync refuses
+  to materialize a static `[env]` value for a secret key into repo-scoped
+  client configs (for example the Claude Code project `.mcp.json`); secret
+  values may only land in user-scoped configs.
+
 ## Example
 
 ```toml

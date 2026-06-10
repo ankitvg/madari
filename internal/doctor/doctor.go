@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/ankitvg/madari/internal/clients"
+	"github.com/ankitvg/madari/internal/clients/syncshared"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -71,13 +72,48 @@ type Report struct {
 	Servers        []ServerReport
 	ManifestErrors []ManifestError
 	ClientConfigs  []ClientConfigReport
+	Drift          []DriftReport
 	Summary        Summary
+}
+
+// DriftTarget names one managed-state/config pair to diff against manifests.
+type DriftTarget struct {
+	Adapter clients.ClientAdapter
+	// Scope is passed through to the adapter ("" = adapter default).
+	Scope string
+	// StatePath locates managed state for this target+scope; drift is only
+	// checked when it tracks at least one entry.
+	StatePath string
+	// ConfigPath overrides the adapter's default config path when non-empty.
+	ConfigPath string
+}
+
+// DriftReport diffs materialized client entries against current manifests
+// for one target+scope.
+type DriftReport struct {
+	Target     string
+	Scope      string
+	ConfigPath string
+	// Stale are managed entries whose materialized values differ from the
+	// manifest.
+	Stale []string
+	// Missing are managed entries absent from the client config.
+	Missing []string
+	// Orphaned are managed entries no longer desired; the next sync removes
+	// them.
+	Orphaned []string
+	// Issue carries a sync-plan error (e.g. unmanaged-entry conflict).
+	Issue  string
+	Status Status
 }
 
 type Options struct {
 	Adapters            []clients.ClientAdapter
 	ConfigPathOverrides map[string]string // keyed by Target(), e.g. {"claude-desktop": "/custom/path"}
 	EnvLookup           func(string) string
+	// DriftTargets enables drift detection for the listed state/config
+	// pairs.
+	DriftTargets []DriftTarget
 }
 
 func Run(store *registry.Store, opts Options) (Report, error) {
@@ -124,8 +160,85 @@ func Run(store *registry.Store, opts Options) (Report, error) {
 		report.ClientConfigs = append(report.ClientConfigs, cr)
 	}
 
+	// Drift is only meaningful against a fully parsed registry: a manifest
+	// that failed to load would otherwise read as "orphaned" with a sync fix
+	// hint, while the real sync command refuses to run until the manifest is
+	// repaired.
+	report.Drift = []DriftReport{}
+	if len(manifestErrors) == 0 {
+		report.Drift = checkDrift(manifests, opts.DriftTargets)
+	}
+
 	report.Summary = summarize(report)
 	return report, nil
+}
+
+// checkDrift diffs materialized client entries against manifests by reading
+// each target's dry-run sync plan. Targets without managed entries are
+// skipped: no ownership, nothing to drift.
+func checkDrift(manifests []registry.Manifest, targets []DriftTarget) []DriftReport {
+	reports := []DriftReport{}
+	for _, target := range targets {
+		dr := DriftReport{
+			Target: target.Adapter.Target(),
+			Scope:  target.Scope,
+			Status: StatusReady,
+		}
+
+		state, err := syncshared.LoadManagedState(target.StatePath)
+		if err != nil {
+			dr.Status = StatusError
+			dr.Issue = fmt.Sprintf("read managed state: %v", err)
+			reports = append(reports, dr)
+			continue
+		}
+		if len(state) == 0 {
+			continue
+		}
+
+		plan, err := target.Adapter.Sync(syncableForTarget(manifests, target.Adapter.Target()), clients.SyncOptions{
+			ConfigPath: target.ConfigPath,
+			StatePath:  target.StatePath,
+			Scope:      target.Scope,
+			DryRun:     true,
+		})
+		if err != nil {
+			dr.Status = StatusError
+			dr.Issue = fmt.Sprintf("compute sync plan: %v", err)
+			reports = append(reports, dr)
+			continue
+		}
+
+		dr.ConfigPath = plan.ConfigPath
+		dr.Stale = append([]string(nil), plan.Updated...)
+		for _, name := range plan.Added {
+			if _, managed := state[name]; managed {
+				dr.Missing = append(dr.Missing, name)
+			}
+		}
+		dr.Orphaned = append([]string(nil), plan.Removed...)
+		if len(dr.Stale)+len(dr.Missing)+len(dr.Orphaned) > 0 {
+			dr.Status = StatusWarning
+		}
+		reports = append(reports, dr)
+	}
+	return reports
+}
+
+// syncableForTarget mirrors the sync command's manifest filtering: entries
+// enabled for this target whose command fails validation never reach the
+// adapter, so the drift plan matches what `madari sync` would actually do.
+func syncableForTarget(manifests []registry.Manifest, target string) []registry.Manifest {
+	out := make([]registry.Manifest, 0, len(manifests))
+	for _, manifest := range manifests {
+		if manifest.Enabled && manifest.HasClient(target) {
+			if issue := validateAbsoluteExecutablePath(manifest.Command); issue != nil {
+				continue
+			}
+		}
+		out = append(out, manifest)
+	}
+	return out
 }
 
 func summarize(report Report) Summary {
@@ -148,6 +261,13 @@ func summarize(report Report) Summary {
 		if cc.Status == StatusError {
 			summary.Error++
 		} else if cc.Status == StatusWarning {
+			summary.Warning++
+		}
+	}
+	for _, dr := range report.Drift {
+		if dr.Status == StatusError {
+			summary.Error++
+		} else if dr.Status == StatusWarning {
 			summary.Warning++
 		}
 	}

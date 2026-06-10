@@ -12,6 +12,7 @@ const (
 	sectionTop         = ""
 	sectionEnv         = "env"
 	sectionRequiredEnv = "required_env"
+	sectionSecretEnv   = "secret_env"
 )
 
 // ParseManifest parses a constrained TOML manifest format and rejects unknown fields.
@@ -45,7 +46,7 @@ func ParseManifest(data []byte) (Manifest, error) {
 			}
 			name := strings.TrimSpace(line[1 : len(line)-1])
 			switch name {
-			case sectionEnv, sectionRequiredEnv:
+			case sectionEnv, sectionRequiredEnv, sectionSecretEnv:
 				section = name
 			default:
 				return Manifest{}, fmt.Errorf("line %d: unknown section %q", lineNo, name)
@@ -78,6 +79,15 @@ func ParseManifest(data []byte) (Manifest, error) {
 				return Manifest{}, fmt.Errorf("line %d: invalid required_env keys: %w", lineNo, err)
 			}
 			m.RequiredEnv.Keys = arr
+		case sectionSecretEnv:
+			if key != "keys" {
+				return Manifest{}, fmt.Errorf("line %d: unknown key %q in [secret_env]", lineNo, key)
+			}
+			arr, err := parseStringArray(value)
+			if err != nil {
+				return Manifest{}, fmt.Errorf("line %d: invalid secret_env keys: %w", lineNo, err)
+			}
+			m.SecretEnv.Keys = arr
 		default:
 			return Manifest{}, fmt.Errorf("line %d: unknown parse section", lineNo)
 		}
@@ -126,6 +136,13 @@ func MarshalManifest(m Manifest) ([]byte, error) {
 		keys := append([]string(nil), m.RequiredEnv.Keys...)
 		sort.Strings(keys)
 		b.WriteString("\n[required_env]\n")
+		fmt.Fprintf(&b, "keys = %s\n", formatStringArray(keys))
+	}
+
+	if len(m.SecretEnv.Keys) > 0 {
+		keys := append([]string(nil), m.SecretEnv.Keys...)
+		sort.Strings(keys)
+		b.WriteString("\n[secret_env]\n")
 		fmt.Fprintf(&b, "keys = %s\n", formatStringArray(keys))
 	}
 

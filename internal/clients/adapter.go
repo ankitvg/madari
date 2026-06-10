@@ -21,6 +21,15 @@ import (
 // Adapters may treat exact-value matches as unchanged instead of conflicts.
 var ErrConflict = errors.New("sync conflict with unmanaged server")
 
+// Sync scopes. ScopeProject targets a repo-scoped config (e.g. the Claude
+// Code project .mcp.json); ScopeUser targets the user-level config. Scope is
+// never inferred from paths — it must be declared explicitly, and adapters
+// fail closed (project) when it is not.
+const (
+	ScopeProject = "project"
+	ScopeUser    = "user"
+)
+
 // ClientAdapter synchronizes Madari manifests into a client's MCP config shape.
 //
 // Safety and behavior invariants:
@@ -49,6 +58,12 @@ type SyncOptions struct {
 	// StatePath stores entries currently managed by Madari for this target,
 	// each mapped to the sources that own it (e.g. "standalone").
 	StatePath string
+	// Scope declares whether the target config is repo-scoped
+	// (ScopeProject) or user-scoped (ScopeUser). Empty means the adapter's
+	// default. Adapters whose config location is inherently user-scoped
+	// (e.g. Claude Desktop) may ignore it; adapters with repo-scoped
+	// configs default to ScopeProject and fail closed on unknown values.
+	Scope string
 	// DryRun computes a plan without writing config or managed state.
 	DryRun bool
 }
@@ -67,6 +82,11 @@ type SyncResult struct {
 	Removed []string
 	// Unchanged are desired names already matching target config values.
 	Unchanged []string
+	// Refused are names excluded because they carry static secret env
+	// values that must not materialize into a repo-scoped config. A
+	// previously managed refused name is also removed from the config,
+	// scrubbing the secret value on the next sync.
+	Refused []string
 }
 
 // HasChanges reports whether sync produces any mutation.

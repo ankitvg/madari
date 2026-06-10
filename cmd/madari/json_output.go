@@ -34,6 +34,7 @@ type statusJSON struct {
 	ClientConfigs  []statusConfigJSON `json:"client_configs"`
 	Managed        []managedJSON      `json:"managed"`
 	ManifestErrors int                `json:"manifest_errors"`
+	Drift          []driftJSON        `json:"drift"`
 }
 
 type summaryJSON struct {
@@ -51,6 +52,7 @@ type statusConfigJSON struct {
 
 type managedJSON struct {
 	Target  string   `json:"target"`
+	Scope   string   `json:"scope"`
 	Entries int      `json:"entries"`
 	Sources []string `json:"sources"`
 }
@@ -62,7 +64,19 @@ type doctorJSON struct {
 	Servers        []doctorServerJSON  `json:"servers"`
 	ManifestErrors []manifestErrorJSON `json:"manifest_errors"`
 	ClientConfigs  []doctorConfigJSON  `json:"client_configs"`
+	Drift          []driftJSON         `json:"drift"`
 	Summary        summaryJSON         `json:"summary"`
+}
+
+type driftJSON struct {
+	Target     string   `json:"target"`
+	Scope      string   `json:"scope"`
+	ConfigPath string   `json:"config_path"`
+	Status     string   `json:"status"`
+	Stale      []string `json:"stale"`
+	Missing    []string `json:"missing"`
+	Orphaned   []string `json:"orphaned"`
+	Issue      string   `json:"issue"`
 }
 
 type doctorServerJSON struct {
@@ -104,6 +118,7 @@ type syncJSON struct {
 	Removed       []string `json:"removed"`
 	Unchanged     []string `json:"unchanged"`
 	Skipped       []string `json:"skipped"`
+	Refused       []string `json:"refused"`
 }
 
 // writeJSON emits one indented JSON document followed by a newline; --json
@@ -134,4 +149,25 @@ func summaryToJSON(s doctor.Summary) summaryJSON {
 		Error:   s.Error,
 		Skipped: s.Skipped,
 	}
+}
+
+func driftToJSON(reports []doctor.DriftReport) []driftJSON {
+	out := make([]driftJSON, 0, len(reports))
+	for _, dr := range reports {
+		scope := dr.Scope
+		if scope == "" {
+			scope = "default"
+		}
+		out = append(out, driftJSON{
+			Target:     dr.Target,
+			Scope:      scope,
+			ConfigPath: dr.ConfigPath,
+			Status:     string(dr.Status),
+			Stale:      nonNilStrings(dr.Stale),
+			Missing:    nonNilStrings(dr.Missing),
+			Orphaned:   nonNilStrings(dr.Orphaned),
+			Issue:      dr.Issue,
+		})
+	}
+	return out
 }

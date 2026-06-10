@@ -1398,7 +1398,8 @@ func TestRunWithStoreSyncDryRunJSON(t *testing.T) {
   "updated": [],
   "removed": [],
   "unchanged": [],
-  "skipped": []
+  "skipped": [],
+  "refused": []
 }
 `, configPath)
 	if result.stdout != expected {
@@ -1442,7 +1443,7 @@ func TestRunWithStoreStatusJSON(t *testing.T) {
 	}
 
 	payload := decodeJSONObject(t, result.stdout)
-	assertJSONKeys(t, payload, "schema_version", "command", "summary", "client_configs", "managed", "manifest_errors")
+	assertJSONKeys(t, payload, "schema_version", "command", "summary", "client_configs", "managed", "manifest_errors", "drift")
 	if payload["schema_version"].(float64) != 1 {
 		t.Fatalf("unexpected schema_version: %v", payload["schema_version"])
 	}
@@ -1466,7 +1467,7 @@ func TestRunWithStoreStatusJSON(t *testing.T) {
 	var desktop map[string]any
 	for _, item := range managed {
 		entry := item.(map[string]any)
-		assertJSONKeys(t, entry, "target", "entries", "sources")
+		assertJSONKeys(t, entry, "target", "scope", "entries", "sources")
 		if entry["target"] == "claude-desktop" {
 			desktop = entry
 		}
@@ -1504,7 +1505,7 @@ func TestRunWithStoreDoctorJSONReportsErrorsAndExitCode(t *testing.T) {
 	}
 
 	payload := decodeJSONObject(t, result.stdout)
-	assertJSONKeys(t, payload, "schema_version", "command", "servers_dir", "servers", "manifest_errors", "client_configs", "summary")
+	assertJSONKeys(t, payload, "schema_version", "command", "servers_dir", "servers", "manifest_errors", "client_configs", "drift", "summary")
 	if payload["command"].(string) != "doctor" {
 		t.Fatalf("unexpected command: %v", payload["command"])
 	}
@@ -1525,6 +1526,135 @@ func TestRunWithStoreDoctorJSONReportsErrorsAndExitCode(t *testing.T) {
 		t.Fatalf("expected client config entries, got none")
 	}
 	assertJSONKeys(t, configs[0].(map[string]any), "target", "path", "exists", "status", "message")
+}
+
+func TestRunWithStoreSyncScopeValidation(t *testing.T) {
+	store := newTestStore(t)
+
+	result := runCmd(store, "sync", "claude-desktop", "--scope", "user")
+	if result.code == 0 {
+		t.Fatalf("expected --scope on claude-desktop to fail")
+	}
+	if !strings.Contains(result.stderr, "--scope is only supported for claude-code") {
+		t.Fatalf("expected scope support error, got: %s", result.stderr)
+	}
+
+	result = runCmd(store, "sync", "claude-code", "--scope", "global")
+	if result.code == 0 {
+		t.Fatalf("expected unknown scope to fail")
+	}
+	if !strings.Contains(result.stderr, "unknown scope") {
+		t.Fatalf("expected unknown-scope error, got: %s", result.stderr)
+	}
+}
+
+func TestRunWithStoreSecretEnvPlacementFlow(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "vault", "--command", commandPath, "--client", "claude-code",
+		"--env", "VAULT_TOKEN=shhh", "--secret-env", "VAULT_TOKEN"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	projectConfig := filepath.Join(t.TempDir(), ".mcp.json")
+	result := runCmd(store, "sync", "claude-code", "--config-path", projectConfig)
+	if result.code != 0 {
+		t.Fatalf("expected per-entry refusal to keep sync successful, stderr=%s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "refused: vault") {
+		t.Fatalf("expected refused summary line, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stderr, "refused vault") || !strings.Contains(result.stderr, "--scope user") {
+		t.Fatalf("expected refusal warning with user-scope guidance, got: %s", result.stderr)
+	}
+	payload, err := os.ReadFile(projectConfig)
+	if err != nil {
+		t.Fatalf("read project config: %v", err)
+	}
+	if strings.Contains(string(payload), "shhh") {
+		t.Fatalf("expected secret value to stay out of repo-scoped config, got: %s", payload)
+	}
+
+	userConfig := filepath.Join(t.TempDir(), "claude.json")
+	result = runCmd(store, "sync", "claude-code", "--scope", "user", "--config-path", userConfig)
+	if result.code != 0 {
+		t.Fatalf("user-scope sync failed: %s", result.stderr)
+	}
+
+	result = runCmd(store, "list")
+	if result.code != 0 {
+		t.Fatalf("list failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "vault\tenabled\t"+commandPath+"\tclaude-code\tstandalone") {
+		t.Fatalf("expected user-scope managed sources in list, got: %s", result.stdout)
+	}
+
+	// status counts user-scope managed entries (no exit-code assertion:
+	// user-scope drift inspects the machine's real ~/.claude.json).
+	result = runCmd(store, "status", "--client-config", "claude-code="+projectConfig)
+	if !strings.Contains(result.stdout, "claude-code-user-managed: entries=1 sources=standalone") {
+		t.Fatalf("expected user-scope managed summary in status, got: %s", result.stdout)
+	}
+}
+
+func TestRunWithStoreStatusReportsDrift(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "driftee", "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), ".mcp.json")
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+	if result := runCmd(store, "sync", "claude-code", "--config-path", configPath); result.code != 0 {
+		t.Fatalf("sync failed: %s", result.stderr)
+	}
+
+	// No drift right after sync.
+	result := runCmd(store, "status", "--client-config", "claude-code="+configPath)
+	if result.code != 0 {
+		t.Fatalf("status failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	if strings.Contains(result.stdout, "-drift:") {
+		t.Fatalf("expected no drift line right after sync, got: %s", result.stdout)
+	}
+
+	// Disabling the server orphans its materialized entry.
+	if result := runCmd(store, "disable", "driftee"); result.code != 0 {
+		t.Fatalf("disable failed: %s", result.stderr)
+	}
+
+	result = runCmd(store, "status", "--client-config", "claude-code="+configPath)
+	if result.code != 0 {
+		t.Fatalf("status with drift should stay exit 0 (warning), got code=%d stderr=%s", result.code, result.stderr)
+	}
+	if !strings.Contains(result.stdout, "claude-code-drift: stale=0 missing=0 orphaned=1 (fix: madari sync claude-code)") {
+		t.Fatalf("expected drift line with fix hint, got: %s", result.stdout)
+	}
+
+	// Doctor JSON carries the same drift report.
+	result = runCmd(store, "doctor", "--json", "--client-config", "claude-code="+configPath)
+	if result.code != 0 {
+		t.Fatalf("doctor --json failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	payload := decodeJSONObject(t, result.stdout)
+	drift := payload["drift"].([]any)
+	if len(drift) != 1 {
+		t.Fatalf("expected one drift entry, got: %v", drift)
+	}
+	entry := drift[0].(map[string]any)
+	assertJSONKeys(t, entry, "target", "scope", "config_path", "status", "stale", "missing", "orphaned", "issue")
+	if entry["target"] != "claude-code" || entry["status"] != "warn" {
+		t.Fatalf("unexpected drift entry: %v", entry)
+	}
+	orphaned := entry["orphaned"].([]any)
+	if len(orphaned) != 1 || orphaned[0] != "driftee" {
+		t.Fatalf("expected driftee orphaned, got: %v", orphaned)
+	}
 }
 
 func TestRunWithStoreStatusReturnsErrorForInvalidConfig(t *testing.T) {

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/ankitvg/madari/internal/clients"
 	"github.com/ankitvg/madari/internal/clients/syncshared"
@@ -25,12 +27,24 @@ type SyncOptions = clients.SyncOptions
 type SyncResult = clients.SyncResult
 
 // Sync synchronizes enabled Claude Code-targeted manifests into the Claude Code config file.
+//
+// The default scope is project (repo-scoped .mcp.json). Manifests carrying a
+// static env value for a secret_env key are refused at project scope — they
+// are excluded from the desired set (and removed if previously managed,
+// scrubbing the secret) and reported via SyncResult.Refused. User scope
+// materializes them normally; scope is declared via opts.Scope, never
+// inferred.
 func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
-	configPath, err := resolveConfigPath(opts.ConfigPath)
+	userScope, err := resolveScope(opts.Scope)
 	if err != nil {
 		return SyncResult{}, err
 	}
-	statePath, err := resolveStatePath(opts.StatePath)
+
+	configPath, err := resolveConfigPath(opts.ConfigPath, userScope)
+	if err != nil {
+		return SyncResult{}, err
+	}
+	statePath, err := resolveStatePath(opts.StatePath, userScope)
 	if err != nil {
 		return SyncResult{}, err
 	}
@@ -44,13 +58,14 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 		return SyncResult{}, err
 	}
 
-	desiredServers := desiredServersForTarget(manifests)
+	desiredServers, refused := desiredServersForTarget(manifests, userScope)
 	result, err := buildPlan(existingServers, managedState, desiredServers)
 	if err != nil {
 		return SyncResult{}, err
 	}
 	result.ConfigPath = configPath
 	result.DryRun = opts.DryRun
+	result.Refused = refused
 
 	if opts.DryRun {
 		return result, nil
@@ -105,6 +120,16 @@ func DefaultProjectConfigPath() (string, error) {
 	return filepath.Join(cwd, ".mcp.json"), nil
 }
 
+// DefaultUserConfigPath locates the user-scoped Claude Code config, where
+// secret env values are allowed to materialize.
+func DefaultUserConfigPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user home: %w", err)
+	}
+	return filepath.Join(home, ".claude.json"), nil
+}
+
 func DefaultStatePath() (string, error) {
 	root, err := registry.DefaultRootDir()
 	if err != nil {
@@ -113,21 +138,56 @@ func DefaultStatePath() (string, error) {
 	return filepath.Join(root, "state", Target+"-managed.json"), nil
 }
 
-func resolveConfigPath(configPath string) (string, error) {
+// DefaultUserStatePath locates managed state for the user-scoped config.
+// Project and user scopes must never share a state file: ownership recorded
+// for one config would drive removals against the other.
+func DefaultUserStatePath() (string, error) {
+	root, err := registry.DefaultRootDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "state", Target+"-user-managed.json"), nil
+}
+
+func resolveConfigPath(configPath string, userScope bool) (string, error) {
+	if userScope {
+		return syncshared.ResolvePath(configPath, DefaultUserConfigPath)
+	}
 	return syncshared.ResolvePath(configPath, DefaultProjectConfigPath)
 }
 
-func resolveStatePath(statePath string) (string, error) {
+// resolveScope reports whether opts.Scope selects the user-scoped config.
+// Empty defaults to project (fail closed); unknown values are rejected.
+func resolveScope(scope string) (bool, error) {
+	switch strings.TrimSpace(scope) {
+	case "", clients.ScopeProject:
+		return false, nil
+	case clients.ScopeUser:
+		return true, nil
+	default:
+		return false, fmt.Errorf("unknown sync scope %q (supported: %s, %s)", scope, clients.ScopeProject, clients.ScopeUser)
+	}
+}
+
+func resolveStatePath(statePath string, userScope bool) (string, error) {
+	if userScope {
+		return syncshared.ResolvePath(statePath, DefaultUserStatePath)
+	}
 	return syncshared.ResolvePath(statePath, DefaultStatePath)
 }
 
-func desiredServersForTarget(manifests []registry.Manifest) map[string]serverConfig {
+func desiredServersForTarget(manifests []registry.Manifest, userScope bool) (map[string]serverConfig, []string) {
 	servers := map[string]serverConfig{}
+	var refused []string
 	for _, manifest := range manifests {
 		if !manifest.Enabled {
 			continue
 		}
 		if !manifest.HasClient(Target) {
+			continue
+		}
+		if !userScope && manifest.HasSecretValue() {
+			refused = append(refused, manifest.Name)
 			continue
 		}
 
@@ -143,7 +203,8 @@ func desiredServersForTarget(manifests []registry.Manifest) map[string]serverCon
 		}
 		servers[manifest.Name] = entry
 	}
-	return servers
+	sort.Strings(refused)
+	return servers, refused
 }
 
 func buildPlan(existing map[string]serverConfig, managed map[string][]string, desired map[string]serverConfig) (SyncResult, error) {

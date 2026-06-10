@@ -27,7 +27,15 @@ madari sync claude-desktop --dry-run
 madari sync claude-desktop
 madari sync claude-code --dry-run
 madari sync claude-code
+madari sync claude-code --scope user
 ```
+
+`--scope` applies to `claude-code` only: `project` (default) targets the
+repo-scoped `.mcp.json`, `user` targets the user-scoped `~/.claude.json`.
+Each scope tracks its managed entries independently. Servers carrying static
+values for `[secret_env]` keys are refused per entry at project scope (other
+servers keep syncing; a previously materialized secret entry is scrubbed)
+and must sync with `--scope user`.
 
 ## Diagnostics
 
@@ -97,12 +105,31 @@ summaries cover every sync target):
     {"target": "claude-desktop", "status": "ready"}
   ],
   "managed": [
-    {"target": "claude-code", "entries": 0, "sources": []},
-    {"target": "claude-desktop", "entries": 1, "sources": ["standalone"]}
+    {"target": "claude-code", "scope": "default", "entries": 0, "sources": []},
+    {"target": "claude-code", "scope": "user", "entries": 0, "sources": []},
+    {"target": "claude-desktop", "scope": "default", "entries": 1, "sources": ["standalone"]}
   ],
-  "manifest_errors": 0
+  "manifest_errors": 0,
+  "drift": [
+    {
+      "target": "claude-desktop",
+      "scope": "default",
+      "config_path": "/path/to/claude_desktop_config.json",
+      "status": "ready",
+      "stale": [],
+      "missing": [],
+      "orphaned": [],
+      "issue": ""
+    }
+  ]
 }
 ```
+
+Drift entries appear per target+scope that has managed entries: `stale`
+(materialized value differs from the manifest), `missing` (managed entry
+deleted from the client config), and `orphaned` (no longer desired; the next
+sync removes it). Drift is warning-level and never changes the exit code by
+itself.
 
 `madari doctor --json`:
 
@@ -139,6 +166,18 @@ summaries cover every sync target):
       "message": "ok"
     }
   ],
+  "drift": [
+    {
+      "target": "claude-desktop",
+      "scope": "default",
+      "config_path": "/path/to/claude_desktop_config.json",
+      "status": "warn",
+      "stale": ["stewreads"],
+      "missing": [],
+      "orphaned": [],
+      "issue": ""
+    }
+  ],
   "summary": {"total": 1, "ready": 0, "warning": 1, "error": 1, "skipped": 0}
 }
 ```
@@ -156,7 +195,8 @@ summaries cover every sync target):
   "updated": [],
   "removed": [],
   "unchanged": [],
-  "skipped": []
+  "skipped": [],
+  "refused": []
 }
 ```
 

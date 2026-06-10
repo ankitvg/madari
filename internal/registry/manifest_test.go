@@ -75,6 +75,20 @@ func TestManifestValidateErrors(t *testing.T) {
 			},
 			expects: "duplicate required_env key",
 		},
+		{
+			name: "duplicate secret_env keys",
+			mutate: func(m *Manifest) {
+				m.SecretEnv.Keys = []string{"FOO", "FOO"}
+			},
+			expects: "duplicate secret_env key",
+		},
+		{
+			name: "invalid secret_env key",
+			mutate: func(m *Manifest) {
+				m.SecretEnv.Keys = []string{"not-valid"}
+			},
+			expects: "invalid secret_env key",
+		},
 	}
 
 	for _, tt := range tests {
