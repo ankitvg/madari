@@ -43,6 +43,8 @@
 
 - Never overwrite unknown config blocks.
 - Keep managed entries isolated via per-target managed state tracking files.
+- Never adopt pre-existing entries Madari did not create, even when their
+  values match a manifest; ownership is only taken for entries sync introduces.
 - Remove managed entries from client config only when no recorded source owns them.
 - Always backup before write.
 - Fail closed on parse errors.
