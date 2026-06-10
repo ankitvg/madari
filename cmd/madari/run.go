@@ -369,6 +369,8 @@ func (a cliApp) cmdList(args []string) error {
 	}
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
+	var jsonOut bool
+	fs.BoolVar(&jsonOut, "json", false, "Emit JSON instead of text")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printListHelp(a.stdout)
@@ -377,14 +379,14 @@ func (a cliApp) cmdList(args []string) error {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("usage: madari list")
+		return fmt.Errorf("usage: madari list [--json]")
 	}
 
 	manifests, err := a.store.List()
 	if err != nil {
 		return err
 	}
-	if len(manifests) == 0 {
+	if len(manifests) == 0 && !jsonOut {
 		fmt.Fprintln(a.stdout, "no servers configured")
 		return nil
 	}
@@ -392,6 +394,26 @@ func (a cliApp) cmdList(args []string) error {
 	managedSources, err := a.managedSourcesByServer()
 	if err != nil {
 		return err
+	}
+
+	if jsonOut {
+		payload := listJSON{
+			SchemaVersion: jsonSchemaVersion,
+			Command:       "list",
+			Servers:       make([]serverJSON, 0, len(manifests)),
+		}
+		for _, manifest := range manifests {
+			clients := append([]string(nil), manifest.Clients...)
+			sort.Strings(clients)
+			payload.Servers = append(payload.Servers, serverJSON{
+				Name:    manifest.Name,
+				Enabled: manifest.Enabled,
+				Command: manifest.Command,
+				Clients: nonNilStrings(clients),
+				Sources: nonNilStrings(managedSources[manifest.Name]),
+			})
+		}
+		return writeJSON(a.stdout, payload)
 	}
 
 	fmt.Fprintln(a.stdout, "NAME\tSTATUS\tCOMMAND\tCLIENTS\tSOURCES")
@@ -516,7 +538,7 @@ func (a cliApp) cmdSetEnabled(args []string, enabled bool) error {
 
 func (a cliApp) cmdSync(args []string) error {
 	if len(args) == 0 {
-		return commandUsageError("sync", "madari sync <client> [--dry-run] [--config-path <path>]")
+		return commandUsageError("sync", "madari sync <client> [--dry-run] [--config-path <path>] [--json]")
 	}
 	if isHelpToken(args[0]) {
 		printSyncHelp(a.stdout)
@@ -528,8 +550,10 @@ func (a cliApp) cmdSync(args []string) error {
 	fs.SetOutput(io.Discard)
 	var dryRun bool
 	var configPath string
+	var jsonOut bool
 	fs.BoolVar(&dryRun, "dry-run", false, "Preview changes without writing files")
 	fs.StringVar(&configPath, "config-path", "", "Override client config path")
+	fs.BoolVar(&jsonOut, "json", false, "Emit JSON instead of text (requires --dry-run)")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printSyncHelp(a.stdout)
@@ -539,6 +563,9 @@ func (a cliApp) cmdSync(args []string) error {
 	}
 	if fs.NArg() != 0 {
 		return commandUnexpectedArgsError("sync", fs.Args())
+	}
+	if jsonOut && !dryRun {
+		return commandInputError("sync", "--json requires --dry-run")
 	}
 	adapter, ok := syncAdapters[target]
 	if !ok {
@@ -559,6 +586,20 @@ func (a cliApp) cmdSync(args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+	if jsonOut {
+		return writeJSON(a.stdout, syncJSON{
+			SchemaVersion: jsonSchemaVersion,
+			Command:       "sync",
+			Target:        target,
+			ConfigPath:    result.ConfigPath,
+			DryRun:        result.DryRun,
+			Added:         nonNilStrings(result.Added),
+			Updated:       nonNilStrings(result.Updated),
+			Removed:       nonNilStrings(result.Removed),
+			Unchanged:     nonNilStrings(result.Unchanged),
+			Skipped:       nonNilStrings(skipped),
+		})
 	}
 	printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, skipped)
 	return nil
@@ -642,7 +683,9 @@ func (a cliApp) cmdDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var clientConfigs stringList
+	var jsonOut bool
 	fs.Var(&clientConfigs, "client-config", "Override config path for a client: target=path (repeatable)")
+	fs.BoolVar(&jsonOut, "json", false, "Emit JSON instead of text")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printDoctorHelp(a.stdout)
@@ -666,6 +709,58 @@ func (a cliApp) cmdDoctor(args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+
+	if jsonOut {
+		payload := doctorJSON{
+			SchemaVersion:  jsonSchemaVersion,
+			Command:        "doctor",
+			ServersDir:     report.ServersDir,
+			Servers:        make([]doctorServerJSON, 0, len(report.Servers)),
+			ManifestErrors: make([]manifestErrorJSON, 0, len(report.ManifestErrors)),
+			ClientConfigs:  make([]doctorConfigJSON, 0, len(report.ClientConfigs)),
+			Summary:        summaryToJSON(report.Summary),
+		}
+		for _, server := range report.Servers {
+			issues := make([]issueJSON, 0, len(server.Issues))
+			for _, issue := range server.Issues {
+				issues = append(issues, issueJSON{
+					Severity: string(issue.Severity),
+					Code:     issue.Code,
+					Message:  issue.Message,
+				})
+			}
+			payload.Servers = append(payload.Servers, doctorServerJSON{
+				Name:    server.Name,
+				Enabled: server.Enabled,
+				Clients: nonNilStrings(server.Clients),
+				Command: server.Command,
+				Status:  string(server.Status),
+				Issues:  issues,
+			})
+		}
+		for _, manifestError := range report.ManifestErrors {
+			payload.ManifestErrors = append(payload.ManifestErrors, manifestErrorJSON{
+				File:    manifestError.File,
+				Message: manifestError.Message,
+			})
+		}
+		for _, cc := range report.ClientConfigs {
+			payload.ClientConfigs = append(payload.ClientConfigs, doctorConfigJSON{
+				Target:  cc.Target,
+				Path:    cc.Path,
+				Exists:  cc.Exists,
+				Status:  string(cc.Status),
+				Message: cc.Message,
+			})
+		}
+		if err := writeJSON(a.stdout, payload); err != nil {
+			return err
+		}
+		if report.Summary.Error > 0 {
+			return fmt.Errorf("doctor found %d error(s)", report.Summary.Error)
+		}
+		return nil
 	}
 
 	fmt.Fprintf(a.stdout, "servers directory: %s\n", report.ServersDir)
@@ -731,7 +826,9 @@ func (a cliApp) cmdStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var clientConfigs stringList
+	var jsonOut bool
 	fs.Var(&clientConfigs, "client-config", "Override config path for a client: target=path (repeatable)")
+	fs.BoolVar(&jsonOut, "json", false, "Emit JSON instead of text")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printStatusHelp(a.stdout)
@@ -757,6 +854,66 @@ func (a cliApp) cmdStatus(args []string) error {
 		return err
 	}
 
+	type managedSummary struct {
+		target  string
+		entries int
+		sources []string
+	}
+	managed := make([]managedSummary, 0, len(adapters))
+	for _, adapter := range adapters {
+		state, err := syncshared.LoadManagedState(a.managedStatePath(adapter.Target()))
+		if err != nil {
+			return err
+		}
+		sourceSet := map[string]struct{}{}
+		for _, sources := range state {
+			for _, source := range sources {
+				sourceSet[source] = struct{}{}
+			}
+		}
+		sourceList := make([]string, 0, len(sourceSet))
+		for source := range sourceSet {
+			sourceList = append(sourceList, source)
+		}
+		sort.Strings(sourceList)
+		managed = append(managed, managedSummary{
+			target:  adapter.Target(),
+			entries: len(state),
+			sources: sourceList,
+		})
+	}
+
+	if jsonOut {
+		payload := statusJSON{
+			SchemaVersion:  jsonSchemaVersion,
+			Command:        "status",
+			Summary:        summaryToJSON(report.Summary),
+			ClientConfigs:  make([]statusConfigJSON, 0, len(report.ClientConfigs)),
+			Managed:        make([]managedJSON, 0, len(managed)),
+			ManifestErrors: len(report.ManifestErrors),
+		}
+		for _, cc := range report.ClientConfigs {
+			payload.ClientConfigs = append(payload.ClientConfigs, statusConfigJSON{
+				Target: cc.Target,
+				Status: string(cc.Status),
+			})
+		}
+		for _, m := range managed {
+			payload.Managed = append(payload.Managed, managedJSON{
+				Target:  m.target,
+				Entries: m.entries,
+				Sources: nonNilStrings(m.sources),
+			})
+		}
+		if err := writeJSON(a.stdout, payload); err != nil {
+			return err
+		}
+		if report.Summary.Error > 0 {
+			return fmt.Errorf("status found %d error(s)", report.Summary.Error)
+		}
+		return nil
+	}
+
 	fmt.Fprintf(
 		a.stdout,
 		"madari: total=%d ready=%d warn=%d error=%d skipped=%d\n",
@@ -771,26 +928,11 @@ func (a cliApp) cmdStatus(args []string) error {
 			fmt.Fprintf(a.stdout, "%s-config: %s\n", cc.Target, cc.Status)
 		}
 	}
-	for _, adapter := range adapters {
-		state, err := syncshared.LoadManagedState(a.managedStatePath(adapter.Target()))
-		if err != nil {
-			return err
-		}
-		if len(state) == 0 {
+	for _, m := range managed {
+		if m.entries == 0 {
 			continue
 		}
-		sourceSet := map[string]struct{}{}
-		for _, sources := range state {
-			for _, source := range sources {
-				sourceSet[source] = struct{}{}
-			}
-		}
-		sourceList := make([]string, 0, len(sourceSet))
-		for source := range sourceSet {
-			sourceList = append(sourceList, source)
-		}
-		sort.Strings(sourceList)
-		fmt.Fprintf(a.stdout, "%s-managed: entries=%d sources=%s\n", adapter.Target(), len(state), strings.Join(sourceList, ","))
+		fmt.Fprintf(a.stdout, "%s-managed: entries=%d sources=%s\n", m.target, m.entries, strings.Join(m.sources, ","))
 	}
 	if len(report.ManifestErrors) > 0 {
 		fmt.Fprintf(a.stdout, "manifest-errors: %d\n", len(report.ManifestErrors))
@@ -1285,11 +1427,15 @@ func printInstallHelp(out io.Writer) {
 
 func printListHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  madari list")
+	fmt.Fprintln(out, "  madari list [--json]")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Options:")
+	fmt.Fprintln(out, "  --json                     Emit JSON instead of text")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  List configured servers with status, command path, clients, and the")
 	fmt.Fprintln(out, "  managed sources that own each synced entry (\"-\" when not synced).")
+	fmt.Fprintln(out, "  JSON schemas are documented in docs/cli-reference.md.")
 }
 
 func printRemoveHelp(out io.Writer) {
@@ -1314,11 +1460,12 @@ func printEnableDisableHelp(command string, out io.Writer) {
 
 func printSyncHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  madari sync <client> [--dry-run] [--config-path <path>]")
+	fmt.Fprintln(out, "  madari sync <client> [--dry-run] [--config-path <path>] [--json]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
 	fmt.Fprintln(out, "  --dry-run                  Preview changes without writing files")
 	fmt.Fprintln(out, "  --config-path <path>       Override target client config path")
+	fmt.Fprintln(out, "  --json                     Emit JSON instead of text (requires --dry-run)")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Sync enabled servers from Madari registry into a target client config.")
@@ -1336,10 +1483,11 @@ func printClientsHelp(out io.Writer) {
 
 func printDoctorHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  madari doctor [--client-config target=path ...]")
+	fmt.Fprintln(out, "  madari doctor [--client-config target=path ...] [--json]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
 	fmt.Fprintln(out, "  --client-config target=path    Override config path for a client (repeatable)")
+	fmt.Fprintln(out, "  --json                         Emit JSON instead of text")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Validate server manifests, command paths, required env keys, and client config health.")
@@ -1352,10 +1500,11 @@ func printDoctorHelp(out io.Writer) {
 
 func printStatusHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  madari status [--client-config target=path ...]")
+	fmt.Fprintln(out, "  madari status [--client-config target=path ...] [--json]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
 	fmt.Fprintln(out, "  --client-config target=path    Override config path for a client (repeatable)")
+	fmt.Fprintln(out, "  --json                         Emit JSON instead of text")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Show a concise readiness summary, including managed sync entries per")

@@ -2,9 +2,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -1278,6 +1282,249 @@ func TestRunWithStoreListAndStatusShowManagedSources(t *testing.T) {
 	if !strings.Contains(result.stdout, "claude-desktop-managed: entries=1 sources=standalone") {
 		t.Fatalf("expected managed summary line, got: %s", result.stdout)
 	}
+}
+
+func decodeJSONObject(t *testing.T, payload string) map[string]any {
+	t.Helper()
+	decoded := map[string]any{}
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+		t.Fatalf("expected valid JSON on stdout, got error %v; stdout=%s", err, payload)
+	}
+	return decoded
+}
+
+func assertJSONKeys(t *testing.T, payload map[string]any, want ...string) {
+	t.Helper()
+	got := make([]string, 0, len(payload))
+	for key := range payload {
+		got = append(got, key)
+	}
+	sort.Strings(got)
+	sorted := append([]string(nil), want...)
+	sort.Strings(sorted)
+	if !reflect.DeepEqual(got, sorted) {
+		t.Fatalf("JSON schema drift: want keys %v, got %v", sorted, got)
+	}
+}
+
+func TestRunWithStoreListJSONEmpty(t *testing.T) {
+	store := newTestStore(t)
+
+	result := runCmd(store, "list", "--json")
+	if result.code != 0 {
+		t.Fatalf("list --json failed: %s", result.stderr)
+	}
+
+	expected := `{
+  "schema_version": 1,
+  "command": "list",
+  "servers": []
+}
+`
+	if result.stdout != expected {
+		t.Fatalf("list --json schema drift:\nwant:\n%s\ngot:\n%s", expected, result.stdout)
+	}
+}
+
+func TestRunWithStoreListJSON(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-desktop"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	configPath := filepath.Join(t.TempDir(), "claude_desktop_config.json")
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+	if result := runCmd(store, "sync", "claude-desktop", "--config-path", configPath); result.code != 0 {
+		t.Fatalf("sync failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "list", "--json")
+	if result.code != 0 {
+		t.Fatalf("list --json failed: %s", result.stderr)
+	}
+
+	expected := fmt.Sprintf(`{
+  "schema_version": 1,
+  "command": "list",
+  "servers": [
+    {
+      "name": "stewreads",
+      "enabled": true,
+      "command": %q,
+      "clients": [
+        "claude-desktop"
+      ],
+      "sources": [
+        "standalone"
+      ]
+    }
+  ]
+}
+`, commandPath)
+	if result.stdout != expected {
+		t.Fatalf("list --json schema drift:\nwant:\n%s\ngot:\n%s", expected, result.stdout)
+	}
+}
+
+func TestRunWithStoreSyncDryRunJSON(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	configPath := filepath.Join(t.TempDir(), ".mcp.json")
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	result := runCmd(store, "sync", "claude-code", "--dry-run", "--json", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("sync --dry-run --json failed: %s", result.stderr)
+	}
+
+	expected := fmt.Sprintf(`{
+  "schema_version": 1,
+  "command": "sync",
+  "target": "claude-code",
+  "config_path": %q,
+  "dry_run": true,
+  "added": [
+    "stewreads"
+  ],
+  "updated": [],
+  "removed": [],
+  "unchanged": [],
+  "skipped": []
+}
+`, configPath)
+	if result.stdout != expected {
+		t.Fatalf("sync --json schema drift:\nwant:\n%s\ngot:\n%s", expected, result.stdout)
+	}
+}
+
+func TestRunWithStoreSyncJSONRequiresDryRun(t *testing.T) {
+	store := newTestStore(t)
+
+	result := runCmd(store, "sync", "claude-code", "--json")
+	if result.code == 0 {
+		t.Fatalf("expected sync --json without --dry-run to fail")
+	}
+	if !strings.Contains(result.stderr, "--json requires --dry-run") {
+		t.Fatalf("expected dry-run requirement error, got: %s", result.stderr)
+	}
+	if strings.TrimSpace(result.stdout) != "" {
+		t.Fatalf("expected no stdout on input error, got: %s", result.stdout)
+	}
+}
+
+func TestRunWithStoreStatusJSON(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-desktop"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	configPath := filepath.Join(t.TempDir(), "claude_desktop_config.json")
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+	if result := runCmd(store, "sync", "claude-desktop", "--config-path", configPath); result.code != 0 {
+		t.Fatalf("sync failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "status", "--json", "--client-config", "claude-desktop="+configPath)
+	if result.code != 0 {
+		t.Fatalf("status --json failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+
+	payload := decodeJSONObject(t, result.stdout)
+	assertJSONKeys(t, payload, "schema_version", "command", "summary", "client_configs", "managed", "manifest_errors")
+	if payload["schema_version"].(float64) != 1 {
+		t.Fatalf("unexpected schema_version: %v", payload["schema_version"])
+	}
+	if payload["command"].(string) != "status" {
+		t.Fatalf("unexpected command: %v", payload["command"])
+	}
+
+	summary := payload["summary"].(map[string]any)
+	assertJSONKeys(t, summary, "total", "ready", "warning", "error", "skipped")
+	if summary["total"].(float64) != 1 || summary["ready"].(float64) != 1 {
+		t.Fatalf("unexpected summary: %v", summary)
+	}
+
+	configs := payload["client_configs"].([]any)
+	if len(configs) == 0 {
+		t.Fatalf("expected client config entries, got none")
+	}
+	assertJSONKeys(t, configs[0].(map[string]any), "target", "status")
+
+	managed := payload["managed"].([]any)
+	var desktop map[string]any
+	for _, item := range managed {
+		entry := item.(map[string]any)
+		assertJSONKeys(t, entry, "target", "entries", "sources")
+		if entry["target"] == "claude-desktop" {
+			desktop = entry
+		}
+	}
+	if desktop == nil {
+		t.Fatalf("expected claude-desktop managed summary, got: %v", managed)
+	}
+	if desktop["entries"].(float64) != 1 {
+		t.Fatalf("expected one managed entry for claude-desktop, got: %v", desktop)
+	}
+	sources := desktop["sources"].([]any)
+	if len(sources) != 1 || sources[0] != "standalone" {
+		t.Fatalf("expected standalone source, got: %v", sources)
+	}
+}
+
+func TestRunWithStoreDoctorJSONReportsErrorsAndExitCode(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	configPath := filepath.Join(t.TempDir(), ".mcp.json")
+	if err := os.WriteFile(configPath, []byte("{broken"), 0o644); err != nil {
+		t.Fatalf("write invalid config fixture: %v", err)
+	}
+
+	result := runCmd(store, "doctor", "--json", "--client-config", "claude-code="+configPath)
+	if result.code == 0 {
+		t.Fatalf("expected doctor to exit non-zero for invalid config")
+	}
+	if !strings.Contains(result.stderr, "doctor found") {
+		t.Fatalf("expected error summary on stderr, got: %s", result.stderr)
+	}
+
+	payload := decodeJSONObject(t, result.stdout)
+	assertJSONKeys(t, payload, "schema_version", "command", "servers_dir", "servers", "manifest_errors", "client_configs", "summary")
+	if payload["command"].(string) != "doctor" {
+		t.Fatalf("unexpected command: %v", payload["command"])
+	}
+
+	summary := payload["summary"].(map[string]any)
+	if summary["error"].(float64) < 1 {
+		t.Fatalf("expected at least one error in summary, got: %v", summary)
+	}
+
+	servers := payload["servers"].([]any)
+	if len(servers) != 1 {
+		t.Fatalf("expected one server entry, got: %v", servers)
+	}
+	assertJSONKeys(t, servers[0].(map[string]any), "name", "enabled", "clients", "command", "status", "issues")
+
+	configs := payload["client_configs"].([]any)
+	if len(configs) == 0 {
+		t.Fatalf("expected client config entries, got none")
+	}
+	assertJSONKeys(t, configs[0].(map[string]any), "target", "path", "exists", "status", "message")
 }
 
 func TestRunWithStoreStatusReturnsErrorForInvalidConfig(t *testing.T) {

@@ -21,14 +21,14 @@ go install github.com/ankitvg/madari/cmd/madari@latest
 
 - `madari install <package> [options]`
 - `madari add <name> --command <cmd> --client <client>`
-- `madari list`
+- `madari list [--json]`
 - `madari remove <name>`
 - `madari enable <name>`
 - `madari disable <name>`
-- `madari sync <client> [--dry-run] [--config-path <path>]`
+- `madari sync <client> [--dry-run] [--config-path <path>] [--json]`
 - `madari clients`
-- `madari doctor [--client-config target=path ...]`
-- `madari status [--client-config target=path ...]`
+- `madari doctor [--client-config target=path ...] [--json]`
+- `madari status [--client-config target=path ...] [--json]`
 - `madari export [--file <path>]`
 - `madari import --file <path> [--apply]`
 - `madari help [command]`
@@ -42,6 +42,7 @@ Notes:
 - `add` resolves `--command` to an absolute executable path and stores that path in the manifest.
 - `sync` skips servers with missing/non-executable command paths and continues syncing others.
 - `list` shows the managed sources owning each synced entry (`standalone` today; `-` when not synced), and `status` summarizes managed entries per client.
+- `list`, `status`, `doctor`, and `sync --dry-run` accept `--json` for machine-readable output with a versioned schema; schemas and exit codes are documented in `docs/cli-reference.md`.
 - Supported sync clients: `claude-desktop` and `claude-code`.
 - Default sync config paths:
   - `claude-desktop`: platform-specific Claude Desktop config path.
