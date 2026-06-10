@@ -451,14 +451,32 @@ func (a cliApp) managedUserStatePath(target string) string {
 	return filepath.Join(filepath.Dir(a.store.ServersDir()), "state", target+"-user-managed.json")
 }
 
-// managedStatePaths lists every managed-state file for a target; claude-code
-// has one per scope.
-func (a cliApp) managedStatePaths(target string) []string {
-	paths := []string{a.managedStatePath(target)}
-	if target == claudecode.Target {
-		paths = append(paths, a.managedUserStatePath(target))
+// managedStateRef names one managed-state file: a sync target plus the scope
+// the state belongs to ("" = the target's default scope).
+type managedStateRef struct {
+	target string
+	scope  string
+	path   string
+}
+
+// managedStateRefs lists every managed-state file across sync targets;
+// claude-code has one per scope.
+func (a cliApp) managedStateRefs() []managedStateRef {
+	refs := []managedStateRef{}
+	for _, adapter := range sortedAdapters() {
+		refs = append(refs, managedStateRef{
+			target: adapter.Target(),
+			path:   a.managedStatePath(adapter.Target()),
+		})
+		if adapter.Target() == claudecode.Target {
+			refs = append(refs, managedStateRef{
+				target: adapter.Target(),
+				scope:  clients.ScopeUser,
+				path:   a.managedUserStatePath(adapter.Target()),
+			})
+		}
 	}
-	return paths
+	return refs
 }
 
 // driftTargets enumerates the managed-state/config pairs doctor and status
@@ -486,19 +504,17 @@ func (a cliApp) driftTargets(adapters []clients.ClientAdapter, configPathOverrid
 // all sync targets and scopes.
 func (a cliApp) managedSourcesByServer() (map[string][]string, error) {
 	union := map[string]map[string]struct{}{}
-	for _, adapter := range sortedAdapters() {
-		for _, path := range a.managedStatePaths(adapter.Target()) {
-			state, err := syncshared.LoadManagedState(path)
-			if err != nil {
-				return nil, err
+	for _, ref := range a.managedStateRefs() {
+		state, err := syncshared.LoadManagedState(ref.path)
+		if err != nil {
+			return nil, err
+		}
+		for name, sources := range state {
+			if union[name] == nil {
+				union[name] = map[string]struct{}{}
 			}
-			for name, sources := range state {
-				if union[name] == nil {
-					union[name] = map[string]struct{}{}
-				}
-				for _, source := range sources {
-					union[name][source] = struct{}{}
-				}
+			for _, source := range sources {
+				union[name][source] = struct{}{}
 			}
 		}
 	}
@@ -948,12 +964,14 @@ func (a cliApp) cmdStatus(args []string) error {
 
 	type managedSummary struct {
 		target  string
+		scope   string
 		entries int
 		sources []string
 	}
-	managed := make([]managedSummary, 0, len(adapters))
-	for _, adapter := range adapters {
-		state, err := syncshared.LoadManagedState(a.managedStatePath(adapter.Target()))
+	refs := a.managedStateRefs()
+	managed := make([]managedSummary, 0, len(refs))
+	for _, ref := range refs {
+		state, err := syncshared.LoadManagedState(ref.path)
 		if err != nil {
 			return err
 		}
@@ -969,7 +987,8 @@ func (a cliApp) cmdStatus(args []string) error {
 		}
 		sort.Strings(sourceList)
 		managed = append(managed, managedSummary{
-			target:  adapter.Target(),
+			target:  ref.target,
+			scope:   ref.scope,
 			entries: len(state),
 			sources: sourceList,
 		})
@@ -992,8 +1011,13 @@ func (a cliApp) cmdStatus(args []string) error {
 			})
 		}
 		for _, m := range managed {
+			scope := m.scope
+			if scope == "" {
+				scope = "default"
+			}
 			payload.Managed = append(payload.Managed, managedJSON{
 				Target:  m.target,
+				Scope:   scope,
 				Entries: m.entries,
 				Sources: nonNilStrings(m.sources),
 			})
@@ -1025,7 +1049,11 @@ func (a cliApp) cmdStatus(args []string) error {
 		if m.entries == 0 {
 			continue
 		}
-		fmt.Fprintf(a.stdout, "%s-managed: entries=%d sources=%s\n", m.target, m.entries, strings.Join(m.sources, ","))
+		label := m.target + "-managed"
+		if m.scope == clients.ScopeUser {
+			label = m.target + "-user-managed"
+		}
+		fmt.Fprintf(a.stdout, "%s: entries=%d sources=%s\n", label, m.entries, strings.Join(m.sources, ","))
 	}
 	for _, dr := range report.Drift {
 		if dr.Status == doctor.StatusReady {

@@ -1467,7 +1467,7 @@ func TestRunWithStoreStatusJSON(t *testing.T) {
 	var desktop map[string]any
 	for _, item := range managed {
 		entry := item.(map[string]any)
-		assertJSONKeys(t, entry, "target", "entries", "sources")
+		assertJSONKeys(t, entry, "target", "scope", "entries", "sources")
 		if entry["target"] == "claude-desktop" {
 			desktop = entry
 		}
@@ -1588,6 +1588,13 @@ func TestRunWithStoreSecretEnvPlacementFlow(t *testing.T) {
 	}
 	if !strings.Contains(result.stdout, "vault\tenabled\t"+commandPath+"\tclaude-code\tstandalone") {
 		t.Fatalf("expected user-scope managed sources in list, got: %s", result.stdout)
+	}
+
+	// status counts user-scope managed entries (no exit-code assertion:
+	// user-scope drift inspects the machine's real ~/.claude.json).
+	result = runCmd(store, "status", "--client-config", "claude-code="+projectConfig)
+	if !strings.Contains(result.stdout, "claude-code-user-managed: entries=1 sources=standalone") {
+		t.Fatalf("expected user-scope managed summary in status, got: %s", result.stdout)
 	}
 }
 

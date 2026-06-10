@@ -52,6 +52,7 @@ type statusConfigJSON struct {
 
 type managedJSON struct {
 	Target  string   `json:"target"`
+	Scope   string   `json:"scope"`
 	Entries int      `json:"entries"`
 	Sources []string `json:"sources"`
 }

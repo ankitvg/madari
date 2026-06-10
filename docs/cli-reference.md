@@ -105,8 +105,9 @@ summaries cover every sync target):
     {"target": "claude-desktop", "status": "ready"}
   ],
   "managed": [
-    {"target": "claude-code", "entries": 0, "sources": []},
-    {"target": "claude-desktop", "entries": 1, "sources": ["standalone"]}
+    {"target": "claude-code", "scope": "default", "entries": 0, "sources": []},
+    {"target": "claude-code", "scope": "user", "entries": 0, "sources": []},
+    {"target": "claude-desktop", "scope": "default", "entries": 1, "sources": ["standalone"]}
   ],
   "manifest_errors": 0,
   "drift": [
