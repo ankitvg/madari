@@ -21,11 +21,29 @@ type Manifest struct {
 	Description string            `toml:"description,omitempty" json:"description,omitempty"`
 	Env         map[string]string `toml:"env,omitempty" json:"env,omitempty"`
 	RequiredEnv RequiredEnv       `toml:"required_env,omitempty" json:"required_env,omitempty"`
+	SecretEnv   SecretEnv         `toml:"secret_env,omitempty" json:"secret_env,omitempty"`
 }
 
 // RequiredEnv describes environment variables that must be present at runtime.
 type RequiredEnv struct {
 	Keys []string `toml:"keys,omitempty" json:"keys,omitempty"`
+}
+
+// SecretEnv marks environment variable keys whose values are secrets and must
+// never be materialized into repo-scoped client configs.
+type SecretEnv struct {
+	Keys []string `toml:"keys,omitempty" json:"keys,omitempty"`
+}
+
+// HasSecretValue reports whether the manifest carries a static env value for
+// any key marked secret — the case placement policy must guard against.
+func (m Manifest) HasSecretValue() bool {
+	for _, key := range m.SecretEnv.Keys {
+		if _, exists := m.Env[key]; exists {
+			return true
+		}
+	}
+	return false
 }
 
 // HasClient reports whether target appears in the manifest's client list.
@@ -95,6 +113,20 @@ func (m Manifest) Validate() error {
 			continue
 		}
 		seenRequired[key] = struct{}{}
+	}
+
+	seenSecret := map[string]struct{}{}
+	for _, key := range m.SecretEnv.Keys {
+		key = strings.TrimSpace(key)
+		if !envKeyPattern.MatchString(key) {
+			errs = append(errs, fmt.Sprintf("invalid secret_env key %q", key))
+			continue
+		}
+		if _, exists := seenSecret[key]; exists {
+			errs = append(errs, fmt.Sprintf("duplicate secret_env key %q", key))
+			continue
+		}
+		seenSecret[key] = struct{}{}
 	}
 
 	if len(errs) > 0 {

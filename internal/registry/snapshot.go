@@ -171,5 +171,13 @@ func manifestsEqual(a, b Manifest) bool {
 	bReq := append([]string(nil), b.RequiredEnv.Keys...)
 	sort.Strings(aReq)
 	sort.Strings(bReq)
-	return slices.Equal(aReq, bReq)
+	if !slices.Equal(aReq, bReq) {
+		return false
+	}
+
+	aSecret := append([]string(nil), a.SecretEnv.Keys...)
+	bSecret := append([]string(nil), b.SecretEnv.Keys...)
+	sort.Strings(aSecret)
+	sort.Strings(bSecret)
+	return slices.Equal(aSecret, bSecret)
 }

@@ -120,6 +120,73 @@ unexpected = ["MISSING_KEY"]
 	}
 }
 
+func TestParseManifestSecretEnvRoundTrip(t *testing.T) {
+	in := Manifest{
+		Name:        "stewreads",
+		Command:     "stewreads-mcp",
+		Args:        []string{},
+		Enabled:     true,
+		Clients:     []string{"claude-desktop"},
+		Env: map[string]string{
+			"STEWREADS_API_KEY": "shhh",
+		},
+		SecretEnv: SecretEnv{Keys: []string{"STEWREADS_API_KEY"}},
+	}
+
+	encoded, err := MarshalManifest(in)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	if !strings.Contains(string(encoded), "[secret_env]") {
+		t.Fatalf("expected [secret_env] section in output, got:\n%s", encoded)
+	}
+
+	out, err := ParseManifest(encoded)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(out.SecretEnv.Keys) != 1 || out.SecretEnv.Keys[0] != "STEWREADS_API_KEY" {
+		t.Fatalf("expected secret_env keys to survive roundtrip, got: %#v", out.SecretEnv.Keys)
+	}
+	if !out.HasSecretValue() {
+		t.Fatalf("expected HasSecretValue for secret key with static env value")
+	}
+}
+
+func TestParseManifestRejectsUnknownSecretEnvKey(t *testing.T) {
+	manifest := `
+name = "stewreads"
+command = "/usr/local/bin/stewreads-mcp"
+args = []
+enabled = true
+clients = ["claude-desktop"]
+
+[secret_env]
+unexpected = ["STEWREADS_API_KEY"]
+`
+
+	_, err := ParseManifest([]byte(manifest))
+	if err == nil {
+		t.Fatalf("expected parse error for unknown secret_env key")
+	}
+	if !strings.Contains(err.Error(), "unknown key") || !strings.Contains(err.Error(), "[secret_env]") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestHasSecretValueFalseWithoutStaticValue(t *testing.T) {
+	manifest := Manifest{
+		Name:      "stewreads",
+		Command:   "stewreads-mcp",
+		Enabled:   true,
+		Clients:   []string{"claude-desktop"},
+		SecretEnv: SecretEnv{Keys: []string{"STEWREADS_API_KEY"}},
+	}
+	if manifest.HasSecretValue() {
+		t.Fatalf("expected no secret value when [env] carries none")
+	}
+}
+
 func TestParseManifestRejectsMalformedStringArrays(t *testing.T) {
 	tests := []struct {
 		name           string
