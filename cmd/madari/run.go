@@ -461,6 +461,27 @@ func (a cliApp) managedStatePaths(target string) []string {
 	return paths
 }
 
+// driftTargets enumerates the managed-state/config pairs doctor and status
+// diff for drift; claude-code gets one per scope.
+func (a cliApp) driftTargets(adapters []clients.ClientAdapter, configPathOverrides map[string]string) []doctor.DriftTarget {
+	targets := make([]doctor.DriftTarget, 0, len(adapters)+1)
+	for _, adapter := range adapters {
+		targets = append(targets, doctor.DriftTarget{
+			Adapter:    adapter,
+			StatePath:  a.managedStatePath(adapter.Target()),
+			ConfigPath: configPathOverrides[adapter.Target()],
+		})
+		if adapter.Target() == claudecode.Target {
+			targets = append(targets, doctor.DriftTarget{
+				Adapter:   adapter,
+				Scope:     clients.ScopeUser,
+				StatePath: a.managedUserStatePath(adapter.Target()),
+			})
+		}
+	}
+	return targets
+}
+
 // managedSourcesByServer unions managed-state sources per server name across
 // all sync targets and scopes.
 func (a cliApp) managedSourcesByServer() (map[string][]string, error) {
@@ -747,6 +768,7 @@ func (a cliApp) cmdDoctor(args []string) error {
 	report, err := doctor.Run(a.store, doctor.Options{
 		Adapters:            adapters,
 		ConfigPathOverrides: configPathOverrides,
+		DriftTargets:        a.driftTargets(adapters, configPathOverrides),
 	})
 	if err != nil {
 		return err
@@ -795,6 +817,7 @@ func (a cliApp) cmdDoctor(args []string) error {
 				Message: cc.Message,
 			})
 		}
+		payload.Drift = driftToJSON(report.Drift)
 		if err := writeJSON(a.stdout, payload); err != nil {
 			return err
 		}
@@ -813,6 +836,33 @@ func (a cliApp) cmdDoctor(args []string) error {
 		if cc.Message != "" {
 			fmt.Fprintf(a.stdout, "%s detail: %s\n", cc.Target, cc.Message)
 		}
+	}
+
+	for _, dr := range report.Drift {
+		label := dr.Target
+		fix := "madari sync " + dr.Target
+		if dr.Scope == clients.ScopeUser {
+			label += " (user scope)"
+			fix += " --scope user"
+		}
+		if dr.Issue != "" {
+			fmt.Fprintf(a.stdout, "%s drift: [%s] %s\n", label, dr.Status, dr.Issue)
+			continue
+		}
+		if dr.Status == doctor.StatusReady {
+			fmt.Fprintf(a.stdout, "%s drift: [ready] in sync\n", label)
+			continue
+		}
+		fmt.Fprintf(
+			a.stdout,
+			"%s drift: [%s] stale=%s missing=%s orphaned=%s (fix: %s)\n",
+			label,
+			dr.Status,
+			formatNameList(dr.Stale),
+			formatNameList(dr.Missing),
+			formatNameList(dr.Orphaned),
+			fix,
+		)
 	}
 
 	if len(report.ManifestErrors) > 0 {
@@ -890,6 +940,7 @@ func (a cliApp) cmdStatus(args []string) error {
 	report, err := doctor.Run(a.store, doctor.Options{
 		Adapters:            adapters,
 		ConfigPathOverrides: configPathOverrides,
+		DriftTargets:        a.driftTargets(adapters, configPathOverrides),
 	})
 	if err != nil {
 		return err
@@ -932,6 +983,7 @@ func (a cliApp) cmdStatus(args []string) error {
 			ClientConfigs:  make([]statusConfigJSON, 0, len(report.ClientConfigs)),
 			Managed:        make([]managedJSON, 0, len(managed)),
 			ManifestErrors: len(report.ManifestErrors),
+			Drift:          driftToJSON(report.Drift),
 		}
 		for _, cc := range report.ClientConfigs {
 			payload.ClientConfigs = append(payload.ClientConfigs, statusConfigJSON{
@@ -974,6 +1026,22 @@ func (a cliApp) cmdStatus(args []string) error {
 			continue
 		}
 		fmt.Fprintf(a.stdout, "%s-managed: entries=%d sources=%s\n", m.target, m.entries, strings.Join(m.sources, ","))
+	}
+	for _, dr := range report.Drift {
+		if dr.Status == doctor.StatusReady {
+			continue
+		}
+		label := dr.Target
+		fix := "madari sync " + dr.Target
+		if dr.Scope == clients.ScopeUser {
+			label += "-user"
+			fix += " --scope user"
+		}
+		if dr.Issue != "" {
+			fmt.Fprintf(a.stdout, "%s-drift: error %s\n", label, dr.Issue)
+			continue
+		}
+		fmt.Fprintf(a.stdout, "%s-drift: stale=%d missing=%d orphaned=%d (fix: %s)\n", label, len(dr.Stale), len(dr.Missing), len(dr.Orphaned), fix)
 	}
 	if len(report.ManifestErrors) > 0 {
 		fmt.Fprintf(a.stdout, "manifest-errors: %d\n", len(report.ManifestErrors))
@@ -1544,6 +1612,8 @@ func printDoctorHelp(out io.Writer) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Validate server manifests, command paths, required env keys, and client config health.")
+	fmt.Fprintln(out, "  Reports drift between manifests and materialized client entries (stale,")
+	fmt.Fprintln(out, "  missing, orphaned) with the sync command that reconciles each target.")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Examples:")
 	fmt.Fprintln(out, "  madari doctor")
@@ -1561,7 +1631,8 @@ func printStatusHelp(out io.Writer) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Show a concise readiness summary, including managed sync entries per")
-	fmt.Fprintln(out, "  client with their owning sources. Use `madari doctor` for full details.")
+	fmt.Fprintln(out, "  client with their owning sources and any drift between manifests and")
+	fmt.Fprintln(out, "  materialized client entries. Use `madari doctor` for full details.")
 }
 
 func printExportHelp(out io.Writer) {

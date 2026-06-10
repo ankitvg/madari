@@ -108,9 +108,27 @@ summaries cover every sync target):
     {"target": "claude-code", "entries": 0, "sources": []},
     {"target": "claude-desktop", "entries": 1, "sources": ["standalone"]}
   ],
-  "manifest_errors": 0
+  "manifest_errors": 0,
+  "drift": [
+    {
+      "target": "claude-desktop",
+      "scope": "default",
+      "config_path": "/path/to/claude_desktop_config.json",
+      "status": "ready",
+      "stale": [],
+      "missing": [],
+      "orphaned": [],
+      "issue": ""
+    }
+  ]
 }
 ```
+
+Drift entries appear per target+scope that has managed entries: `stale`
+(materialized value differs from the manifest), `missing` (managed entry
+deleted from the client config), and `orphaned` (no longer desired; the next
+sync removes it). Drift is warning-level and never changes the exit code by
+itself.
 
 `madari doctor --json`:
 
@@ -145,6 +163,18 @@ summaries cover every sync target):
       "exists": true,
       "status": "ready",
       "message": "ok"
+    }
+  ],
+  "drift": [
+    {
+      "target": "claude-desktop",
+      "scope": "default",
+      "config_path": "/path/to/claude_desktop_config.json",
+      "status": "warn",
+      "stale": ["stewreads"],
+      "missing": [],
+      "orphaned": [],
+      "issue": ""
     }
   ],
   "summary": {"total": 1, "ready": 0, "warning": 1, "error": 1, "skipped": 0}
