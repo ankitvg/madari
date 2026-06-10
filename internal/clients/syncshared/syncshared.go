@@ -173,22 +173,33 @@ func SaveManagedState(path string, servers map[string][]string) error {
 	return WriteFileAtomically(path, payload, 0o644)
 }
 
-// NextManagedState computes post-sync managed state: every desired name is
-// owned at least by SourceStandalone, preserving any other sources already
-// recorded for it. Names no longer desired lose their standalone source and
-// stay tracked only while other sources still own them.
-func NextManagedState(previous map[string][]string, desiredNames []string) map[string][]string {
+// NextManagedState computes post-sync managed state. A desired name is owned
+// only when Madari already owned it or introduced it in this sync (addedNames);
+// pre-existing unmanaged entries that happen to match desired values are never
+// adopted. Owned names carry SourceStandalone plus any other sources already
+// recorded. Names no longer desired lose their standalone source and stay
+// tracked only while other sources still own them.
+func NextManagedState(previous map[string][]string, desiredNames, addedNames []string) map[string][]string {
+	added := make(map[string]struct{}, len(addedNames))
+	for _, name := range addedNames {
+		added[name] = struct{}{}
+	}
+
 	next := make(map[string][]string, len(desiredNames))
+	desired := make(map[string]struct{}, len(desiredNames))
 	for _, name := range desiredNames {
-		sources := append([]string(nil), previous[name]...)
+		desired[name] = struct{}{}
+		sources, owned := previous[name]
+		if !owned {
+			if _, introduced := added[name]; !introduced {
+				continue
+			}
+		}
+		sources = append([]string(nil), sources...)
 		if !slices.Contains(sources, SourceStandalone) {
 			sources = append(sources, SourceStandalone)
 		}
 		next[name] = sources
-	}
-	desired := make(map[string]struct{}, len(desiredNames))
-	for _, name := range desiredNames {
-		desired[name] = struct{}{}
 	}
 	for name, sources := range previous {
 		if _, stillDesired := desired[name]; stillDesired {

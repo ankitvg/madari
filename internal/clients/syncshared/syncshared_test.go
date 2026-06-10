@@ -169,7 +169,7 @@ func TestNextManagedStatePreservesExistingSources(t *testing.T) {
 		"ringonly": {"ring:research", SourceStandalone},
 	}
 
-	next := NextManagedState(previous, []string{"alpha", "beta", "new"})
+	next := NextManagedState(previous, []string{"alpha", "beta", "new"}, []string{"new"})
 
 	expected := map[string][]string{
 		"alpha":    {"ring:research", SourceStandalone},
@@ -179,6 +179,23 @@ func TestNextManagedStatePreservesExistingSources(t *testing.T) {
 	}
 	if !reflect.DeepEqual(next, expected) {
 		t.Fatalf("expected next state %#v, got %#v", expected, next)
+	}
+}
+
+func TestNextManagedStateDoesNotAdoptUnownedEntries(t *testing.T) {
+	previous := map[string][]string{
+		"owned": {SourceStandalone},
+	}
+
+	// "handmade" is desired and already present in client config (so it is
+	// not in addedNames); ownership must not be taken for it.
+	next := NextManagedState(previous, []string{"owned", "handmade"}, nil)
+
+	expected := map[string][]string{
+		"owned": {SourceStandalone},
+	}
+	if !reflect.DeepEqual(next, expected) {
+		t.Fatalf("expected no adoption of unowned entries, got %#v", next)
 	}
 }
 

@@ -91,7 +91,7 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 		return SyncResult{}, fmt.Errorf("write Claude config: %w", err)
 	}
 
-	nextState := syncshared.NextManagedState(managedState, syncshared.MapKeys(desiredServers))
+	nextState := syncshared.NextManagedState(managedState, syncshared.MapKeys(desiredServers), result.Added)
 	if err := syncshared.SaveManagedState(statePath, nextState); err != nil {
 		return SyncResult{}, fmt.Errorf("write managed sync state: %w", err)
 	}

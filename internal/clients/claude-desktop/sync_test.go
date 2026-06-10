@@ -321,6 +321,59 @@ func TestSyncApplyCreatesBackup(t *testing.T) {
 	}
 }
 
+func TestSyncDoesNotAdoptEqualUnmanagedEntry(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "claude_desktop_config.json")
+	statePath := filepath.Join(tmp, "state", "claude-desktop-managed.json")
+
+	config := []byte(`{
+  "mcpServers": {
+    "stewreads": {
+      "command": "stewreads-mcp",
+      "env": {
+        "STEWREADS_CONFIG_PATH": "~/.config/stewreads/config.toml"
+      }
+    }
+  }
+}
+`)
+	if err := os.WriteFile(configPath, config, 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	manifest := newStewreadsManifest()
+	result, err := Sync([]registry.Manifest{manifest}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("sync apply failed: %v", err)
+	}
+	if len(result.Unchanged) != 1 || result.Unchanged[0] != "stewreads" {
+		t.Fatalf("expected equal unmanaged entry to be unchanged, got: %+v", result)
+	}
+
+	if managedNames := readManagedNames(t, statePath); len(managedNames) != 0 {
+		t.Fatalf("expected no adoption of unmanaged entry, got managed: %#v", managedNames)
+	}
+
+	manifest.Enabled = false
+	result, err = Sync([]registry.Manifest{manifest}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("sync after disable failed: %v", err)
+	}
+	if len(result.Removed) != 0 {
+		t.Fatalf("expected no removal of never-owned entry, got: %#v", result.Removed)
+	}
+	servers := readServers(t, configPath)
+	if _, ok := servers["stewreads"]; !ok {
+		t.Fatalf("expected hand-managed stewreads entry to survive disable")
+	}
+}
+
 func TestSyncMigratesV1ManagedStateToV2(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "claude_desktop_config.json")
