@@ -104,7 +104,7 @@ go test ./...
 ## Architecture
 
 - Reads registry state, writes client configs; no daemon or proxy
-- Only touches entries Madari registered; leaves everything else alone
+- Only touches entries Madari registered; everything else keeps its JSON value, including fields and server shapes Madari does not model
 - Backup + atomic write on every sync; skips invalid entries rather than aborting
 - `doctor` and `status` for diagnostics
 - Supports `uv` and `npm` package manager installs, plus manual `add` for any runtime/framework

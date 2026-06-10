@@ -44,6 +44,10 @@
 ## Safety Model
 
 - Never overwrite unknown config blocks.
+- Entries Madari does not manage keep their JSON value, including fields and
+  server shapes Madari does not model (e.g. `type`/`url` remote entries);
+  only managed or newly added entries are serialized from manifests. The
+  enclosing document is reformatted on write.
 - Keep managed entries isolated via per-target managed state tracking files
   (per scope for clients with both repo- and user-scoped configs).
 - Never adopt pre-existing entries Madari did not create, even when their
