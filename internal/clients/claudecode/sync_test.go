@@ -612,6 +612,124 @@ func TestSyncMigratesV1ManagedStateToV2(t *testing.T) {
 	}
 }
 
+func TestSyncPreservesUnmanagedEntryFieldsAndShapes(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+
+	config := []byte(`{
+  "mcpServers": {
+    "hand-managed": {
+      "command": "/bin/echo",
+      "note": "hand-managed metadata"
+    },
+    "remote-sse": {
+      "type": "sse",
+      "url": "https://example.com/mcp"
+    }
+  }
+}
+`)
+	if err := os.WriteFile(configPath, config, 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	assertPreserved := func(servers map[string]map[string]any) {
+		t.Helper()
+		if servers["hand-managed"]["note"] != "hand-managed metadata" {
+			t.Fatalf("expected unmanaged entry to keep unmodeled field, got: %#v", servers["hand-managed"])
+		}
+		remote := servers["remote-sse"]
+		if remote["type"] != "sse" || remote["url"] != "https://example.com/mcp" {
+			t.Fatalf("expected remote entry shape to survive, got: %#v", remote)
+		}
+		if _, injected := remote["command"]; injected {
+			t.Fatalf("expected no injected command on remote entry, got: %#v", remote)
+		}
+	}
+
+	result, err := Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("sync apply failed: %v", err)
+	}
+	if len(result.Added) != 1 || result.Added[0] != "stewreads" {
+		t.Fatalf("expected stewreads add, got: %+v", result)
+	}
+	servers := readRawServerObjects(t, configPath)
+	if _, ok := servers["stewreads"]; !ok {
+		t.Fatalf("expected stewreads to be materialized")
+	}
+	assertPreserved(servers)
+
+	// Second sync: nothing changes, unmanaged values still intact.
+	result, err = Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("second sync failed: %v", err)
+	}
+	if result.HasChanges() {
+		t.Fatalf("expected no changes on second sync, got: %+v", result)
+	}
+	if len(result.Unchanged) != 1 || result.Unchanged[0] != "stewreads" {
+		t.Fatalf("expected stewreads unchanged, got: %+v", result)
+	}
+	assertPreserved(readRawServerObjects(t, configPath))
+}
+
+func TestSyncKeepsExtraFieldsOnEqualUnmanagedEntry(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+
+	// Values equal the stewreads manifest; "note" is hand-added metadata.
+	config := []byte(`{
+  "mcpServers": {
+    "stewreads": {
+      "command": "stewreads-mcp",
+      "env": {
+        "STEWREADS_CONFIG_PATH": "~/.config/stewreads/config.toml"
+      },
+      "note": "mine"
+    }
+  }
+}
+`)
+	if err := os.WriteFile(configPath, config, 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	result, err := Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("sync apply failed: %v", err)
+	}
+	if len(result.Unchanged) != 1 || result.Unchanged[0] != "stewreads" {
+		t.Fatalf("expected equal unmanaged entry to be unchanged, got: %+v", result)
+	}
+
+	servers := readRawServerObjects(t, configPath)
+	if servers["stewreads"]["note"] != "mine" {
+		t.Fatalf("expected unadopted equal entry to keep extra fields, got: %#v", servers["stewreads"])
+	}
+}
+
+func readRawServerObjects(t *testing.T, configPath string) map[string]map[string]any {
+	t.Helper()
+	root := readRoot(t, configPath)
+	servers := map[string]map[string]any{}
+	if err := json.Unmarshal(root["mcpServers"], &servers); err != nil {
+		t.Fatalf("parse mcpServers objects: %v", err)
+	}
+	return servers
+}
+
 func readRoot(t *testing.T, configPath string) map[string]json.RawMessage {
 	t.Helper()
 	payload, err := os.ReadFile(configPath)
