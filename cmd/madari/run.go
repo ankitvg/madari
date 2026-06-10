@@ -176,6 +176,7 @@ func (a cliApp) cmdInstall(args []string) error {
 	var clients stringList
 	var envPairs stringList
 	var requiredEnv stringList
+	var secretEnv stringList
 
 	fs.StringVar(&name, "name", "", "Server name (defaults from package)")
 	fs.StringVar(&command, "command", "", "Server command (defaults to package name)")
@@ -189,6 +190,7 @@ func (a cliApp) cmdInstall(args []string) error {
 	fs.Var(&clients, "client", "Client id (repeatable, default: claude-desktop)")
 	fs.Var(&envPairs, "env", "Environment variable KEY=VALUE (repeatable)")
 	fs.Var(&requiredEnv, "required-env", "Required runtime env key (repeatable)")
+	fs.Var(&secretEnv, "secret-env", "Secret env key barred from repo-scoped configs (repeatable)")
 
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -256,6 +258,7 @@ func (a cliApp) cmdInstall(args []string) error {
 		Description: description,
 		Env:         env,
 		RequiredEnv: registry.RequiredEnv{Keys: append([]string(nil), requiredEnv...)},
+		SecretEnv:   registry.SecretEnv{Keys: append([]string(nil), secretEnv...)},
 	}
 
 	if err := a.store.Add(manifest); err != nil {
@@ -309,6 +312,7 @@ func (a cliApp) cmdAdd(args []string) error {
 	var clients stringList
 	var envPairs stringList
 	var requiredEnv stringList
+	var secretEnv stringList
 
 	fs.StringVar(&command, "command", "", "Server command")
 	fs.StringVar(&description, "description", "", "Server description")
@@ -317,6 +321,7 @@ func (a cliApp) cmdAdd(args []string) error {
 	fs.Var(&clients, "client", "Client id (repeatable)")
 	fs.Var(&envPairs, "env", "Environment variable KEY=VALUE (repeatable)")
 	fs.Var(&requiredEnv, "required-env", "Required environment key (repeatable)")
+	fs.Var(&secretEnv, "secret-env", "Secret env key barred from repo-scoped configs (repeatable)")
 
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -353,6 +358,7 @@ func (a cliApp) cmdAdd(args []string) error {
 		Description: description,
 		Env:         env,
 		RequiredEnv: registry.RequiredEnv{Keys: append([]string(nil), requiredEnv...)},
+		SecretEnv:   registry.SecretEnv{Keys: append([]string(nil), secretEnv...)},
 	}
 
 	if err := a.store.Add(manifest); err != nil {
@@ -438,21 +444,40 @@ func (a cliApp) managedStatePath(target string) string {
 	return filepath.Join(filepath.Dir(a.store.ServersDir()), "state", target+"-managed.json")
 }
 
+// managedUserStatePath locates managed state for a target's user-scoped
+// config; project and user syncs track ownership independently so removals
+// in one scope never orphan entries in the other.
+func (a cliApp) managedUserStatePath(target string) string {
+	return filepath.Join(filepath.Dir(a.store.ServersDir()), "state", target+"-user-managed.json")
+}
+
+// managedStatePaths lists every managed-state file for a target; claude-code
+// has one per scope.
+func (a cliApp) managedStatePaths(target string) []string {
+	paths := []string{a.managedStatePath(target)}
+	if target == claudecode.Target {
+		paths = append(paths, a.managedUserStatePath(target))
+	}
+	return paths
+}
+
 // managedSourcesByServer unions managed-state sources per server name across
-// all sync targets.
+// all sync targets and scopes.
 func (a cliApp) managedSourcesByServer() (map[string][]string, error) {
 	union := map[string]map[string]struct{}{}
 	for _, adapter := range sortedAdapters() {
-		state, err := syncshared.LoadManagedState(a.managedStatePath(adapter.Target()))
-		if err != nil {
-			return nil, err
-		}
-		for name, sources := range state {
-			if union[name] == nil {
-				union[name] = map[string]struct{}{}
+		for _, path := range a.managedStatePaths(adapter.Target()) {
+			state, err := syncshared.LoadManagedState(path)
+			if err != nil {
+				return nil, err
 			}
-			for _, source := range sources {
-				union[name][source] = struct{}{}
+			for name, sources := range state {
+				if union[name] == nil {
+					union[name] = map[string]struct{}{}
+				}
+				for _, source := range sources {
+					union[name][source] = struct{}{}
+				}
 			}
 		}
 	}
@@ -551,9 +576,11 @@ func (a cliApp) cmdSync(args []string) error {
 	var dryRun bool
 	var configPath string
 	var jsonOut bool
+	var scope string
 	fs.BoolVar(&dryRun, "dry-run", false, "Preview changes without writing files")
 	fs.StringVar(&configPath, "config-path", "", "Override client config path")
 	fs.BoolVar(&jsonOut, "json", false, "Emit JSON instead of text (requires --dry-run)")
+	fs.StringVar(&scope, "scope", "", "Target config scope for claude-code: project (default) or user")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printSyncHelp(a.stdout)
@@ -567,6 +594,15 @@ func (a cliApp) cmdSync(args []string) error {
 	if jsonOut && !dryRun {
 		return commandInputError("sync", "--json requires --dry-run")
 	}
+	scope = strings.TrimSpace(scope)
+	if scope != "" {
+		if target != claudecode.Target {
+			return commandInputError("sync", fmt.Sprintf("--scope is only supported for %s", claudecode.Target))
+		}
+		if scope != clients.ScopeProject && scope != clients.ScopeUser {
+			return commandInputError("sync", fmt.Sprintf("unknown scope %q (supported: %s, %s)", scope, clients.ScopeProject, clients.ScopeUser))
+		}
+	}
 	adapter, ok := syncAdapters[target]
 	if !ok {
 		return commandInputError("sync", fmt.Sprintf("unsupported sync target %q (supported: %s)", target, strings.Join(supportedSyncTargets(), ", ")))
@@ -579,9 +615,13 @@ func (a cliApp) cmdSync(args []string) error {
 	syncable, skipped := filterSyncableManifests(manifests, target)
 
 	statePath := a.managedStatePath(target)
+	if scope == clients.ScopeUser {
+		statePath = a.managedUserStatePath(target)
+	}
 	result, err := adapter.Sync(syncable, clients.SyncOptions{
 		ConfigPath: configPath,
 		StatePath:  statePath,
+		Scope:      scope,
 		DryRun:     dryRun,
 	})
 	if err != nil {
@@ -599,9 +639,10 @@ func (a cliApp) cmdSync(args []string) error {
 			Removed:       nonNilStrings(result.Removed),
 			Unchanged:     nonNilStrings(result.Unchanged),
 			Skipped:       nonNilStrings(skipped),
+			Refused:       nonNilStrings(result.Refused),
 		})
 	}
-	printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, skipped)
+	printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, skipped, result.Refused)
 	return nil
 }
 
@@ -1276,7 +1317,7 @@ func formatNameList(names []string) string {
 	return strings.Join(names, ",")
 }
 
-func printSyncSummary(stdout, stderr io.Writer, target, configPath string, dryRun bool, added, updated, removed, unchanged, skipped []string) {
+func printSyncSummary(stdout, stderr io.Writer, target, configPath string, dryRun bool, added, updated, removed, unchanged, skipped, refused []string) {
 	mode := "applied"
 	if dryRun {
 		mode = "dry-run"
@@ -1292,6 +1333,12 @@ func printSyncSummary(stdout, stderr io.Writer, target, configPath string, dryRu
 		fmt.Fprintf(stdout, "skipped: %s\n", formatNameList(skipped))
 		for _, name := range skipped {
 			fmt.Fprintf(stderr, "warning: skipped %s because command path is not an executable file\n", name)
+		}
+	}
+	if len(refused) > 0 {
+		fmt.Fprintf(stdout, "refused: %s\n", formatNameList(refused))
+		for _, name := range refused {
+			fmt.Fprintf(stderr, "warning: refused %s: secret env values cannot be written to the repo-scoped config; run `madari sync %s --scope user` or remove the static [env] value for keys marked in [secret_env]\n", name, target)
 		}
 	}
 	if len(unchanged) > 0 {
@@ -1389,6 +1436,7 @@ func printAddHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --arg <value>              Command argument (repeatable)")
 	fmt.Fprintln(out, "  --env KEY=VALUE            Environment variable (repeatable)")
 	fmt.Fprintln(out, "  --required-env <KEY>       Required runtime env key (repeatable)")
+	fmt.Fprintln(out, "  --secret-env <KEY>         Secret env key barred from repo-scoped configs (repeatable)")
 	fmt.Fprintln(out, "  --description <text>       Server description")
 	fmt.Fprintln(out, "  --disabled                 Add server in disabled state")
 	fmt.Fprintln(out)
@@ -1409,6 +1457,7 @@ func printInstallHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --arg <value>              Command argument (repeatable)")
 	fmt.Fprintln(out, "  --env KEY=VALUE            Environment variable (repeatable)")
 	fmt.Fprintln(out, "  --required-env <KEY>       Required runtime env key (repeatable)")
+	fmt.Fprintln(out, "  --secret-env <KEY>         Secret env key barred from repo-scoped configs (repeatable)")
 	fmt.Fprintln(out, "  --description <text>       Server description")
 	fmt.Fprintln(out, "  --disabled                 Add server in disabled state")
 	fmt.Fprintln(out, "  --skip-install             Skip package installation")
@@ -1460,16 +1509,20 @@ func printEnableDisableHelp(command string, out io.Writer) {
 
 func printSyncHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  madari sync <client> [--dry-run] [--config-path <path>] [--json]")
+	fmt.Fprintln(out, "  madari sync <client> [--dry-run] [--config-path <path>] [--json] [--scope project|user]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
 	fmt.Fprintln(out, "  --dry-run                  Preview changes without writing files")
 	fmt.Fprintln(out, "  --config-path <path>       Override target client config path")
 	fmt.Fprintln(out, "  --json                     Emit JSON instead of text (requires --dry-run)")
+	fmt.Fprintln(out, "  --scope project|user       Claude Code only: target the repo-scoped .mcp.json")
+	fmt.Fprintln(out, "                             (project, default) or the user-scoped ~/.claude.json")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Sync enabled servers from Madari registry into a target client config.")
 	fmt.Fprintf(out, "  Supported clients: %s.\n", strings.Join(supportedSyncTargets(), ", "))
+	fmt.Fprintln(out, "  Servers with static values for [secret_env] keys are refused at project")
+	fmt.Fprintln(out, "  scope; sync them with --scope user.")
 }
 
 func printClientsHelp(out io.Writer) {

@@ -374,6 +374,156 @@ func TestSyncDoesNotAdoptEqualUnmanagedEntry(t *testing.T) {
 	}
 }
 
+func newSecretManifest() registry.Manifest {
+	manifest := newStewreadsManifest()
+	manifest.Env["STEWREADS_API_KEY"] = "shhh"
+	manifest.SecretEnv = registry.SecretEnv{Keys: []string{"STEWREADS_API_KEY"}}
+	return manifest
+}
+
+func TestSyncRefusesSecretEnvAtProjectScope(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+
+	plain := newStewreadsManifest()
+	plain.Name = "plain"
+
+	result, err := Sync([]registry.Manifest{newSecretManifest(), plain}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("expected per-entry refusal without sync error, got: %v", err)
+	}
+	if len(result.Refused) != 1 || result.Refused[0] != "stewreads" {
+		t.Fatalf("expected stewreads refused at project scope, got: %+v", result)
+	}
+	if len(result.Added) != 1 || result.Added[0] != "plain" {
+		t.Fatalf("expected plain server to sync alongside refusal, got: %+v", result)
+	}
+
+	servers := readServers(t, configPath)
+	if _, ok := servers["stewreads"]; ok {
+		t.Fatalf("expected secret-bearing entry to stay out of repo-scoped config")
+	}
+	if _, ok := servers["plain"]; !ok {
+		t.Fatalf("expected plain entry in repo-scoped config")
+	}
+	managedNames := readManagedNames(t, statePath)
+	if len(managedNames) != 1 || managedNames[0] != "plain" {
+		t.Fatalf("expected only plain to be managed, got: %#v", managedNames)
+	}
+}
+
+func TestSyncScrubsPreviouslyManagedSecretEntryAtProjectScope(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+
+	// Simulate a pre-secret_env state: the entry was materialized into the
+	// repo-scoped config and is managed.
+	config := []byte(`{
+  "mcpServers": {
+    "stewreads": {
+      "command": "stewreads-mcp",
+      "env": {
+        "STEWREADS_API_KEY": "shhh",
+        "STEWREADS_CONFIG_PATH": "~/.config/stewreads/config.toml"
+      }
+    }
+  }
+}
+`)
+	if err := os.WriteFile(configPath, config, 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+	if err := os.WriteFile(statePath, []byte(`{"managed_servers":["stewreads"]}`), 0o644); err != nil {
+		t.Fatalf("write state fixture: %v", err)
+	}
+
+	result, err := Sync([]registry.Manifest{newSecretManifest()}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+	if len(result.Refused) != 1 || result.Refused[0] != "stewreads" {
+		t.Fatalf("expected refusal, got: %+v", result)
+	}
+	if len(result.Removed) != 1 || result.Removed[0] != "stewreads" {
+		t.Fatalf("expected managed secret entry to be scrubbed from repo config, got: %+v", result)
+	}
+
+	servers := readServers(t, configPath)
+	if _, ok := servers["stewreads"]; ok {
+		t.Fatalf("expected secret value scrubbed from repo-scoped config")
+	}
+}
+
+func TestSyncAllowsSecretEnvAtUserScope(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "claude.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-user-managed.json")
+
+	result, err := Sync([]registry.Manifest{newSecretManifest()}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+		Scope:      clients.ScopeUser,
+	})
+	if err != nil {
+		t.Fatalf("expected user-scope sync to succeed, got: %v", err)
+	}
+	if len(result.Added) != 1 || result.Added[0] != "stewreads" {
+		t.Fatalf("expected stewreads add, got: %+v", result)
+	}
+
+	servers := readServers(t, configPath)
+	if servers["stewreads"].Env["STEWREADS_API_KEY"] != "shhh" {
+		t.Fatalf("expected secret env value in user-scoped config, got: %#v", servers["stewreads"].Env)
+	}
+}
+
+func TestSyncSecretKeysWithoutValuesAllowedAtProjectScope(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+
+	manifest := newStewreadsManifest()
+	manifest.SecretEnv = registry.SecretEnv{Keys: []string{"STEWREADS_API_KEY"}}
+
+	result, err := Sync([]registry.Manifest{manifest}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("expected sync to succeed when no static secret value exists, got: %v", err)
+	}
+	if len(result.Added) != 1 {
+		t.Fatalf("expected add result, got: %+v", result)
+	}
+}
+
+func TestSyncRejectsUnknownScope(t *testing.T) {
+	tmp := t.TempDir()
+
+	_, err := Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
+		ConfigPath: filepath.Join(tmp, ".mcp.json"),
+		StatePath:  filepath.Join(tmp, "state", "claude-code-managed.json"),
+		Scope:      "global",
+	})
+	if err == nil {
+		t.Fatalf("expected error for unknown scope")
+	}
+	if !strings.Contains(err.Error(), "unknown sync scope") {
+		t.Fatalf("expected unknown-scope error, got: %v", err)
+	}
+}
+
 func TestSyncMigratesV1ManagedStateToV2(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, ".mcp.json")

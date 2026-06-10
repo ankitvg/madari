@@ -27,7 +27,15 @@ madari sync claude-desktop --dry-run
 madari sync claude-desktop
 madari sync claude-code --dry-run
 madari sync claude-code
+madari sync claude-code --scope user
 ```
+
+`--scope` applies to `claude-code` only: `project` (default) targets the
+repo-scoped `.mcp.json`, `user` targets the user-scoped `~/.claude.json`.
+Each scope tracks its managed entries independently. Servers carrying static
+values for `[secret_env]` keys are refused per entry at project scope (other
+servers keep syncing; a previously materialized secret entry is scrubbed)
+and must sync with `--scope user`.
 
 ## Diagnostics
 
@@ -156,7 +164,8 @@ summaries cover every sync target):
   "updated": [],
   "removed": [],
   "unchanged": [],
-  "skipped": []
+  "skipped": [],
+  "refused": []
 }
 ```
 

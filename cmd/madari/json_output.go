@@ -104,6 +104,7 @@ type syncJSON struct {
 	Removed       []string `json:"removed"`
 	Unchanged     []string `json:"unchanged"`
 	Skipped       []string `json:"skipped"`
+	Refused       []string `json:"refused"`
 }
 
 // writeJSON emits one indented JSON document followed by a newline; --json
