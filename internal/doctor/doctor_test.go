@@ -304,6 +304,9 @@ func TestRunDriftDetection(t *testing.T) {
 		{Name: "stale-server", Command: commandPath, Args: []string{"--v2"}, Enabled: true, Clients: []string{"claude-code"}},
 		{Name: "missing-server", Command: commandPath, Enabled: true, Clients: []string{"claude-code"}},
 		{Name: "orphan-server", Command: commandPath, Enabled: false, Clients: []string{"claude-code"}},
+		// Enabled but unsyncable: the sync command filters it out, so the
+		// real plan removes its managed entry — drift must agree.
+		{Name: "unsync-server", Command: filepath.Join(tmp, "missing-bin"), Enabled: true, Clients: []string{"claude-code"}},
 	}
 	for _, manifest := range manifests {
 		if err := store.Save(manifest); err != nil {
@@ -315,7 +318,8 @@ func TestRunDriftDetection(t *testing.T) {
 	config := `{
   "mcpServers": {
     "stale-server": {"command": "` + commandPath + `", "args": ["--v1"]},
-    "orphan-server": {"command": "` + commandPath + `"}
+    "orphan-server": {"command": "` + commandPath + `"},
+    "unsync-server": {"command": "` + commandPath + `"}
   }
 }
 `
@@ -327,7 +331,7 @@ func TestRunDriftDetection(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
 		t.Fatalf("create state dir: %v", err)
 	}
-	state := `{"version":2,"managed_servers":{"stale-server":["standalone"],"missing-server":["standalone"],"orphan-server":["standalone"]}}`
+	state := `{"version":2,"managed_servers":{"stale-server":["standalone"],"missing-server":["standalone"],"orphan-server":["standalone"],"unsync-server":["standalone"]}}`
 	if err := os.WriteFile(statePath, []byte(state), 0o644); err != nil {
 		t.Fatalf("write state fixture: %v", err)
 	}
@@ -362,10 +366,62 @@ func TestRunDriftDetection(t *testing.T) {
 	if len(dr.Missing) != 1 || dr.Missing[0] != "missing-server" {
 		t.Fatalf("expected missing-server missing, got: %#v", dr)
 	}
-	if len(dr.Orphaned) != 1 || dr.Orphaned[0] != "orphan-server" {
-		t.Fatalf("expected orphan-server orphaned, got: %#v", dr)
+	if len(dr.Orphaned) != 2 || dr.Orphaned[0] != "orphan-server" || dr.Orphaned[1] != "unsync-server" {
+		t.Fatalf("expected orphan-server and unsync-server orphaned, got: %#v", dr)
 	}
 	if report.Summary.Warning < 1 {
 		t.Fatalf("expected drift to count as warning, got summary: %#v", report.Summary)
+	}
+}
+
+func TestRunDriftSkippedOnManifestErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix fixture mode bits are used in this test")
+	}
+	tmp := t.TempDir()
+	store := registry.NewStore(filepath.Join(tmp, "servers"))
+	commandPath := writeTestExecutable(t, tmp, "drift-mcp")
+
+	if err := store.Save(registry.Manifest{
+		Name:    "healthy",
+		Command: commandPath,
+		Enabled: true,
+		Clients: []string{"claude-code"},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "servers", "broken.toml"), []byte("not = valid {"), 0o644); err != nil {
+		t.Fatalf("write broken manifest: %v", err)
+	}
+
+	configPath := filepath.Join(tmp, ".mcp.json")
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+	if err := os.WriteFile(statePath, []byte(`{"version":2,"managed_servers":{"healthy":["standalone"]}}`), 0o644); err != nil {
+		t.Fatalf("write state fixture: %v", err)
+	}
+
+	adapter := claudecode.Adapter{}
+	report, err := Run(store, Options{
+		Adapters:            []clients.ClientAdapter{adapter},
+		ConfigPathOverrides: map[string]string{"claude-code": configPath},
+		DriftTargets: []DriftTarget{
+			{Adapter: adapter, StatePath: statePath, ConfigPath: configPath},
+		},
+	})
+	if err != nil {
+		t.Fatalf("doctor run failed: %v", err)
+	}
+
+	if len(report.ManifestErrors) == 0 {
+		t.Fatalf("expected manifest error to be reported")
+	}
+	if len(report.Drift) != 0 {
+		t.Fatalf("expected drift to be skipped while manifests fail to parse, got: %#v", report.Drift)
 	}
 }

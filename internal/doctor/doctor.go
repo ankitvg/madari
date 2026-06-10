@@ -160,7 +160,14 @@ func Run(store *registry.Store, opts Options) (Report, error) {
 		report.ClientConfigs = append(report.ClientConfigs, cr)
 	}
 
-	report.Drift = checkDrift(manifests, opts.DriftTargets)
+	// Drift is only meaningful against a fully parsed registry: a manifest
+	// that failed to load would otherwise read as "orphaned" with a sync fix
+	// hint, while the real sync command refuses to run until the manifest is
+	// repaired.
+	report.Drift = []DriftReport{}
+	if len(manifestErrors) == 0 {
+		report.Drift = checkDrift(manifests, opts.DriftTargets)
+	}
 
 	report.Summary = summarize(report)
 	return report, nil
@@ -189,7 +196,7 @@ func checkDrift(manifests []registry.Manifest, targets []DriftTarget) []DriftRep
 			continue
 		}
 
-		plan, err := target.Adapter.Sync(manifests, clients.SyncOptions{
+		plan, err := target.Adapter.Sync(syncableForTarget(manifests, target.Adapter.Target()), clients.SyncOptions{
 			ConfigPath: target.ConfigPath,
 			StatePath:  target.StatePath,
 			Scope:      target.Scope,
@@ -216,6 +223,22 @@ func checkDrift(manifests []registry.Manifest, targets []DriftTarget) []DriftRep
 		reports = append(reports, dr)
 	}
 	return reports
+}
+
+// syncableForTarget mirrors the sync command's manifest filtering: entries
+// enabled for this target whose command fails validation never reach the
+// adapter, so the drift plan matches what `madari sync` would actually do.
+func syncableForTarget(manifests []registry.Manifest, target string) []registry.Manifest {
+	out := make([]registry.Manifest, 0, len(manifests))
+	for _, manifest := range manifests {
+		if manifest.Enabled && manifest.HasClient(target) {
+			if issue := validateAbsoluteExecutablePath(manifest.Command); issue != nil {
+				continue
+			}
+		}
+		out = append(out, manifest)
+	}
+	return out
 }
 
 func summarize(report Report) Summary {
