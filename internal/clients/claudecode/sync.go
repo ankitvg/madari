@@ -49,7 +49,7 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 		return SyncResult{}, err
 	}
 
-	root, existingServers, configExists, err := loadClaudeCodeConfig(configPath)
+	root, rawServers, existingServers, configExists, err := loadClaudeCodeConfig(configPath)
 	if err != nil {
 		return SyncResult{}, err
 	}
@@ -71,12 +71,28 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 		return result, nil
 	}
 
-	mutated := copyServers(existingServers)
+	// Rebuild from the raw entries so anything madari does not write keeps
+	// its JSON value, including fields and server shapes madari does not
+	// model. Only entries madari owns (managed) or introduces are serialized.
+	mutated := make(map[string]json.RawMessage, len(rawServers)+len(desiredServers))
+	for name, raw := range rawServers {
+		mutated[name] = raw
+	}
 	for _, name := range result.Removed {
 		delete(mutated, name)
 	}
 	for name, server := range desiredServers {
-		mutated[name] = server
+		if _, exists := rawServers[name]; exists && len(managedState[name]) == 0 {
+			// Unmanaged entry whose values equal the manifest (buildPlan
+			// guarantees, else it errored as a conflict): no adoption, no
+			// rewrite — its JSON value stays untouched.
+			continue
+		}
+		entryPayload, err := json.Marshal(server)
+		if err != nil {
+			return SyncResult{}, fmt.Errorf("marshal server %q: %w", name, err)
+		}
+		mutated[name] = entryPayload
 	}
 
 	updatedRoot := make(map[string]json.RawMessage, len(root)+1)
@@ -234,49 +250,43 @@ func equalServer(a, b serverConfig) bool {
 	return true
 }
 
-func loadClaudeCodeConfig(path string) (map[string]json.RawMessage, map[string]serverConfig, bool, error) {
+// loadClaudeCodeConfig returns the config root plus two views of mcpServers:
+// the raw JSON per entry (preserved verbatim for entries madari does not
+// write) and the typed view used for planning.
+func loadClaudeCodeConfig(path string) (map[string]json.RawMessage, map[string]json.RawMessage, map[string]serverConfig, bool, error) {
 	payload, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return map[string]json.RawMessage{}, map[string]serverConfig{}, false, nil
+			return map[string]json.RawMessage{}, map[string]json.RawMessage{}, map[string]serverConfig{}, false, nil
 		}
-		return nil, nil, false, fmt.Errorf("read Claude Code config %q: %w", path, err)
+		return nil, nil, nil, false, fmt.Errorf("read Claude Code config %q: %w", path, err)
 	}
 
 	root := map[string]json.RawMessage{}
 	if err := json.Unmarshal(payload, &root); err != nil {
-		return nil, nil, true, fmt.Errorf("parse Claude Code config JSON: %w", err)
+		return nil, nil, nil, true, fmt.Errorf("parse Claude Code config JSON: %w", err)
 	}
 
-	servers := map[string]serverConfig{}
+	rawServers := map[string]json.RawMessage{}
 	if raw, exists := root["mcpServers"]; exists {
-		if err := json.Unmarshal(raw, &servers); err != nil {
-			return nil, nil, true, fmt.Errorf("parse mcpServers: %w", err)
+		if err := json.Unmarshal(raw, &rawServers); err != nil {
+			return nil, nil, nil, true, fmt.Errorf("parse mcpServers: %w", err)
 		}
 	}
-	if servers == nil {
-		servers = map[string]serverConfig{}
+	if rawServers == nil {
+		rawServers = map[string]json.RawMessage{}
 	}
 
-	return root, servers, true, nil
-}
-
-func copyServers(in map[string]serverConfig) map[string]serverConfig {
-	out := make(map[string]serverConfig, len(in))
-	for name, server := range in {
-		clone := serverConfig{Command: server.Command}
-		if len(server.Args) > 0 {
-			clone.Args = append([]string(nil), server.Args...)
+	servers := make(map[string]serverConfig, len(rawServers))
+	for name, raw := range rawServers {
+		entry := serverConfig{}
+		if err := json.Unmarshal(raw, &entry); err != nil {
+			return nil, nil, nil, true, fmt.Errorf("parse mcpServers entry %q: %w", name, err)
 		}
-		if len(server.Env) > 0 {
-			clone.Env = map[string]string{}
-			for key, value := range server.Env {
-				clone.Env[key] = value
-			}
-		}
-		out[name] = clone
+		servers[name] = entry
 	}
-	return out
+
+	return root, rawServers, servers, true, nil
 }
 
 type serverConfig struct {
