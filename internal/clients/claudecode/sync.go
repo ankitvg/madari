@@ -45,7 +45,7 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 	}
 
 	desiredServers := desiredServersForTarget(manifests)
-	result, err := buildPlan(existingServers, syncshared.MapKeys(managedState), desiredServers)
+	result, err := buildPlan(existingServers, managedState, desiredServers)
 	if err != nil {
 		return SyncResult{}, err
 	}
@@ -146,7 +146,7 @@ func desiredServersForTarget(manifests []registry.Manifest) map[string]serverCon
 	return servers
 }
 
-func buildPlan(existing map[string]serverConfig, managed []string, desired map[string]serverConfig) (SyncResult, error) {
+func buildPlan(existing map[string]serverConfig, managed map[string][]string, desired map[string]serverConfig) (SyncResult, error) {
 	return syncshared.BuildPlan(existing, managed, desired, equalServer, ErrConflict)
 }
 

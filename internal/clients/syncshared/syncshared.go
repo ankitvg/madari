@@ -28,9 +28,12 @@ func ResolvePath(override string, defaultResolver func() (string, error)) (strin
 }
 
 // BuildPlan computes sync mutations against existing + managed state.
+//
+// A managed entry that is no longer desired loses its standalone source; it
+// is removed from client config only when no sources remain to own it.
 func BuildPlan[T any](
 	existing map[string]T,
-	managed []string,
+	managed map[string][]string,
 	desired map[string]T,
 	equal func(a, b T) bool,
 	conflictErr error,
@@ -39,14 +42,12 @@ func BuildPlan[T any](
 		return clients.SyncResult{}, fmt.Errorf("equal comparer is required")
 	}
 
-	managedSet := map[string]struct{}{}
-	for _, name := range managed {
-		managedSet[name] = struct{}{}
-	}
-
 	result := clients.SyncResult{}
-	for name := range managedSet {
+	for name, sources := range managed {
 		if _, stillDesired := desired[name]; stillDesired {
+			continue
+		}
+		if len(withoutSource(sources, SourceStandalone)) > 0 {
 			continue
 		}
 		if _, exists := existing[name]; exists {
@@ -57,7 +58,7 @@ func BuildPlan[T any](
 	var conflicts []string
 	for name, desiredServer := range desired {
 		existingServer, exists := existing[name]
-		_, managedByMadari := managedSet[name]
+		_, managedByMadari := managed[name]
 
 		if !exists {
 			result.Added = append(result.Added, name)
@@ -174,7 +175,8 @@ func SaveManagedState(path string, servers map[string][]string) error {
 
 // NextManagedState computes post-sync managed state: every desired name is
 // owned at least by SourceStandalone, preserving any other sources already
-// recorded for it.
+// recorded for it. Names no longer desired lose their standalone source and
+// stay tracked only while other sources still own them.
 func NextManagedState(previous map[string][]string, desiredNames []string) map[string][]string {
 	next := make(map[string][]string, len(desiredNames))
 	for _, name := range desiredNames {
@@ -184,7 +186,31 @@ func NextManagedState(previous map[string][]string, desiredNames []string) map[s
 		}
 		next[name] = sources
 	}
+	desired := make(map[string]struct{}, len(desiredNames))
+	for _, name := range desiredNames {
+		desired[name] = struct{}{}
+	}
+	for name, sources := range previous {
+		if _, stillDesired := desired[name]; stillDesired {
+			continue
+		}
+		if remaining := withoutSource(sources, SourceStandalone); len(remaining) > 0 {
+			next[name] = remaining
+		}
+	}
 	return next
+}
+
+// withoutSource returns sources with every occurrence of source removed.
+func withoutSource(sources []string, source string) []string {
+	remaining := make([]string, 0, len(sources))
+	for _, candidate := range sources {
+		if candidate == source {
+			continue
+		}
+		remaining = append(remaining, candidate)
+	}
+	return remaining
 }
 
 // normalizeManagedState trims and deduplicates names and sources, dropping

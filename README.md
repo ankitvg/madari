@@ -41,6 +41,7 @@ Notes:
 - `install --manager npm` requires `--command` because npm package names can differ from executable names.
 - `add` resolves `--command` to an absolute executable path and stores that path in the manifest.
 - `sync` skips servers with missing/non-executable command paths and continues syncing others.
+- `list` shows the managed sources owning each synced entry (`standalone` today; `-` when not synced), and `status` summarizes managed entries per client.
 - Supported sync clients: `claude-desktop` and `claude-code`.
 - Default sync config paths:
   - `claude-desktop`: platform-specific Claude Desktop config path.

@@ -24,7 +24,17 @@
 - Supports `--dry-run` to preview changes.
 - Performs backup + atomic write when applying changes.
 
-4. Doctor Engine
+4. Managed Sync State
+- Path: `<config-root>/state/<target>-managed.json`, one file per sync target.
+- Versioned JSON (current: version 2) mapping each managed server name to the
+  sources that own it (`standalone` today; ring sources later).
+- Version 1 files (bare name lists) are read transparently as
+  standalone-owned; the writer emits version 2 only; unknown versions fail
+  closed.
+- A managed entry that is no longer desired loses its `standalone` source and
+  is removed from client config only when no sources remain to own it.
+
+5. Doctor Engine
 - Verifies command/binary resolution.
 - Validates required env values are present.
 - Validates client config parseability and managed entry consistency.
@@ -33,5 +43,6 @@
 
 - Never overwrite unknown config blocks.
 - Keep managed entries isolated via per-target managed state tracking files.
+- Remove managed entries from client config only when no recorded source owns them.
 - Always backup before write.
 - Fail closed on parse errors.
