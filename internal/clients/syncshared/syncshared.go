@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -101,43 +102,66 @@ func BuildPlan[T any](
 	)
 }
 
-// LoadManagedState reads and normalizes managed server names.
-func LoadManagedState(path string) ([]string, error) {
+// SourceStandalone marks an entry as owned by a direct (non-ring) sync.
+const SourceStandalone = "standalone"
+
+// managedStateVersion is the only version the writer emits.
+const managedStateVersion = 2
+
+// LoadManagedState reads managed server state, mapping each server name to
+// the sources that own it. Version 1 files (a bare name list) are read
+// transparently with every name owned by SourceStandalone; unknown versions
+// fail closed.
+func LoadManagedState(path string) (map[string][]string, error) {
 	payload, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []string{}, nil
+			return map[string][]string{}, nil
 		}
 		return nil, fmt.Errorf("read managed state %q: %w", path, err)
 	}
 
-	state := managedState{}
-	if err := json.Unmarshal(payload, &state); err != nil {
+	probe := struct {
+		Version        int             `json:"version"`
+		ManagedServers json.RawMessage `json:"managed_servers"`
+	}{}
+	if err := json.Unmarshal(payload, &probe); err != nil {
 		return nil, fmt.Errorf("parse managed state JSON: %w", err)
 	}
 
-	seen := map[string]struct{}{}
-	unique := make([]string, 0, len(state.ManagedServers))
-	for _, name := range state.ManagedServers {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
+	switch probe.Version {
+	case 0:
+		var names []string
+		if len(probe.ManagedServers) > 0 {
+			if err := json.Unmarshal(probe.ManagedServers, &names); err != nil {
+				return nil, fmt.Errorf("parse managed state v1 names: %w", err)
+			}
 		}
-		if _, exists := seen[name]; exists {
-			continue
+		servers := make(map[string][]string, len(names))
+		for _, name := range names {
+			servers[name] = []string{SourceStandalone}
 		}
-		seen[name] = struct{}{}
-		unique = append(unique, name)
+		return normalizeManagedState(servers), nil
+	case managedStateVersion:
+		servers := map[string][]string{}
+		if len(probe.ManagedServers) > 0 {
+			if err := json.Unmarshal(probe.ManagedServers, &servers); err != nil {
+				return nil, fmt.Errorf("parse managed state v2 entries: %w", err)
+			}
+		}
+		return normalizeManagedState(servers), nil
+	default:
+		return nil, fmt.Errorf("unsupported managed state version %d in %q", probe.Version, path)
 	}
-	sort.Strings(unique)
-	return unique, nil
 }
 
-// SaveManagedState writes managed server names in sorted order.
-func SaveManagedState(path string, names []string) error {
-	sorted := append([]string(nil), names...)
-	sort.Strings(sorted)
-	state := managedState{ManagedServers: sorted}
+// SaveManagedState writes managed server state in the current (v2) format
+// with deterministic ordering.
+func SaveManagedState(path string, servers map[string][]string) error {
+	state := managedStateFile{
+		Version:        managedStateVersion,
+		ManagedServers: normalizeManagedState(servers),
+	}
 
 	payload, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
@@ -146,6 +170,52 @@ func SaveManagedState(path string, names []string) error {
 	payload = append(payload, '\n')
 
 	return WriteFileAtomically(path, payload, 0o644)
+}
+
+// NextManagedState computes post-sync managed state: every desired name is
+// owned at least by SourceStandalone, preserving any other sources already
+// recorded for it.
+func NextManagedState(previous map[string][]string, desiredNames []string) map[string][]string {
+	next := make(map[string][]string, len(desiredNames))
+	for _, name := range desiredNames {
+		sources := append([]string(nil), previous[name]...)
+		if !slices.Contains(sources, SourceStandalone) {
+			sources = append(sources, SourceStandalone)
+		}
+		next[name] = sources
+	}
+	return next
+}
+
+// normalizeManagedState trims and deduplicates names and sources, dropping
+// entries that end up without a name or any sources.
+func normalizeManagedState(servers map[string][]string) map[string][]string {
+	normalized := make(map[string][]string, len(servers))
+	for name, sources := range servers {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		seen := map[string]struct{}{}
+		unique := make([]string, 0, len(sources))
+		for _, source := range sources {
+			source = strings.TrimSpace(source)
+			if source == "" {
+				continue
+			}
+			if _, exists := seen[source]; exists {
+				continue
+			}
+			seen[source] = struct{}{}
+			unique = append(unique, source)
+		}
+		if len(unique) == 0 {
+			continue
+		}
+		sort.Strings(unique)
+		normalized[name] = unique
+	}
+	return normalized
 }
 
 func MapKeys[K comparable, V any](m map[K]V) []K {
@@ -239,6 +309,7 @@ func ExpandHome(path string) (string, error) {
 	return path, nil
 }
 
-type managedState struct {
-	ManagedServers []string `json:"managed_servers"`
+type managedStateFile struct {
+	Version        int                 `json:"version"`
+	ManagedServers map[string][]string `json:"managed_servers"`
 }

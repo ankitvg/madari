@@ -39,13 +39,13 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 	if err != nil {
 		return SyncResult{}, err
 	}
-	managedNames, err := syncshared.LoadManagedState(statePath)
+	managedState, err := syncshared.LoadManagedState(statePath)
 	if err != nil {
 		return SyncResult{}, err
 	}
 
 	desiredServers := desiredServersForTarget(manifests)
-	result, err := buildPlan(existingServers, managedNames, desiredServers)
+	result, err := buildPlan(existingServers, syncshared.MapKeys(managedState), desiredServers)
 	if err != nil {
 		return SyncResult{}, err
 	}
@@ -89,7 +89,8 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 		return SyncResult{}, fmt.Errorf("write Claude Code config: %w", err)
 	}
 
-	if err := syncshared.SaveManagedState(statePath, syncshared.MapKeys(desiredServers)); err != nil {
+	nextState := syncshared.NextManagedState(managedState, syncshared.MapKeys(desiredServers))
+	if err := syncshared.SaveManagedState(statePath, nextState); err != nil {
 		return SyncResult{}, fmt.Errorf("write managed sync state: %w", err)
 	}
 
