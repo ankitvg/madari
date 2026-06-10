@@ -37,7 +37,9 @@
 5. Doctor Engine
 - Verifies command/binary resolution.
 - Validates required env values are present.
-- Validates client config parseability and managed entry consistency.
+- Validates client config parseability.
+- Drift detection between manifests and materialized client entries is
+  planned, not yet implemented.
 
 ## Safety Model
 
