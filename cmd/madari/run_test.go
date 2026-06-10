@@ -1236,6 +1236,50 @@ func TestRunWithStoreStatusHealthy(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreListAndStatusShowManagedSources(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-desktop"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "list")
+	if result.code != 0 {
+		t.Fatalf("list failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "SOURCES") {
+		t.Fatalf("expected SOURCES column header, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "stewreads\tenabled\t"+commandPath+"\tclaude-desktop\t-") {
+		t.Fatalf("expected unsynced server to show '-' sources, got: %s", result.stdout)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "claude_desktop_config.json")
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+	if result := runCmd(store, "sync", "claude-desktop", "--config-path", configPath); result.code != 0 {
+		t.Fatalf("sync failed: %s", result.stderr)
+	}
+
+	result = runCmd(store, "list")
+	if result.code != 0 {
+		t.Fatalf("list after sync failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "stewreads\tenabled\t"+commandPath+"\tclaude-desktop\tstandalone") {
+		t.Fatalf("expected synced server to show standalone source, got: %s", result.stdout)
+	}
+
+	result = runCmd(store, "status", "--client-config", "claude-desktop="+configPath)
+	if result.code != 0 {
+		t.Fatalf("status failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	if !strings.Contains(result.stdout, "claude-desktop-managed: entries=1 sources=standalone") {
+		t.Fatalf("expected managed summary line, got: %s", result.stdout)
+	}
+}
+
 func TestRunWithStoreStatusReturnsErrorForInvalidConfig(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)

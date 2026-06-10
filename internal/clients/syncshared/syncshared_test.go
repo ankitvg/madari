@@ -163,19 +163,72 @@ func TestSaveThenLoadManagedStateRoundTrip(t *testing.T) {
 
 func TestNextManagedStatePreservesExistingSources(t *testing.T) {
 	previous := map[string][]string{
-		"alpha": {"ring:research"},
-		"beta":  {SourceStandalone},
-		"gone":  {SourceStandalone},
+		"alpha":    {"ring:research"},
+		"beta":     {SourceStandalone},
+		"gone":     {SourceStandalone},
+		"ringonly": {"ring:research", SourceStandalone},
 	}
 
 	next := NextManagedState(previous, []string{"alpha", "beta", "new"})
 
 	expected := map[string][]string{
-		"alpha": {"ring:research", SourceStandalone},
-		"beta":  {SourceStandalone},
-		"new":   {SourceStandalone},
+		"alpha":    {"ring:research", SourceStandalone},
+		"beta":     {SourceStandalone},
+		"new":      {SourceStandalone},
+		"ringonly": {"ring:research"},
 	}
 	if !reflect.DeepEqual(next, expected) {
 		t.Fatalf("expected next state %#v, got %#v", expected, next)
+	}
+}
+
+func TestBuildPlanRemovesOnlyWhenSourcesEmpty(t *testing.T) {
+	equal := func(a, b string) bool { return a == b }
+	cases := []struct {
+		name        string
+		existing    map[string]string
+		managed     map[string][]string
+		desired     map[string]string
+		wantRemoved []string
+	}{
+		{
+			name:        "standalone-only entry no longer desired is removed",
+			existing:    map[string]string{"alpha": "cmd"},
+			managed:     map[string][]string{"alpha": {SourceStandalone}},
+			desired:     map[string]string{},
+			wantRemoved: []string{"alpha"},
+		},
+		{
+			name:     "entry with leftover ring source is kept",
+			existing: map[string]string{"alpha": "cmd"},
+			managed:  map[string][]string{"alpha": {"ring:research", SourceStandalone}},
+			desired:  map[string]string{},
+		},
+		{
+			name:    "undesired entry already absent from config is ignored",
+			managed: map[string][]string{"alpha": {SourceStandalone}},
+			desired: map[string]string{},
+		},
+		{
+			name:     "still-desired entry is never removed",
+			existing: map[string]string{"alpha": "cmd"},
+			managed:  map[string][]string{"alpha": {SourceStandalone}},
+			desired:  map[string]string{"alpha": "cmd"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := BuildPlan(tc.existing, tc.managed, tc.desired, equal, nil)
+			if err != nil {
+				t.Fatalf("build plan: %v", err)
+			}
+			if len(tc.wantRemoved) == 0 && len(result.Removed) != 0 {
+				t.Fatalf("expected no removals, got %#v", result.Removed)
+			}
+			if len(tc.wantRemoved) > 0 && !reflect.DeepEqual(result.Removed, tc.wantRemoved) {
+				t.Fatalf("expected removed %#v, got %#v", tc.wantRemoved, result.Removed)
+			}
+		})
 	}
 }

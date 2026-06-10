@@ -15,6 +15,7 @@ import (
 	"github.com/ankitvg/madari/internal/clients"
 	claudedesktop "github.com/ankitvg/madari/internal/clients/claude-desktop"
 	"github.com/ankitvg/madari/internal/clients/claudecode"
+	"github.com/ankitvg/madari/internal/clients/syncshared"
 	"github.com/ankitvg/madari/internal/doctor"
 	"github.com/ankitvg/madari/internal/registry"
 )
@@ -388,7 +389,12 @@ func (a cliApp) cmdList(args []string) error {
 		return nil
 	}
 
-	fmt.Fprintln(a.stdout, "NAME\tSTATUS\tCOMMAND\tCLIENTS")
+	managedSources, err := a.managedSourcesByServer()
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintln(a.stdout, "NAME\tSTATUS\tCOMMAND\tCLIENTS\tSOURCES")
 	for _, manifest := range manifests {
 		status := "disabled"
 		if manifest.Enabled {
@@ -396,9 +402,49 @@ func (a cliApp) cmdList(args []string) error {
 		}
 		clients := append([]string(nil), manifest.Clients...)
 		sort.Strings(clients)
-		fmt.Fprintf(a.stdout, "%s\t%s\t%s\t%s\n", manifest.Name, status, manifest.Command, strings.Join(clients, ","))
+		sources := "-"
+		if list := managedSources[manifest.Name]; len(list) > 0 {
+			sources = strings.Join(list, ",")
+		}
+		fmt.Fprintf(a.stdout, "%s\t%s\t%s\t%s\t%s\n", manifest.Name, status, manifest.Command, strings.Join(clients, ","), sources)
 	}
 	return nil
+}
+
+// managedStatePath locates the per-target managed sync state file.
+func (a cliApp) managedStatePath(target string) string {
+	return filepath.Join(filepath.Dir(a.store.ServersDir()), "state", target+"-managed.json")
+}
+
+// managedSourcesByServer unions managed-state sources per server name across
+// all sync targets.
+func (a cliApp) managedSourcesByServer() (map[string][]string, error) {
+	union := map[string]map[string]struct{}{}
+	for _, adapter := range sortedAdapters() {
+		state, err := syncshared.LoadManagedState(a.managedStatePath(adapter.Target()))
+		if err != nil {
+			return nil, err
+		}
+		for name, sources := range state {
+			if union[name] == nil {
+				union[name] = map[string]struct{}{}
+			}
+			for _, source := range sources {
+				union[name][source] = struct{}{}
+			}
+		}
+	}
+
+	result := make(map[string][]string, len(union))
+	for name, set := range union {
+		sources := make([]string, 0, len(set))
+		for source := range set {
+			sources = append(sources, source)
+		}
+		sort.Strings(sources)
+		result[name] = sources
+	}
+	return result, nil
 }
 
 func (a cliApp) cmdRemove(args []string) error {
@@ -505,7 +551,7 @@ func (a cliApp) cmdSync(args []string) error {
 	}
 	syncable, skipped := filterSyncableManifests(manifests, target)
 
-	statePath := filepath.Join(filepath.Dir(a.store.ServersDir()), "state", target+"-managed.json")
+	statePath := a.managedStatePath(target)
 	result, err := adapter.Sync(syncable, clients.SyncOptions{
 		ConfigPath: configPath,
 		StatePath:  statePath,
@@ -724,6 +770,27 @@ func (a cliApp) cmdStatus(args []string) error {
 		if cc.Status != doctor.StatusSkipped {
 			fmt.Fprintf(a.stdout, "%s-config: %s\n", cc.Target, cc.Status)
 		}
+	}
+	for _, adapter := range adapters {
+		state, err := syncshared.LoadManagedState(a.managedStatePath(adapter.Target()))
+		if err != nil {
+			return err
+		}
+		if len(state) == 0 {
+			continue
+		}
+		sourceSet := map[string]struct{}{}
+		for _, sources := range state {
+			for _, source := range sources {
+				sourceSet[source] = struct{}{}
+			}
+		}
+		sourceList := make([]string, 0, len(sourceSet))
+		for source := range sourceSet {
+			sourceList = append(sourceList, source)
+		}
+		sort.Strings(sourceList)
+		fmt.Fprintf(a.stdout, "%s-managed: entries=%d sources=%s\n", adapter.Target(), len(state), strings.Join(sourceList, ","))
 	}
 	if len(report.ManifestErrors) > 0 {
 		fmt.Fprintf(a.stdout, "manifest-errors: %d\n", len(report.ManifestErrors))
@@ -1221,7 +1288,8 @@ func printListHelp(out io.Writer) {
 	fmt.Fprintln(out, "  madari list")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  List configured servers with status, command path, and clients.")
+	fmt.Fprintln(out, "  List configured servers with status, command path, clients, and the")
+	fmt.Fprintln(out, "  managed sources that own each synced entry (\"-\" when not synced).")
 }
 
 func printRemoveHelp(out io.Writer) {
@@ -1290,7 +1358,8 @@ func printStatusHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --client-config target=path    Override config path for a client (repeatable)")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Show a concise readiness summary. Use `madari doctor` for full details.")
+	fmt.Fprintln(out, "  Show a concise readiness summary, including managed sync entries per")
+	fmt.Fprintln(out, "  client with their owning sources. Use `madari doctor` for full details.")
 }
 
 func printExportHelp(out io.Writer) {
