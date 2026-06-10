@@ -37,9 +37,11 @@ type SecretEnv struct {
 
 // HasSecretValue reports whether the manifest carries a static env value for
 // any key marked secret — the case placement policy must guard against.
+// Keys are trimmed to match Validate, which accepts padded secret_env
+// entries; an untrimmed lookup here would fail open and leak the value.
 func (m Manifest) HasSecretValue() bool {
 	for _, key := range m.SecretEnv.Keys {
-		if _, exists := m.Env[key]; exists {
+		if _, exists := m.Env[strings.TrimSpace(key)]; exists {
 			return true
 		}
 	}

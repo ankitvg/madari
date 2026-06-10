@@ -174,6 +174,25 @@ unexpected = ["STEWREADS_API_KEY"]
 	}
 }
 
+func TestHasSecretValueTrimsPaddedKeys(t *testing.T) {
+	manifest := Manifest{
+		Name:    "stewreads",
+		Command: "stewreads-mcp",
+		Enabled: true,
+		Clients: []string{"claude-code"},
+		Env: map[string]string{
+			"STEWREADS_API_KEY": "shhh",
+		},
+		SecretEnv: SecretEnv{Keys: []string{" STEWREADS_API_KEY "}},
+	}
+	if err := manifest.Validate(); err != nil {
+		t.Fatalf("expected padded secret_env key to validate, got: %v", err)
+	}
+	if !manifest.HasSecretValue() {
+		t.Fatalf("expected padded secret_env key to match its env value")
+	}
+}
+
 func TestHasSecretValueFalseWithoutStaticValue(t *testing.T) {
 	manifest := Manifest{
 		Name:      "stewreads",
