@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/ankitvg/madari/internal/clients"
+	"github.com/ankitvg/madari/internal/clients/syncshared"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -320,6 +321,69 @@ func TestSyncApplyCreatesBackup(t *testing.T) {
 	}
 }
 
+func TestSyncMigratesV1ManagedStateToV2(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+
+	baseConfig := []byte(`{
+  "mcpServers": {
+    "legacy": {
+      "command": "legacy-mcp"
+    }
+  }
+}
+`)
+	if err := os.WriteFile(configPath, baseConfig, 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+	v1State := []byte(`{"managed_servers":["legacy"]}` + "\n")
+	if err := os.WriteFile(statePath, v1State, 0o644); err != nil {
+		t.Fatalf("write v1 state fixture: %v", err)
+	}
+
+	result, err := Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("sync apply failed: %v", err)
+	}
+	if len(result.Removed) != 1 || result.Removed[0] != "legacy" {
+		t.Fatalf("expected v1-managed legacy entry to be removed, got: %+v", result)
+	}
+	if len(result.Added) != 1 || result.Added[0] != "stewreads" {
+		t.Fatalf("expected stewreads add, got: %+v", result)
+	}
+
+	servers := readServers(t, configPath)
+	if _, ok := servers["legacy"]; ok {
+		t.Fatalf("expected legacy entry to be removed from config")
+	}
+
+	payload, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read managed state: %v", err)
+	}
+	var file struct {
+		Version        int                 `json:"version"`
+		ManagedServers map[string][]string `json:"managed_servers"`
+	}
+	if err := json.Unmarshal(payload, &file); err != nil {
+		t.Fatalf("parse managed state: %v", err)
+	}
+	if file.Version != 2 {
+		t.Fatalf("expected managed state rewritten as version 2, got %d", file.Version)
+	}
+	expected := map[string][]string{"stewreads": {"standalone"}}
+	if !reflect.DeepEqual(file.ManagedServers, expected) {
+		t.Fatalf("expected managed state %#v, got %#v", expected, file.ManagedServers)
+	}
+}
+
 func readRoot(t *testing.T, configPath string) map[string]json.RawMessage {
 	t.Helper()
 	payload, err := os.ReadFile(configPath)
@@ -345,17 +409,16 @@ func readServers(t *testing.T, configPath string) map[string]serverConfig {
 
 func readManagedNames(t *testing.T, statePath string) []string {
 	t.Helper()
-	payload, err := os.ReadFile(statePath)
+	state, err := syncshared.LoadManagedState(statePath)
 	if err != nil {
-		t.Fatalf("read managed state: %v", err)
+		t.Fatalf("load managed state: %v", err)
 	}
-	state := managedStateFile{}
-	if err := json.Unmarshal(payload, &state); err != nil {
-		t.Fatalf("parse managed state: %v", err)
+	names := make([]string, 0, len(state))
+	for name := range state {
+		names = append(names, name)
 	}
-	sorted := append([]string(nil), state.ManagedServers...)
-	slices.Sort(sorted)
-	return sorted
+	slices.Sort(names)
+	return names
 }
 
 func assertJSONEqual(t *testing.T, want, got []byte) {
@@ -371,10 +434,6 @@ func assertJSONEqual(t *testing.T, want, got []byte) {
 	if !reflect.DeepEqual(wantJSON, gotJSON) {
 		t.Fatalf("JSON mismatch: want=%s got=%s", string(want), string(got))
 	}
-}
-
-type managedStateFile struct {
-	ManagedServers []string `json:"managed_servers"`
 }
 
 func newStewreadsManifest() registry.Manifest {

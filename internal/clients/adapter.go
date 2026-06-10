@@ -46,7 +46,8 @@ type ClientAdapter interface {
 type SyncOptions struct {
 	// ConfigPath overrides adapter default config path when non-empty.
 	ConfigPath string
-	// StatePath stores names currently managed by Madari for this target.
+	// StatePath stores entries currently managed by Madari for this target,
+	// each mapped to the sources that own it (e.g. "standalone").
 	StatePath string
 	// DryRun computes a plan without writing config or managed state.
 	DryRun bool
