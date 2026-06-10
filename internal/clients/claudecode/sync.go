@@ -44,7 +44,7 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 	if err != nil {
 		return SyncResult{}, err
 	}
-	statePath, err := resolveStatePath(opts.StatePath)
+	statePath, err := resolveStatePath(opts.StatePath, userScope)
 	if err != nil {
 		return SyncResult{}, err
 	}
@@ -138,6 +138,17 @@ func DefaultStatePath() (string, error) {
 	return filepath.Join(root, "state", Target+"-managed.json"), nil
 }
 
+// DefaultUserStatePath locates managed state for the user-scoped config.
+// Project and user scopes must never share a state file: ownership recorded
+// for one config would drive removals against the other.
+func DefaultUserStatePath() (string, error) {
+	root, err := registry.DefaultRootDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "state", Target+"-user-managed.json"), nil
+}
+
 func resolveConfigPath(configPath string, userScope bool) (string, error) {
 	if userScope {
 		return syncshared.ResolvePath(configPath, DefaultUserConfigPath)
@@ -158,7 +169,10 @@ func resolveScope(scope string) (bool, error) {
 	}
 }
 
-func resolveStatePath(statePath string) (string, error) {
+func resolveStatePath(statePath string, userScope bool) (string, error) {
+	if userScope {
+		return syncshared.ResolvePath(statePath, DefaultUserStatePath)
+	}
 	return syncshared.ResolvePath(statePath, DefaultStatePath)
 }
 

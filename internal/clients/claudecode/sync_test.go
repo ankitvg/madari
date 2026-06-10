@@ -508,6 +508,31 @@ func TestSyncSecretKeysWithoutValuesAllowedAtProjectScope(t *testing.T) {
 	}
 }
 
+func TestSyncUserScopeDefaultsToUserStateFile(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("MADARI_CONFIG_DIR", tmp)
+	configPath := filepath.Join(tmp, "claude.json")
+
+	// StatePath deliberately empty: the default must vary with scope so
+	// user-scope ownership never lands in the project state file.
+	_, err := Sync([]registry.Manifest{newSecretManifest()}, SyncOptions{
+		ConfigPath: configPath,
+		Scope:      clients.ScopeUser,
+	})
+	if err != nil {
+		t.Fatalf("user-scope sync failed: %v", err)
+	}
+
+	userStatePath := filepath.Join(tmp, "state", Target+"-user-managed.json")
+	if _, err := os.Stat(userStatePath); err != nil {
+		t.Fatalf("expected user-scope state file at %s: %v", userStatePath, err)
+	}
+	projectStatePath := filepath.Join(tmp, "state", Target+"-managed.json")
+	if _, err := os.Stat(projectStatePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no project state write for user-scope sync, err=%v", err)
+	}
+}
+
 func TestSyncRejectsUnknownScope(t *testing.T) {
 	tmp := t.TempDir()
 
