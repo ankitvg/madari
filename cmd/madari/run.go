@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 
@@ -1388,22 +1387,11 @@ func deriveServerName(packageName string) string {
 	return name
 }
 
+// validateAbsoluteExecutablePath delegates to the shared command-validity
+// check so sync filtering, command resolution, doctor, and drift agree.
 func validateAbsoluteExecutablePath(path string) error {
-	if !filepath.IsAbs(path) {
-		return fmt.Errorf("path must be absolute")
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("path does not exist: %s", path)
-		}
-		return fmt.Errorf("stat path %q: %w", path, err)
-	}
-	if info.IsDir() {
-		return fmt.Errorf("path is a directory: %s", path)
-	}
-	if runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
-		return fmt.Errorf("path is not executable: %s", path)
+	if err := clients.ValidateCommandPath(path); err != nil {
+		return err
 	}
 	return nil
 }

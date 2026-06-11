@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 
@@ -433,22 +432,11 @@ func hasTargetInManifests(manifests []registry.Manifest, target string) bool {
 	return false
 }
 
+// validateAbsoluteExecutablePath wraps the shared command-validity check so
+// doctor, drift, and sync filtering never disagree about what is runnable.
 func validateAbsoluteExecutablePath(path string) *Issue {
-	if !filepath.IsAbs(path) {
-		return &Issue{Severity: SeverityError, Code: "command_not_absolute", Message: "command path must be absolute"}
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return &Issue{Severity: SeverityError, Code: "command_missing", Message: "command path does not exist"}
-		}
-		return &Issue{Severity: SeverityError, Code: "command_stat_error", Message: fmt.Sprintf("unable to inspect command path: %v", err)}
-	}
-	if info.IsDir() {
-		return &Issue{Severity: SeverityError, Code: "command_is_directory", Message: "command path is a directory"}
-	}
-	if runtime.GOOS != "windows" && info.Mode()&0o111 == 0 {
-		return &Issue{Severity: SeverityError, Code: "command_not_executable", Message: "command path is not executable"}
+	if err := clients.ValidateCommandPath(path); err != nil {
+		return &Issue{Severity: SeverityError, Code: err.Code, Message: err.Message}
 	}
 	return nil
 }

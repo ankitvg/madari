@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/ankitvg/madari/internal/clients"
@@ -58,14 +57,12 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 		return SyncResult{}, err
 	}
 
-	desiredServers, refused := desiredServersForTarget(manifests, userScope)
-	result, err := buildPlan(existingServers, managedState, desiredServers)
+	result, nextState, writeSet, err := syncshared.PlanSync(existingServers, managedState, entriesForTarget(manifests, userScope), equalServer, ErrConflict)
 	if err != nil {
 		return SyncResult{}, err
 	}
 	result.ConfigPath = configPath
 	result.DryRun = opts.DryRun
-	result.Refused = refused
 
 	if opts.DryRun {
 		return result, nil
@@ -73,21 +70,16 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 
 	// Rebuild from the raw entries so anything madari does not write keeps
 	// its JSON value, including fields and server shapes madari does not
-	// model. Only entries madari owns (managed) or introduces are serialized.
-	mutated := make(map[string]json.RawMessage, len(rawServers)+len(desiredServers))
+	// model. The write set contains exactly the entries madari owns or
+	// introduces; pre-existing unmanaged entries are never serialized.
+	mutated := make(map[string]json.RawMessage, len(rawServers)+len(writeSet))
 	for name, raw := range rawServers {
 		mutated[name] = raw
 	}
 	for _, name := range result.Removed {
 		delete(mutated, name)
 	}
-	for name, server := range desiredServers {
-		if _, exists := rawServers[name]; exists && len(managedState[name]) == 0 {
-			// Unmanaged entry whose values equal the manifest (buildPlan
-			// guarantees, else it errored as a conflict): no adoption, no
-			// rewrite — its JSON value stays untouched.
-			continue
-		}
+	for name, server := range writeSet {
 		entryPayload, err := json.Marshal(server)
 		if err != nil {
 			return SyncResult{}, fmt.Errorf("marshal server %q: %w", name, err)
@@ -120,7 +112,6 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 		return SyncResult{}, fmt.Errorf("write Claude Code config: %w", err)
 	}
 
-	nextState := syncshared.NextManagedState(managedState, syncshared.MapKeys(desiredServers), result.Added)
 	if err := syncshared.SaveManagedState(statePath, nextState); err != nil {
 		return SyncResult{}, fmt.Errorf("write managed sync state: %w", err)
 	}
@@ -192,39 +183,43 @@ func resolveStatePath(statePath string, userScope bool) (string, error) {
 	return syncshared.ResolvePath(statePath, DefaultStatePath)
 }
 
-func desiredServersForTarget(manifests []registry.Manifest, userScope bool) (map[string]serverConfig, []string) {
-	servers := map[string]serverConfig{}
-	var refused []string
+// entriesForTarget classifies every Claude Code-targeted manifest for the
+// plan engine. Disabled manifests are ineligible (ownership release);
+// secret-bearing manifests at project scope are refused (scrubbed but ring
+// ownership persists); manifests for other clients are omitted entirely.
+func entriesForTarget(manifests []registry.Manifest, userScope bool) map[string]syncshared.Entry[serverConfig] {
+	entries := map[string]syncshared.Entry[serverConfig]{}
 	for _, manifest := range manifests {
-		if !manifest.Enabled {
-			continue
-		}
 		if !manifest.HasClient(Target) {
 			continue
 		}
-		if !userScope && manifest.HasSecretValue() {
-			refused = append(refused, manifest.Name)
-			continue
+		entry := syncshared.Entry[serverConfig]{}
+		switch {
+		case !manifest.Enabled:
+			// ineligible
+		case !userScope && manifest.HasSecretValue():
+			entry.Refused = true
+		default:
+			entry.Eligible = true
+			entry.Value = materializeServer(manifest)
 		}
-
-		entry := serverConfig{Command: manifest.Command}
-		if len(manifest.Args) > 0 {
-			entry.Args = append([]string(nil), manifest.Args...)
-		}
-		if len(manifest.Env) > 0 {
-			entry.Env = map[string]string{}
-			for key, value := range manifest.Env {
-				entry.Env[key] = value
-			}
-		}
-		servers[manifest.Name] = entry
+		entries[manifest.Name] = entry
 	}
-	sort.Strings(refused)
-	return servers, refused
+	return entries
 }
 
-func buildPlan(existing map[string]serverConfig, managed map[string][]string, desired map[string]serverConfig) (SyncResult, error) {
-	return syncshared.BuildPlan(existing, managed, desired, equalServer, ErrConflict)
+func materializeServer(manifest registry.Manifest) serverConfig {
+	entry := serverConfig{Command: manifest.Command}
+	if len(manifest.Args) > 0 {
+		entry.Args = append([]string(nil), manifest.Args...)
+	}
+	if len(manifest.Env) > 0 {
+		entry.Env = map[string]string{}
+		for key, value := range manifest.Env {
+			entry.Env[key] = value
+		}
+	}
+	return entry
 }
 
 func equalServer(a, b serverConfig) bool {
