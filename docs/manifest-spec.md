@@ -58,3 +58,27 @@ keys = ["STEWREADS_GMAIL_APP_PASSWORD"]
 - `clients` must contain unique values.
 - Unknown top-level keys are rejected.
 - Empty `command` is invalid.
+
+## Ring Files
+
+Rings are named capability sets of servers, stored one TOML document per
+ring at `<config-root>/rings/<name>.toml` (sibling of `servers/`).
+
+- `name` (string, required): stable ring ID; same pattern as server names.
+- `members` (array of strings, required, non-empty, unique): server names.
+  Members reference registry entries by name only — rings never embed
+  command, args, or env; the server manifest stays the single source of
+  truth. Every member must exist in the registry when a ring is created or
+  imported.
+- `description` (string, optional): friendly description.
+
+Ring manifests have no sections; unknown keys are rejected. Files are
+written deterministically with sorted members.
+
+### Example
+
+```toml
+name = "research"
+members = ["arxiv", "stewreads"]
+description = "Research helpers"
+```
