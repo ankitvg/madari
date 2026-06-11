@@ -142,6 +142,8 @@ func (a cliApp) dispatch(args []string) error {
 		return a.cmdImport(args[1:])
 	case "sync":
 		return a.cmdSync(args[1:])
+	case "ring":
+		return a.cmdRing(args[1:])
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -1477,6 +1479,8 @@ func printCommandHelp(command string, out io.Writer) bool {
 		printEnableDisableHelp("disable", out)
 	case "sync":
 		printSyncHelp(out)
+	case "ring":
+		printRingHelp(out)
 	case "clients":
 		printClientsHelp(out)
 	case "doctor":
@@ -1698,6 +1702,7 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  enable    Enable a server")
 	fmt.Fprintln(out, "  disable   Disable a server")
 	fmt.Fprintln(out, "  sync      Sync server manifests to a client config")
+	fmt.Fprintln(out, "  ring      Manage rings (named capability sets of servers)")
 	fmt.Fprintln(out, "  clients   List supported clients and config readiness")
 	fmt.Fprintln(out, "  doctor    Run diagnostics on local MCP setup")
 	fmt.Fprintln(out, "  status    Show concise readiness summary")

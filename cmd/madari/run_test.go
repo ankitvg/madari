@@ -374,6 +374,7 @@ func TestRunHelpSubcommandOutput(t *testing.T) {
 		{name: "help install", args: []string{"help", "install"}, contains: "madari install <package>"},
 		{name: "help add", args: []string{"help", "add"}, contains: "madari add <name>"},
 		{name: "help sync", args: []string{"help", "sync"}, contains: "madari sync <client>"},
+		{name: "help ring", args: []string{"help", "ring"}, contains: "madari ring <subcommand>"},
 		{name: "help list", args: []string{"help", "list"}, contains: "madari list"},
 		{name: "help doctor", args: []string{"help", "doctor"}, contains: "madari doctor"},
 		{name: "help status", args: []string{"help", "status"}, contains: "madari status"},
@@ -1797,5 +1798,61 @@ func TestDeriveServerName(t *testing.T) {
 				t.Fatalf("deriveServerName(%q) = %q, expected %q", tt.packageName, actual, tt.expected)
 			}
 		})
+	}
+}
+
+func TestRunWithStoreRingCreate(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	for _, name := range []string{"stewreads", "arxiv"} {
+		if result := runCmd(store, "add", name, "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+			t.Fatalf("setup add %s failed: %s", name, result.stderr)
+		}
+	}
+
+	result := runCmd(store, "ring", "create", "research", "--member", "stewreads", "--member", "arxiv", "--description", "Research helpers")
+	if result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "created ring research with 2 member(s)") {
+		t.Fatalf("expected creation confirmation, got: %s", result.stdout)
+	}
+
+	// Duplicate refused.
+	result = runCmd(store, "ring", "create", "research", "--member", "stewreads")
+	if result.code == 0 || !strings.Contains(result.stderr, "already exists") {
+		t.Fatalf("expected duplicate-ring error, got code=%d stderr=%s", result.code, result.stderr)
+	}
+
+	// Unknown member refused.
+	result = runCmd(store, "ring", "create", "broken", "--member", "ghost")
+	if result.code == 0 || !strings.Contains(result.stderr, "unknown servers: ghost") {
+		t.Fatalf("expected unknown-member error, got code=%d stderr=%s", result.code, result.stderr)
+	}
+
+	// Member required.
+	result = runCmd(store, "ring", "create", "empty")
+	if result.code == 0 || !strings.Contains(result.stderr, "at least one member is required") {
+		t.Fatalf("expected member-required error, got code=%d stderr=%s", result.code, result.stderr)
+	}
+}
+
+func TestRunWithStoreRingDispatch(t *testing.T) {
+	store := newTestStore(t)
+
+	result := runCmd(store, "ring")
+	if result.code == 0 || !strings.Contains(result.stderr, "usage: madari ring") {
+		t.Fatalf("expected ring usage error, got code=%d stderr=%s", result.code, result.stderr)
+	}
+
+	result = runCmd(store, "ring", "explode")
+	if result.code == 0 || !strings.Contains(result.stderr, "unknown ring subcommand") {
+		t.Fatalf("expected unknown-subcommand error, got code=%d stderr=%s", result.code, result.stderr)
+	}
+
+	result = runCmd(store, "ring", "--help")
+	if result.code != 0 || !strings.Contains(result.stdout, "madari ring <subcommand>") {
+		t.Fatalf("expected ring help, got code=%d stdout=%s", result.code, result.stdout)
 	}
 }
