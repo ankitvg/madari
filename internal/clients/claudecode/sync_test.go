@@ -1015,3 +1015,45 @@ func newStewreadsManifest() registry.Manifest {
 		},
 	}
 }
+
+func TestSyncConvergesEditedRingMembership(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+	opts := SyncOptions{ConfigPath: configPath, StatePath: statePath}
+
+	oldMember := newStewreadsManifest()
+	newMember := newStewreadsManifest()
+	newMember.Name = "arxiv"
+	manifests := []registry.Manifest{oldMember, newMember}
+
+	// Attach with stewreads as the only member.
+	if _, err := AttachRing(registry.Ring{Name: "r1", Members: []string{"stewreads"}}, manifests, opts); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+
+	// The ring was edited (snapshot import or hand edit): member is now
+	// arxiv. The next sync converges config and ownership.
+	editedRing := registry.Ring{Name: "r1", Members: []string{"arxiv"}}
+	syncOpts := opts
+	syncOpts.Rings = []registry.Ring{editedRing}
+	result, err := Sync(manifests, syncOpts)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	if !reflect.DeepEqual(result.Removed, []string{"stewreads"}) {
+		t.Fatalf("expected ex-member removed... got: %+v", result)
+	}
+	if !reflect.DeepEqual(result.Added, []string{"arxiv"}) {
+		t.Fatalf("expected new member materialized, got: %+v", result)
+	}
+
+	state, err := syncshared.LoadManagedState(statePath)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if !reflect.DeepEqual(state, map[string][]string{"arxiv": {"ring:r1"}}) {
+		t.Fatalf("expected converged ring-only ownership, got: %#v", state)
+	}
+}

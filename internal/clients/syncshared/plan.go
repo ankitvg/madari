@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ankitvg/madari/internal/clients"
+	"github.com/ankitvg/madari/internal/registry"
 )
 
 // Entry describes one manifest's standing for a sync operation.
@@ -33,12 +34,18 @@ func PlanSync[T any](
 	existing map[string]T,
 	prev map[string][]string,
 	entries map[string]Entry[T],
+	rings []registry.Ring,
 	equal func(a, b T) bool,
 	conflictErr error,
 ) (clients.SyncResult, map[string][]string, map[string]T, error) {
 	if equal == nil {
 		return clients.SyncResult{}, nil, nil, fmt.Errorf("equal comparer is required")
 	}
+
+	// Ring membership edits converge here: reconciled sources drive
+	// ownership, while removal candidates are judged against the original
+	// state so fully released entries still leave the config.
+	reconciled, _ := ReconcileRingSources(prev, rings)
 
 	eligible := make(map[string]bool, len(entries))
 	for name, entry := range entries {
@@ -51,7 +58,7 @@ func PlanSync[T any](
 		existsInConfig[name] = true
 	}
 
-	next := SyncOwnership(prev, eligible, existsInConfig)
+	next := SyncOwnership(reconciled, eligible, existsInConfig)
 
 	result := clients.SyncResult{}
 	writeSet := map[string]T{}
@@ -62,6 +69,12 @@ func PlanSync[T any](
 			if entry.Refused {
 				result.Refused = append(result.Refused, name)
 			}
+			continue
+		}
+		if len(prev[name]) > 0 && len(next[name]) == 0 {
+			// Ownership fully released this pass (e.g. reconciliation
+			// dropped the last ring source): this is a removal, not a
+			// materialization candidate. A later sync may re-claim it.
 			continue
 		}
 		existingValue, exists := existing[name]

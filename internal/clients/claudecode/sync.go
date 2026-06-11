@@ -57,7 +57,7 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 		return SyncResult{}, err
 	}
 
-	result, nextState, writeSet, err := syncshared.PlanSync(existingServers, managedState, entriesForTarget(manifests, userScope), equalServer, ErrConflict)
+	result, nextState, writeSet, err := syncshared.PlanSync(existingServers, managedState, entriesForTarget(manifests, userScope), opts.Rings, equalServer, ErrConflict)
 	if err != nil {
 		return SyncResult{}, err
 	}
@@ -101,7 +101,7 @@ func AttachRing(ring registry.Ring, manifests []registry.Manifest, opts SyncOpti
 		return SyncResult{}, err
 	}
 
-	result, nextState, writeSet, err := syncshared.PlanAttach(existingServers, managedState, ring.Name, ring.Members, entriesForTarget(manifests, userScope), equalServer, ErrConflict)
+	result, nextState, writeSet, err := syncshared.PlanAttach(existingServers, managedState, ring.Name, ring.Members, entriesForTarget(manifests, userScope), opts.Rings, equalServer, ErrConflict)
 	if err != nil {
 		return SyncResult{}, err
 	}
@@ -143,7 +143,7 @@ func DetachRing(ringName string, opts SyncOptions) (SyncResult, error) {
 		return SyncResult{}, err
 	}
 
-	result, nextState := syncshared.PlanDetach(existingServers, managedState, ringName)
+	result, nextState := syncshared.PlanDetach(existingServers, managedState, ringName, opts.Rings)
 	result.ConfigPath = configPath
 	result.DryRun = opts.DryRun
 

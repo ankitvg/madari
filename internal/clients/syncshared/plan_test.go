@@ -18,7 +18,7 @@ func planSyncStrings(
 	entries map[string]Entry[string],
 ) (clients.SyncResult, map[string][]string, map[string]string) {
 	t.Helper()
-	result, next, writeSet, err := PlanSync(existing, prev, entries, func(a, b string) bool { return a == b }, errTestConflict)
+	result, next, writeSet, err := PlanSync(existing, prev, entries, nil, func(a, b string) bool { return a == b }, errTestConflict)
 	if err != nil {
 		t.Fatalf("plan sync: %v", err)
 	}
@@ -102,6 +102,7 @@ func TestPlanSyncUnmanagedMismatchConflicts(t *testing.T) {
 		map[string]string{"hand": "theirs"},
 		map[string][]string{},
 		map[string]Entry[string]{"hand": {Value: "ours", Eligible: true}},
+		nil,
 		func(a, b string) bool { return a == b },
 		errTestConflict,
 	)

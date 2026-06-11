@@ -652,6 +652,11 @@ func (a cliApp) cmdSync(args []string) error {
 	}
 	syncable, skipped := filterSyncableManifests(manifests, target)
 
+	rings, err := a.store.ListRings()
+	if err != nil {
+		return err
+	}
+
 	statePath := a.managedStatePath(target)
 	if scope == clients.ScopeUser {
 		statePath = a.managedUserStatePath(target)
@@ -659,6 +664,7 @@ func (a cliApp) cmdSync(args []string) error {
 	result, err := adapter.Sync(syncable, clients.SyncOptions{
 		ConfigPath: configPath,
 		StatePath:  statePath,
+		Rings:      rings,
 		Scope:      scope,
 		DryRun:     dryRun,
 	})
@@ -782,10 +788,15 @@ func (a cliApp) cmdDoctor(args []string) error {
 	}
 
 	adapters := sortedAdapters()
+	rings, err := a.store.ListRings()
+	if err != nil {
+		return err
+	}
 	report, err := doctor.Run(a.store, doctor.Options{
 		Adapters:            adapters,
 		ConfigPathOverrides: configPathOverrides,
 		DriftTargets:        a.driftTargets(adapters, configPathOverrides),
+		Rings:               rings,
 	})
 	if err != nil {
 		return err
@@ -954,10 +965,15 @@ func (a cliApp) cmdStatus(args []string) error {
 	}
 
 	adapters := sortedAdapters()
+	rings, err := a.store.ListRings()
+	if err != nil {
+		return err
+	}
 	report, err := doctor.Run(a.store, doctor.Options{
 		Adapters:            adapters,
 		ConfigPathOverrides: configPathOverrides,
 		DriftTargets:        a.driftTargets(adapters, configPathOverrides),
+		Rings:               rings,
 	})
 	if err != nil {
 		return err

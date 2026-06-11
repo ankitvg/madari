@@ -67,6 +67,10 @@ type SyncOptions struct {
 	// StatePath stores entries currently managed by Madari for this target,
 	// each mapped to the sources that own it (e.g. "standalone").
 	StatePath string
+	// Rings carries the current ring definitions so operations can
+	// reconcile recorded ring sources against present membership. Rings
+	// missing from this list keep their sources untouched.
+	Rings []registry.Ring
 	// Scope declares whether the target config is repo-scoped
 	// (ScopeProject) or user-scoped (ScopeUser). Empty means the adapter's
 	// default. Adapters whose config location is inherently user-scoped

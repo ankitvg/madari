@@ -17,6 +17,7 @@ func TestPlanAttachMaterializesMembers(t *testing.T) {
 			"already": {Value: "v1", Eligible: true},
 			"fresh":   {Value: "v2", Eligible: true},
 		},
+		nil,
 		func(a, b string) bool { return a == b },
 		errTestConflict,
 	)
@@ -49,6 +50,7 @@ func TestPlanAttachConflictsOnAnyUnmanagedCollisionEvenEqual(t *testing.T) {
 		"r1",
 		[]string{"hand"},
 		map[string]Entry[string]{"hand": {Value: "v1", Eligible: true}},
+		nil,
 		func(a, b string) bool { return a == b },
 		errTestConflict,
 	)
@@ -70,6 +72,7 @@ func TestPlanAttachRecordsOwnershipForIneligibleMembers(t *testing.T) {
 			"disabled": {Eligible: false},
 			"secret":   {Refused: true},
 		},
+		nil,
 		func(a, b string) bool { return a == b },
 		errTestConflict,
 	)
@@ -105,6 +108,7 @@ func TestPlanDetachRemovesOnlyLastSourceEntries(t *testing.T) {
 			"standalone-too": {"ring:r1", "standalone"},
 		},
 		"r1",
+		nil,
 	)
 
 	if !reflect.DeepEqual(result.Removed, []string{"only"}) {
@@ -121,7 +125,7 @@ func TestPlanDetachRemovesOnlyLastSourceEntries(t *testing.T) {
 
 func TestPlanDetachUnattachedRingIsNoOp(t *testing.T) {
 	prev := map[string][]string{"server": {"standalone"}}
-	result, next := PlanDetach(map[string]string{"server": "v1"}, prev, "ghost")
+	result, next := PlanDetach(map[string]string{"server": "v1"}, prev, "ghost", nil)
 
 	if result.HasChanges() {
 		t.Fatalf("expected empty plan, got: %+v", result)
@@ -134,7 +138,7 @@ func TestPlanDetachUnattachedRingIsNoOp(t *testing.T) {
 func TestPlanDetachHandlesEntryAbsentFromConfig(t *testing.T) {
 	// The ring-owned entry was hand-deleted from config; detach releases
 	// ownership without reporting a removal.
-	result, next := PlanDetach(map[string]string{}, map[string][]string{"only": {"ring:r1"}}, "r1")
+	result, next := PlanDetach(map[string]string{}, map[string][]string{"only": {"ring:r1"}}, "r1", nil)
 
 	if len(result.Removed) != 0 {
 		t.Fatalf("expected no config removal, got: %+v", result)

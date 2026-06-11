@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ankitvg/madari/internal/clients"
+	"github.com/ankitvg/madari/internal/registry"
 )
 
 // PlanAttach computes the config mutations and ownership state for attaching
@@ -21,6 +22,7 @@ func PlanAttach[T any](
 	ring string,
 	members []string,
 	entries map[string]Entry[T],
+	rings []registry.Ring,
 	equal func(a, b T) bool,
 	conflictErr error,
 ) (clients.SyncResult, map[string][]string, map[string]T, error) {
@@ -28,12 +30,18 @@ func PlanAttach[T any](
 		return clients.SyncResult{}, nil, nil, fmt.Errorf("equal comparer is required")
 	}
 
+	reconciled, released := ReconcileRingSources(prev, rings)
+	releasedSet := make(map[string]bool, len(released))
+	for _, name := range released {
+		releasedSet[name] = true
+	}
+
 	var conflicts []string
 	for _, member := range members {
 		member = strings.TrimSpace(member)
 		_, exists := existing[member]
-		_, owned := prev[member]
-		if exists && !owned {
+		_, owned := reconciled[member]
+		if exists && !owned && !releasedSet[member] {
 			conflicts = append(conflicts, member)
 		}
 	}
@@ -46,10 +54,20 @@ func PlanAttach[T any](
 		)
 	}
 
-	next := AttachRingState(prev, ring, members)
+	next := AttachRingState(reconciled, ring, members)
 
 	result := clients.SyncResult{}
 	writeSet := map[string]T{}
+	// Entries fully released by reconciliation leave the config unless this
+	// attach re-materializes them below.
+	for name := range prev {
+		if _, still := next[name]; still {
+			continue
+		}
+		if _, exists := existing[name]; exists {
+			result.Removed = append(result.Removed, name)
+		}
+	}
 	for _, member := range members {
 		member = strings.TrimSpace(member)
 		entry, known := entries[member]
@@ -77,6 +95,7 @@ func PlanAttach[T any](
 
 	sort.Strings(result.Added)
 	sort.Strings(result.Updated)
+	sort.Strings(result.Removed)
 	sort.Strings(result.Unchanged)
 	sort.Strings(result.Refused)
 	return result, next, writeSet, nil
@@ -91,8 +110,10 @@ func PlanDetach[T any](
 	existing map[string]T,
 	prev map[string][]string,
 	ring string,
+	rings []registry.Ring,
 ) (clients.SyncResult, map[string][]string) {
-	next := DetachRingState(prev, ring)
+	reconciled, _ := ReconcileRingSources(prev, rings)
+	next := DetachRingState(reconciled, ring)
 
 	result := clients.SyncResult{}
 	for name := range prev {

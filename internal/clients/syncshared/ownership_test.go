@@ -3,6 +3,8 @@ package syncshared
 import (
 	"reflect"
 	"testing"
+
+	"github.com/ankitvg/madari/internal/registry"
 )
 
 // ownershipStep applies one operation to state and asserts the exact result.
@@ -316,5 +318,65 @@ func TestRingSourceHelpers(t *testing.T) {
 	}
 	if got := AttachedRings(state); !reflect.DeepEqual(got, []string{"r1", "r2"}) {
 		t.Fatalf("unexpected attached rings: %#v", got)
+	}
+}
+
+func TestReconcileRingSources(t *testing.T) {
+	state := map[string][]string{
+		"ex-member":  {"ring:r1"},
+		"kept":       {"ring:r1", "standalone"},
+		"stale-ring": {"ring:ghost"},
+	}
+	rings := []registry.Ring{
+		{Name: "r1", Members: []string{"kept", "joined"}},
+		{Name: "unattached", Members: []string{"other"}},
+	}
+
+	next, released := ReconcileRingSources(state, rings)
+
+	expected := map[string][]string{
+		"kept":       {"ring:r1", "standalone"},
+		"joined":     {"ring:r1"},
+		"stale-ring": {"ring:ghost"},
+	}
+	if !reflect.DeepEqual(next, expected) {
+		t.Fatalf("expected reconciled state %#v, got %#v", expected, next)
+	}
+	if !reflect.DeepEqual(released, []string{"ex-member"}) {
+		t.Fatalf("expected ex-member released, got: %#v", released)
+	}
+}
+
+func TestPlanSyncConvergesRingMembershipEdits(t *testing.T) {
+	// Ring r1 was attached when its member was "old"; the ring file now
+	// lists "new". Plain sync must release old (removing it from config),
+	// grant new the ring source, and materialize it without standalone.
+	result, next, writeSet, err := PlanSync(
+		map[string]string{"old": "v-old"},
+		map[string][]string{"old": {"ring:r1"}},
+		map[string]Entry[string]{
+			"old": {Value: "v-old", Eligible: true},
+			"new": {Value: "v-new", Eligible: true},
+		},
+		[]registry.Ring{{Name: "r1", Members: []string{"new"}}},
+		func(a, b string) bool { return a == b },
+		errTestConflict,
+	)
+	if err != nil {
+		t.Fatalf("plan sync: %v", err)
+	}
+
+	if !reflect.DeepEqual(result.Removed, []string{"old"}) {
+		t.Fatalf("expected released ex-member removed, got: %+v", result)
+	}
+	if !reflect.DeepEqual(result.Added, []string{"new"}) {
+		t.Fatalf("expected new member materialized, got: %+v", result)
+	}
+	expectedState := map[string][]string{"new": {"ring:r1"}}
+	if !reflect.DeepEqual(next, expectedState) {
+		t.Fatalf("expected converged ownership %#v, got %#v", expectedState, next)
+	}
+	if _, written := writeSet["old"]; written {
+		t.Fatalf("expected released member unwritten, got: %#v", writeSet)
 	}
 }
