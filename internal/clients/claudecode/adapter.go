@@ -21,3 +21,11 @@ func (Adapter) DefaultConfigPath() (string, error) {
 func (Adapter) Sync(manifests []registry.Manifest, opts clients.SyncOptions) (clients.SyncResult, error) {
 	return Sync(manifests, opts)
 }
+
+func (Adapter) AttachRing(ring registry.Ring, manifests []registry.Manifest, opts clients.SyncOptions) (clients.SyncResult, error) {
+	return AttachRing(ring, manifests, opts)
+}
+
+func (Adapter) DetachRing(ring string, opts clients.SyncOptions) (clients.SyncResult, error) {
+	return DetachRing(ring, opts)
+}

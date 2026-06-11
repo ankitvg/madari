@@ -49,6 +49,15 @@ type ClientAdapter interface {
 	// state consistent with the returned plan. Name collisions with unmanaged
 	// entries should return an error wrapping ErrConflict.
 	Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error)
+	// AttachRing records ring ownership for every member and materializes
+	// the eligible ones. Any unmanaged name collision — equal values
+	// included — must return an error wrapping ErrConflict: rings never
+	// adopt hand-managed entries.
+	AttachRing(ring registry.Ring, manifests []registry.Manifest, opts SyncOptions) (SyncResult, error)
+	// DetachRing releases the ring's ownership sources by name (the ring
+	// file may no longer exist); entries losing their last source leave the
+	// config. Detaching an unattached ring is a no-op.
+	DetachRing(ring string, opts SyncOptions) (SyncResult, error)
 }
 
 // SyncOptions controls adapter sync behavior.
