@@ -382,3 +382,53 @@ func TestParseSnapshotFromFilePayload(t *testing.T) {
 		t.Fatalf("unexpected parsed snapshot: %+v", parsed)
 	}
 }
+
+func TestImportSnapshotApplyRejectsInvalidRingsWithoutPartialWrites(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "servers"))
+
+	// "zz-bad" sorts after the valid ring; before the fix, servers (and
+	// earlier rings) were already saved when its validation failed.
+	snapshot := Snapshot{
+		Version: SnapshotVersion,
+		Servers: []Manifest{
+			{Name: "beta", Command: "/usr/bin/env", Enabled: true, Clients: []string{"claude-desktop"}},
+		},
+		Rings: []Ring{
+			{Name: "good", Members: []string{"beta"}},
+			{Name: "zz-bad", Members: []string{"ghost"}},
+		},
+	}
+
+	_, err := ImportSnapshot(store, snapshot, true)
+	if err == nil || !strings.Contains(err.Error(), `ring "zz-bad" references unknown servers: ghost`) {
+		t.Fatalf("expected unknown ring member error, got: %v", err)
+	}
+	if _, err := store.Get("beta"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("rejected snapshot must not partially import servers, got: %v", err)
+	}
+	if _, err := store.GetRing("good"); !errors.Is(err, ErrRingNotFound) {
+		t.Fatalf("rejected snapshot must not partially import rings, got: %v", err)
+	}
+}
+
+func TestExportSnapshotRejectsStaleRings(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "servers"))
+	if err := store.Save(Manifest{Name: "alpha", Command: "/usr/bin/env", Enabled: true, Clients: []string{"claude-desktop"}}); err != nil {
+		t.Fatalf("save alpha: %v", err)
+	}
+	if err := store.SaveRing(Ring{Name: "research", Members: []string{"alpha"}}); err != nil {
+		t.Fatalf("save ring: %v", err)
+	}
+	// The member disappears after ring creation: export must refuse to
+	// write a snapshot the importer would reject.
+	if err := store.Remove("alpha"); err != nil {
+		t.Fatalf("remove alpha: %v", err)
+	}
+
+	_, err := ExportSnapshot(store)
+	if err == nil ||
+		!strings.Contains(err.Error(), `ring "research" references unknown servers: alpha`) ||
+		!strings.Contains(err.Error(), "update or delete the ring before exporting") {
+		t.Fatalf("expected stale-ring export refusal, got: %v", err)
+	}
+}

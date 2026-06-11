@@ -44,6 +44,20 @@ func ExportSnapshot(store *Store) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
+
+	// A snapshot must round-trip: every exported ring member has to exist in
+	// the exported server set, or the fresh import of this backup would be
+	// refused. Fail loudly instead of writing a broken artifact.
+	exportable := make(map[string]struct{}, len(servers))
+	for _, server := range servers {
+		exportable[server.Name] = struct{}{}
+	}
+	for _, ring := range rings {
+		if err := validateRingMembersAgainst(ring, exportable); err != nil {
+			return Snapshot{}, fmt.Errorf("%w; update or delete the ring before exporting", err)
+		}
+	}
+
 	return Snapshot{
 		Version: SnapshotVersion,
 		Servers: servers,
@@ -120,6 +134,21 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 		existingRingsByName[ring.Name] = ring
 	}
 
+	// Validate every ring before any write: a rejected snapshot must not
+	// partially mutate the registry.
+	allowedMembers := make(map[string]struct{}, len(existingByName)+len(snapshot.Servers))
+	for name := range existingByName {
+		allowedMembers[name] = struct{}{}
+	}
+	for _, server := range snapshot.Servers {
+		allowedMembers[server.Name] = struct{}{}
+	}
+	for _, ring := range snapshot.Rings {
+		if err := validateRingMembersAgainst(ring, allowedMembers); err != nil {
+			return ImportResult{}, err
+		}
+	}
+
 	servers := append([]Manifest(nil), snapshot.Servers...)
 	sort.Slice(servers, func(i, j int) bool {
 		return servers[i].Name < servers[j].Name
@@ -151,23 +180,11 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 		}
 	}
 
-	allowedMembers := make(map[string]struct{}, len(existingByName)+len(snapshot.Servers))
-	for name := range existingByName {
-		allowedMembers[name] = struct{}{}
-	}
-	for _, server := range snapshot.Servers {
-		allowedMembers[server.Name] = struct{}{}
-	}
-
 	rings := append([]Ring(nil), snapshot.Rings...)
 	sort.Slice(rings, func(i, j int) bool {
 		return rings[i].Name < rings[j].Name
 	})
 	for _, incoming := range rings {
-		if err := validateRingMembersAgainst(incoming, allowedMembers); err != nil {
-			return ImportResult{}, err
-		}
-
 		existingRing, exists := existingRingsByName[incoming.Name]
 		if !exists {
 			result.RingsAdded = append(result.RingsAdded, incoming.Name)
