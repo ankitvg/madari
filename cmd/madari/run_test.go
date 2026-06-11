@@ -2062,3 +2062,77 @@ func TestRunWithStoreRingAttachWarnsDisabledMember(t *testing.T) {
 		t.Fatalf("expected no materialization, got: %s", result.stdout)
 	}
 }
+
+func TestRunWithStoreRingRender(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-code",
+		"--arg", "--stdio",
+		"--env", "STEWREADS_CONFIG_PATH=~/.config/stewreads/config.toml",
+		"--env", "STEWREADS_API_KEY=shhh",
+		"--secret-env", "STEWREADS_API_KEY"); result.code != 0 {
+		t.Fatalf("setup add stewreads failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "add", "desktop-only", "--command", commandPath, "--client", "claude-desktop"); result.code != 0 {
+		t.Fatalf("setup add desktop-only failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "add", "sleepy", "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+		t.Fatalf("setup add sleepy failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "disable", "sleepy"); result.code != 0 {
+		t.Fatalf("disable failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "research",
+		"--member", "stewreads", "--member", "desktop-only", "--member", "sleepy"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "ring", "render", "research", "--client", "claude-code")
+	if result.code != 0 {
+		t.Fatalf("ring render failed: %s", result.stderr)
+	}
+
+	expected := fmt.Sprintf(`{
+  "mcpServers": {
+    "stewreads": {
+      "command": %q,
+      "args": [
+        "--stdio"
+      ],
+      "env": {
+        "STEWREADS_CONFIG_PATH": "~/.config/stewreads/config.toml"
+      }
+    }
+  }
+}
+`, commandPath)
+	if result.stdout != expected {
+		t.Fatalf("render output drift:\nwant:\n%s\ngot:\n%s", expected, result.stdout)
+	}
+
+	for _, want := range []string{
+		"secret env values omitted (STEWREADS_API_KEY)",
+		"sleepy is disabled; omitted",
+		"desktop-only does not target claude-code; omitted",
+	} {
+		if !strings.Contains(result.stderr, want) {
+			t.Fatalf("expected warning %q, got stderr: %s", want, result.stderr)
+		}
+	}
+
+	// Render mutates nothing: no state directory appears.
+	if _, err := os.Stat(filepath.Join(filepath.Dir(store.ServersDir()), "state")); !os.IsNotExist(err) {
+		t.Fatalf("expected render to write no state, err=%v", err)
+	}
+
+	// Unknown ring and missing --client fail loudly.
+	result = runCmd(store, "ring", "render", "ghost", "--client", "claude-code")
+	if result.code == 0 || !strings.Contains(result.stderr, `ring "ghost" not found`) {
+		t.Fatalf("expected not-found error, got code=%d stderr=%s", result.code, result.stderr)
+	}
+	result = runCmd(store, "ring", "render", "research")
+	if result.code == 0 || !strings.Contains(result.stderr, "--client is required") {
+		t.Fatalf("expected required-client error, got code=%d stderr=%s", result.code, result.stderr)
+	}
+}

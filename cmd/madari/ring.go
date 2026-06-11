@@ -17,7 +17,7 @@ import (
 
 func (a cliApp) cmdRing(args []string) error {
 	if len(args) == 0 {
-		return commandUsageError("ring", "madari ring <create|list|show|attach|detach> [options]")
+		return commandUsageError("ring", "madari ring <create|list|show|attach|detach|render> [options]")
 	}
 	if isHelpToken(args[0]) {
 		printRingHelp(a.stdout)
@@ -36,9 +36,136 @@ func (a cliApp) cmdRing(args []string) error {
 		return a.cmdRingAttach(rest)
 	case "detach":
 		return a.cmdRingDetach(rest)
+	case "render":
+		return a.cmdRingRender(rest)
 	default:
-		return commandInputError("ring", fmt.Sprintf("unknown ring subcommand %q (supported: create, list, show, attach, detach)", sub))
+		return commandInputError("ring", fmt.Sprintf("unknown ring subcommand %q (supported: create, list, show, attach, detach, render)", sub))
 	}
+}
+
+// renderedServer is the self-contained client config entry ring render emits.
+type renderedServer struct {
+	Command string            `json:"command"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+}
+
+func (a cliApp) cmdRingRender(args []string) error {
+	if len(args) == 0 {
+		return commandUsageError("ring render", "madari ring render <name> --client <target>")
+	}
+	if isHelpToken(args[0]) {
+		printRingRenderHelp(a.stdout)
+		return nil
+	}
+	name := strings.TrimSpace(args[0])
+
+	fs := flag.NewFlagSet("ring render", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var target string
+	fs.StringVar(&target, "client", "", "Target client the rendered config is for (required)")
+	if err := fs.Parse(args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printRingRenderHelp(a.stdout)
+			return nil
+		}
+		return commandInputError("ring render", err.Error())
+	}
+	if fs.NArg() != 0 {
+		return commandUnexpectedArgsError("ring render", fs.Args())
+	}
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return commandInputError("ring render", "--client is required")
+	}
+	if _, ok := syncAdapters[target]; !ok {
+		return commandInputError("ring render", fmt.Sprintf("unsupported client %q (supported: %s)", target, strings.Join(supportedSyncTargets(), ", ")))
+	}
+
+	ring, err := a.store.GetRing(name)
+	if err != nil {
+		if errors.Is(err, registry.ErrRingNotFound) {
+			return fmt.Errorf("ring %q not found", name)
+		}
+		return err
+	}
+	manifests, err := a.store.List()
+	if err != nil {
+		return err
+	}
+	byName := make(map[string]registry.Manifest, len(manifests))
+	for _, manifest := range manifests {
+		byName[manifest.Name] = manifest
+	}
+
+	// Render mutates nothing: no state, no refcounts, no config files. The
+	// output is a self-contained config for ephemeral use (for example
+	// `claude --mcp-config`); stdout carries only the JSON document.
+	servers := map[string]renderedServer{}
+	members := append([]string(nil), ring.Members...)
+	sort.Strings(members)
+	for _, member := range members {
+		member = strings.TrimSpace(member)
+		manifest, known := byName[member]
+		switch {
+		case !known:
+			fmt.Fprintf(a.stderr, "warning: ring member %s no longer exists in the registry; omitted\n", member)
+			continue
+		case !manifest.Enabled:
+			fmt.Fprintf(a.stderr, "warning: ring member %s is disabled; omitted\n", member)
+			continue
+		case !manifest.HasClient(target):
+			fmt.Fprintf(a.stderr, "warning: ring member %s does not target %s; omitted\n", member, target)
+			continue
+		}
+		if err := clients.ValidateCommandPath(manifest.Command); err != nil {
+			fmt.Fprintf(a.stderr, "warning: ring member %s omitted: %s\n", member, err.Message)
+			continue
+		}
+
+		entry := renderedServer{Command: manifest.Command}
+		if len(manifest.Args) > 0 {
+			entry.Args = append([]string(nil), manifest.Args...)
+		}
+		secret := make(map[string]bool, len(manifest.SecretEnv.Keys))
+		for _, key := range manifest.SecretEnv.Keys {
+			secret[strings.TrimSpace(key)] = true
+		}
+		var omitted []string
+		for key, value := range manifest.Env {
+			if secret[key] {
+				omitted = append(omitted, key)
+				continue
+			}
+			if entry.Env == nil {
+				entry.Env = map[string]string{}
+			}
+			entry.Env[key] = value
+		}
+		if len(omitted) > 0 {
+			sort.Strings(omitted)
+			fmt.Fprintf(a.stderr, "warning: ring member %s: secret env values omitted (%s); provide them via the runtime environment\n", member, strings.Join(omitted, ", "))
+		}
+		servers[member] = entry
+	}
+
+	return writeJSON(a.stdout, map[string]map[string]renderedServer{"mcpServers": servers})
+}
+
+func printRingRenderHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari ring render <name> --client <target>")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Options:")
+	fmt.Fprintln(out, "  --client <target>          Target client the rendered config is for (required)")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  Print a self-contained MCP config for the ring to stdout, for ephemeral")
+	fmt.Fprintln(out, "  use such as `claude --mcp-config <(madari ring render research --client claude-code)`.")
+	fmt.Fprintln(out, "  Members are filtered by client compatibility; disabled, missing, or")
+	fmt.Fprintln(out, "  command-invalid members are omitted with a warning. Static values for")
+	fmt.Fprintln(out, "  [secret_env] keys are never emitted — provide them via the runtime")
+	fmt.Fprintln(out, "  environment. Render mutates no state and no refcounts.")
 }
 
 // parseRingOpArgs parses `<ring> <client> [flags]` shared by attach/detach.
@@ -362,6 +489,7 @@ func printRingHelp(out io.Writer) {
 	fmt.Fprintln(out, "  show      Show one ring's members")
 	fmt.Fprintln(out, "  attach    Attach a ring to a client (materialize members)")
 	fmt.Fprintln(out, "  detach    Detach a ring from a client")
+	fmt.Fprintln(out, "  render    Print a self-contained MCP config for a ring")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Rings are named capability sets of MCP servers. Members reference")
