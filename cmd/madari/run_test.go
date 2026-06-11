@@ -2203,7 +2203,7 @@ func TestRunWithStoreRingStatus(t *testing.T) {
 		t.Fatalf("expected one attached ring, got: %v", rings)
 	}
 	ring := rings[0].(map[string]any)
-	assertJSONKeys(t, ring, "name", "exists", "members", "owned", "pending", "missing_members")
+	assertJSONKeys(t, ring, "name", "exists", "members", "owned", "pending", "stale", "missing_members")
 	if ring["name"] != "research" || ring["exists"] != true {
 		t.Fatalf("unexpected ring attachment: %v", ring)
 	}
@@ -2270,4 +2270,67 @@ func TestRunWithStoreDoctorFlagsDanglingRingMember(t *testing.T) {
 	if !strings.Contains(result.stdout, "ring research: [warn] member stewreads no longer exists in the registry") {
 		t.Fatalf("expected dangling-member warning, got: %s", result.stdout)
 	}
+}
+
+func TestRunWithStoreRingStatusFlagsStaleAndScopedPending(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	for _, name := range []string{"stewreads", "arxiv"} {
+		if result := runCmd(store, "add", name, "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+			t.Fatalf("setup add %s failed: %s", name, result.stderr)
+		}
+	}
+	if result := runCmd(store, "ring", "create", "research", "--member", "stewreads"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	// Attach in USER scope with a custom config path.
+	configPath := filepath.Join(t.TempDir(), "claude.json")
+	if result := runCmd(store, "ring", "attach", "research", "claude-code", "--scope", "user", "--config-path", configPath); result.code != 0 {
+		t.Fatalf("attach failed: %s", result.stderr)
+	}
+
+	// Edit the ring: stewreads removed (becomes a stale owner), arxiv added
+	// (becomes pending until the next sync).
+	edited := []byte("name = \"research\"\nmembers = [\"arxiv\"]\n")
+	if err := os.WriteFile(filepath.Join(store.RingsDir(), "research.toml"), edited, 0o644); err != nil {
+		t.Fatalf("rewrite ring file: %v", err)
+	}
+
+	result := runCmd(store, "ring", "status")
+	if result.code != 0 {
+		t.Fatalf("ring status failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "research [out-of-sync] members=1 owned=0 pending=arxiv stale=stewreads (run madari sync claude-code --scope user)") {
+		t.Fatalf("expected out-of-sync line with scoped hint, got: %s", result.stdout)
+	}
+
+	// JSON carries the stale owners too.
+	result = runCmd(store, "ring", "status", "--json")
+	if result.code != 0 {
+		t.Fatalf("ring status --json failed: %s", result.stderr)
+	}
+	payload := decodeJSONObject(t, result.stdout)
+	for _, item := range payload["targets"].([]any) {
+		entry := item.(map[string]any)
+		if entry["target"] != "claude-code" || entry["scope"] != "user" {
+			continue
+		}
+		rings := entry["rings"].([]any)
+		if len(rings) != 1 {
+			t.Fatalf("expected one ring, got: %v", rings)
+		}
+		ring := rings[0].(map[string]any)
+		stale := ring["stale"].([]any)
+		if len(stale) != 1 || stale[0] != "stewreads" {
+			t.Fatalf("expected stewreads stale, got: %v", ring)
+		}
+		pending := ring["pending"].([]any)
+		if len(pending) != 1 || pending[0] != "arxiv" {
+			t.Fatalf("expected arxiv pending, got: %v", ring)
+		}
+		return
+	}
+	t.Fatalf("expected claude-code user target in: %s", result.stdout)
 }

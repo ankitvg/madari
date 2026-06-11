@@ -197,6 +197,7 @@ type ringAttachmentJSON struct {
 	Members        []string `json:"members"`
 	Owned          []string `json:"owned"`
 	Pending        []string `json:"pending"`
+	Stale          []string `json:"stale"`
 	MissingMembers []string `json:"missing_members"`
 }
 

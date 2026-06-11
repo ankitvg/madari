@@ -218,7 +218,7 @@ func checkRingIssues(manifests []registry.Manifest, targets []DriftTarget, rings
 				Scope:    target.Scope,
 				Ring:     ring,
 				Severity: SeverityError,
-				Message:  fmt.Sprintf("ring file missing; release the stale sources with `%s`", fix),
+				Message:  fmt.Sprintf("ring file missing; release the stale sources with `%s` (pass --config-path if it was attached to a custom config)", fix),
 			})
 		}
 	}

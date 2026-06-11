@@ -59,6 +59,7 @@ type ringAttachment struct {
 	members        []string
 	owned          []string
 	pending        []string
+	stale          []string
 	missingMembers []string
 }
 
@@ -118,8 +119,10 @@ func (a cliApp) cmdRingStatus(args []string) error {
 				sort.Strings(members)
 				attachment.members = members
 				source := syncshared.RingSource(name)
+				memberSet := make(map[string]bool, len(members))
 				for _, member := range members {
 					member = strings.TrimSpace(member)
+					memberSet[member] = true
 					if slices.Contains(state[member], source) {
 						attachment.owned = append(attachment.owned, member)
 					} else {
@@ -129,6 +132,14 @@ func (a cliApp) cmdRingStatus(args []string) error {
 						attachment.missingMembers = append(attachment.missingMembers, member)
 					}
 				}
+				// Stale owners: state entries still carrying the source
+				// after a membership edit removed them from the ring.
+				for owner, sources := range state {
+					if !memberSet[owner] && slices.Contains(sources, source) {
+						attachment.stale = append(attachment.stale, owner)
+					}
+				}
+				sort.Strings(attachment.stale)
 			}
 			ts.rings = append(ts.rings, attachment)
 		}
@@ -165,6 +176,7 @@ func (a cliApp) cmdRingStatus(args []string) error {
 					Members:        nonNilStrings(att.members),
 					Owned:          nonNilStrings(att.owned),
 					Pending:        nonNilStrings(att.pending),
+					Stale:          nonNilStrings(att.stale),
 					MissingMembers: nonNilStrings(att.missingMembers),
 				})
 			}
@@ -188,6 +200,10 @@ func (a cliApp) cmdRingStatus(args []string) error {
 			fmt.Fprintf(a.stdout, "%s: no managed entries\n", label)
 			continue
 		}
+		syncHint := "madari sync " + ts.target
+		if ts.scope == clients.ScopeUser {
+			syncHint += " --scope user"
+		}
 		fmt.Fprintf(a.stdout, "%s:\n", label)
 		if len(ts.rings) == 0 {
 			fmt.Fprintln(a.stdout, "  rings: -")
@@ -199,12 +215,22 @@ func (a cliApp) cmdRingStatus(args []string) error {
 					if ts.scope == clients.ScopeUser {
 						fix += " --scope user"
 					}
-					fmt.Fprintf(a.stdout, "    %s [missing] ring file not found; release with `%s`\n", att.name, fix)
+					fmt.Fprintf(a.stdout, "    %s [missing] ring file not found; release with `%s` (pass --config-path if it was attached to a custom config)\n", att.name, fix)
 					continue
 				}
-				line := fmt.Sprintf("    %s [ok] members=%d owned=%d", att.name, len(att.members), len(att.owned))
+				marker := "ok"
+				if len(att.pending)+len(att.stale) > 0 {
+					marker = "out-of-sync"
+				}
+				line := fmt.Sprintf("    %s [%s] members=%d owned=%d", att.name, marker, len(att.members), len(att.owned))
 				if len(att.pending) > 0 {
-					line += fmt.Sprintf(" pending=%s (run madari sync %s)", strings.Join(att.pending, ","), ts.target)
+					line += fmt.Sprintf(" pending=%s", strings.Join(att.pending, ","))
+				}
+				if len(att.stale) > 0 {
+					line += fmt.Sprintf(" stale=%s", strings.Join(att.stale, ","))
+				}
+				if len(att.pending)+len(att.stale) > 0 {
+					line += fmt.Sprintf(" (run %s)", syncHint)
 				}
 				if len(att.missingMembers) > 0 {
 					line += fmt.Sprintf(" missing-from-registry=%s", strings.Join(att.missingMembers, ","))
