@@ -22,6 +22,12 @@ func (a testAdapter) DefaultConfigPath() (string, error) { return a.configPath, 
 func (a testAdapter) Sync(_ []registry.Manifest, _ clients.SyncOptions) (clients.SyncResult, error) {
 	return clients.SyncResult{}, nil
 }
+func (a testAdapter) AttachRing(_ registry.Ring, _ []registry.Manifest, _ clients.SyncOptions) (clients.SyncResult, error) {
+	return clients.SyncResult{}, nil
+}
+func (a testAdapter) DetachRing(_ string, _ clients.SyncOptions) (clients.SyncResult, error) {
+	return clients.SyncResult{}, nil
+}
 
 func findClientConfig(report Report, target string) (ClientConfigReport, bool) {
 	for _, cc := range report.ClientConfigs {

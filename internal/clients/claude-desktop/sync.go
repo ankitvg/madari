@@ -46,7 +46,7 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 		return SyncResult{}, err
 	}
 
-	result, nextState, writeSet, err := syncshared.PlanSync(existingServers, managedState, entriesForTarget(manifests), equalServer, ErrConflict)
+	result, nextState, writeSet, err := syncshared.PlanSync(existingServers, managedState, entriesForTarget(manifests), opts.Rings, equalServer, ErrConflict)
 	if err != nil {
 		return SyncResult{}, err
 	}
@@ -57,21 +57,108 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 		return result, nil
 	}
 
-	// Rebuild from the raw entries so anything madari does not write keeps
-	// its JSON value, including fields and server shapes madari does not
-	// model. The write set contains exactly the entries madari owns or
-	// introduces; pre-existing unmanaged entries are never serialized.
+	if err := applyPlan(configPath, statePath, root, rawServers, configExists, result.Removed, writeSet, nextState); err != nil {
+		return SyncResult{}, err
+	}
+	return result, nil
+}
+
+// AttachRing adds the ring's ownership source to every member and
+// materializes the eligible ones into the Claude Desktop config. Attaching
+// onto any pre-existing unmanaged entry — equal values included — refuses
+// with ErrConflict.
+func AttachRing(ring registry.Ring, manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
+	configPath, err := resolveConfigPath(opts.ConfigPath)
+	if err != nil {
+		return SyncResult{}, err
+	}
+	statePath, err := resolveStatePath(opts.StatePath)
+	if err != nil {
+		return SyncResult{}, err
+	}
+
+	root, rawServers, existingServers, configExists, err := loadClaudeConfig(configPath)
+	if err != nil {
+		return SyncResult{}, err
+	}
+	managedState, err := syncshared.LoadManagedState(statePath)
+	if err != nil {
+		return SyncResult{}, err
+	}
+
+	result, nextState, writeSet, err := syncshared.PlanAttach(existingServers, managedState, ring.Name, ring.Members, entriesForTarget(manifests), opts.Rings, equalServer, ErrConflict)
+	if err != nil {
+		return SyncResult{}, err
+	}
+	result.ConfigPath = configPath
+	result.DryRun = opts.DryRun
+
+	if opts.DryRun {
+		return result, nil
+	}
+	if err := applyPlan(configPath, statePath, root, rawServers, configExists, result.Removed, writeSet, nextState); err != nil {
+		return SyncResult{}, err
+	}
+	return result, nil
+}
+
+// DetachRing removes the ring's ownership source everywhere; entries that
+// lose their last source leave the config. The ring file is not required, so
+// stale sources can always be released.
+func DetachRing(ringName string, opts SyncOptions) (SyncResult, error) {
+	configPath, err := resolveConfigPath(opts.ConfigPath)
+	if err != nil {
+		return SyncResult{}, err
+	}
+	statePath, err := resolveStatePath(opts.StatePath)
+	if err != nil {
+		return SyncResult{}, err
+	}
+
+	root, rawServers, existingServers, configExists, err := loadClaudeConfig(configPath)
+	if err != nil {
+		return SyncResult{}, err
+	}
+	managedState, err := syncshared.LoadManagedState(statePath)
+	if err != nil {
+		return SyncResult{}, err
+	}
+
+	result, nextState := syncshared.PlanDetach(existingServers, managedState, ringName, opts.Rings)
+	result.ConfigPath = configPath
+	result.DryRun = opts.DryRun
+
+	if opts.DryRun {
+		return result, nil
+	}
+	if err := applyPlan(configPath, statePath, root, rawServers, configExists, result.Removed, nil, nextState); err != nil {
+		return SyncResult{}, err
+	}
+	return result, nil
+}
+
+// applyPlan writes the mutated config (backup + atomic write) and ownership
+// state. The raw entries pass through untouched except for removals and the
+// write set; pre-existing unmanaged entries are never serialized.
+func applyPlan(
+	configPath, statePath string,
+	root, rawServers map[string]json.RawMessage,
+	configExists bool,
+	removed []string,
+	writeSet map[string]serverConfig,
+	nextState map[string][]string,
+) error {
 	mutated := make(map[string]json.RawMessage, len(rawServers)+len(writeSet))
 	for name, raw := range rawServers {
 		mutated[name] = raw
 	}
-	for _, name := range result.Removed {
+	for _, name := range removed {
 		delete(mutated, name)
 	}
 	for name, server := range writeSet {
 		entryPayload, err := json.Marshal(server)
 		if err != nil {
-			return SyncResult{}, fmt.Errorf("marshal server %q: %w", name, err)
+			return fmt.Errorf("marshal server %q: %w", name, err)
 		}
 		mutated[name] = entryPayload
 	}
@@ -82,30 +169,29 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 	}
 	serversPayload, err := json.Marshal(mutated)
 	if err != nil {
-		return SyncResult{}, fmt.Errorf("marshal mcpServers: %w", err)
+		return fmt.Errorf("marshal mcpServers: %w", err)
 	}
 	updatedRoot["mcpServers"] = serversPayload
 
 	payload, err := json.MarshalIndent(updatedRoot, "", "  ")
 	if err != nil {
-		return SyncResult{}, fmt.Errorf("marshal Claude config: %w", err)
+		return fmt.Errorf("marshal Claude config: %w", err)
 	}
 	payload = append(payload, '\n')
 
 	if configExists {
 		if _, err := syncshared.BackupFile(configPath); err != nil {
-			return SyncResult{}, fmt.Errorf("backup Claude config: %w", err)
+			return fmt.Errorf("backup Claude config: %w", err)
 		}
 	}
 	if err := syncshared.WriteFileAtomically(configPath, payload, 0o644); err != nil {
-		return SyncResult{}, fmt.Errorf("write Claude config: %w", err)
+		return fmt.Errorf("write Claude config: %w", err)
 	}
 
 	if err := syncshared.SaveManagedState(statePath, nextState); err != nil {
-		return SyncResult{}, fmt.Errorf("write managed sync state: %w", err)
+		return fmt.Errorf("write managed sync state: %w", err)
 	}
-
-	return result, nil
+	return nil
 }
 
 func DefaultDesktopConfigPath() (string, error) {

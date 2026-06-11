@@ -113,6 +113,9 @@ type Options struct {
 	// DriftTargets enables drift detection for the listed state/config
 	// pairs.
 	DriftTargets []DriftTarget
+	// Rings carries current ring definitions so drift plans reconcile ring
+	// sources the same way sync does.
+	Rings []registry.Ring
 }
 
 func Run(store *registry.Store, opts Options) (Report, error) {
@@ -165,7 +168,7 @@ func Run(store *registry.Store, opts Options) (Report, error) {
 	// repaired.
 	report.Drift = []DriftReport{}
 	if len(manifestErrors) == 0 {
-		report.Drift = checkDrift(manifests, opts.DriftTargets)
+		report.Drift = checkDrift(manifests, opts.DriftTargets, opts.Rings)
 	}
 
 	report.Summary = summarize(report)
@@ -175,7 +178,7 @@ func Run(store *registry.Store, opts Options) (Report, error) {
 // checkDrift diffs materialized client entries against manifests by reading
 // each target's dry-run sync plan. Targets without managed entries are
 // skipped: no ownership, nothing to drift.
-func checkDrift(manifests []registry.Manifest, targets []DriftTarget) []DriftReport {
+func checkDrift(manifests []registry.Manifest, targets []DriftTarget, rings []registry.Ring) []DriftReport {
 	reports := []DriftReport{}
 	for _, target := range targets {
 		dr := DriftReport{
@@ -198,6 +201,7 @@ func checkDrift(manifests []registry.Manifest, targets []DriftTarget) []DriftRep
 		plan, err := target.Adapter.Sync(syncableForTarget(manifests, target.Adapter.Target()), clients.SyncOptions{
 			ConfigPath: target.ConfigPath,
 			StatePath:  target.StatePath,
+			Rings:      rings,
 			Scope:      target.Scope,
 			DryRun:     true,
 		})

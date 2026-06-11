@@ -3,6 +3,8 @@ package syncshared
 import (
 	"slices"
 	"strings"
+
+	"github.com/ankitvg/madari/internal/registry"
 )
 
 const ringSourcePrefix = "ring:"
@@ -77,6 +79,62 @@ func AttachedRings(state map[string][]string) []string {
 	}
 	slices.Sort(rings)
 	return rings
+}
+
+// ReconcileRingSources recomputes ring sources against current ring
+// membership for every ring that is attached per the state: new members gain
+// the ring's source, ex-members lose it. Names in blocked are never granted
+// a source — callers pass the unmanaged config collisions so a membership
+// edit can never adopt or overwrite a hand-managed entry (the collision
+// surfaces through the normal conflict path instead). Sources of rings
+// absent from the given definitions (e.g. the ring file was deleted outside
+// madari) are left intact — doctor flags them and detach-by-name can always
+// release them. Returns the reconciled state plus the names whose sources
+// emptied (released entries leave the client config). The input map is
+// never mutated.
+func ReconcileRingSources(state map[string][]string, rings []registry.Ring, blocked map[string]bool) (map[string][]string, []string) {
+	attached := map[string]bool{}
+	for _, ring := range AttachedRings(state) {
+		attached[ring] = true
+	}
+
+	next := copyState(state)
+	for _, ring := range rings {
+		if !attached[ring.Name] {
+			continue
+		}
+		source := RingSource(ring.Name)
+		members := map[string]bool{}
+		for _, member := range ring.Members {
+			member = strings.TrimSpace(member)
+			if member != "" {
+				members[member] = true
+			}
+		}
+		for name, sources := range next {
+			if members[name] || !slices.Contains(sources, source) {
+				continue
+			}
+			next[name] = withoutSource(sources, source)
+		}
+		for member := range members {
+			if blocked[member] {
+				continue
+			}
+			if !slices.Contains(next[member], source) {
+				next[member] = append(append([]string(nil), next[member]...), source)
+			}
+		}
+	}
+
+	var released []string
+	for name, sources := range state {
+		if len(sources) > 0 && len(next[name]) == 0 {
+			released = append(released, name)
+		}
+	}
+	slices.Sort(released)
+	return normalizeManagedState(next), released
 }
 
 // SyncOwnership computes post-plain-sync ownership. The standalone claim is

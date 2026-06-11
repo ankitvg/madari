@@ -590,6 +590,187 @@ func TestSyncNeverPromotesRingOnlyEntries(t *testing.T) {
 	}
 }
 
+func TestAttachDetachOverlappingRingsAtConfigLevel(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+	opts := SyncOptions{ConfigPath: configPath, StatePath: statePath}
+
+	shared := newStewreadsManifest()
+	only2 := newStewreadsManifest()
+	only2.Name = "arxiv"
+	manifests := []registry.Manifest{shared, only2}
+
+	r1 := registry.Ring{Name: "r1", Members: []string{"stewreads"}}
+	r2 := registry.Ring{Name: "r2", Members: []string{"stewreads", "arxiv"}}
+
+	if _, err := AttachRing(r1, manifests, opts); err != nil {
+		t.Fatalf("attach r1: %v", err)
+	}
+	result, err := AttachRing(r2, manifests, opts)
+	if err != nil {
+		t.Fatalf("attach r2: %v", err)
+	}
+	if len(result.Added) != 1 || result.Added[0] != "arxiv" {
+		t.Fatalf("expected arxiv added on r2 attach, got: %+v", result)
+	}
+
+	state, err := syncshared.LoadManagedState(statePath)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	expected := map[string][]string{
+		"stewreads": {"ring:r1", "ring:r2"},
+		"arxiv":     {"ring:r2"},
+	}
+	if !reflect.DeepEqual(state, expected) {
+		t.Fatalf("expected overlapping refcounts, got: %#v", state)
+	}
+
+	// Detach r1: shared member survives via r2; config untouched.
+	result, err = DetachRing("r1", opts)
+	if err != nil {
+		t.Fatalf("detach r1: %v", err)
+	}
+	if len(result.Removed) != 0 {
+		t.Fatalf("expected no removals while r2 owns shared member, got: %+v", result)
+	}
+	servers := readServers(t, configPath)
+	if _, ok := servers["stewreads"]; !ok {
+		t.Fatalf("expected shared member to survive r1 detach")
+	}
+
+	// Detach r2: everything leaves config and state ends clean.
+	result, err = DetachRing("r2", opts)
+	if err != nil {
+		t.Fatalf("detach r2: %v", err)
+	}
+	if !reflect.DeepEqual(result.Removed, []string{"arxiv", "stewreads"}) {
+		t.Fatalf("expected both members removed, got: %+v", result)
+	}
+	servers = readServers(t, configPath)
+	if len(servers) != 0 {
+		t.Fatalf("expected clean config, got: %#v", servers)
+	}
+	state, err = syncshared.LoadManagedState(statePath)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if len(state) != 0 {
+		t.Fatalf("expected clean state, got: %#v", state)
+	}
+
+	// Idempotency: detaching again is a no-op.
+	result, err = DetachRing("r2", opts)
+	if err != nil {
+		t.Fatalf("re-detach r2: %v", err)
+	}
+	if result.HasChanges() {
+		t.Fatalf("expected no-op re-detach, got: %+v", result)
+	}
+}
+
+func TestAttachRingConflictsOnEqualUnmanagedEntry(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+
+	// Hand-managed entry with values identical to the manifest: plain sync
+	// tolerates it; attach must refuse.
+	config := []byte(`{
+  "mcpServers": {
+    "stewreads": {
+      "command": "stewreads-mcp",
+      "env": {
+        "STEWREADS_CONFIG_PATH": "~/.config/stewreads/config.toml"
+      }
+    }
+  }
+}
+`)
+	if err := os.WriteFile(configPath, config, 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	_, err := AttachRing(
+		registry.Ring{Name: "r1", Members: []string{"stewreads"}},
+		[]registry.Manifest{newStewreadsManifest()},
+		SyncOptions{ConfigPath: configPath, StatePath: statePath},
+	)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected ErrConflict for equal-value unmanaged collision, got: %v", err)
+	}
+	if _, statErr := os.Stat(statePath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected no state write after conflict, got: %v", statErr)
+	}
+}
+
+func TestAttachRingStandaloneMemberSurvivesDetach(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+	opts := SyncOptions{ConfigPath: configPath, StatePath: statePath}
+	manifests := []registry.Manifest{newStewreadsManifest()}
+
+	// Standalone first (plain sync), then ring on top.
+	if _, err := Sync(manifests, opts); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if _, err := AttachRing(registry.Ring{Name: "r1", Members: []string{"stewreads"}}, manifests, opts); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+
+	result, err := DetachRing("r1", opts)
+	if err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	if len(result.Removed) != 0 {
+		t.Fatalf("expected standalone member to survive ring detach, got: %+v", result)
+	}
+
+	state, err := syncshared.LoadManagedState(statePath)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if !reflect.DeepEqual(state, map[string][]string{"stewreads": {"standalone"}}) {
+		t.Fatalf("expected standalone ownership preserved, got: %#v", state)
+	}
+}
+
+func TestAttachRingRecordsOwnershipForDisabledMember(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+
+	disabled := newStewreadsManifest()
+	disabled.Enabled = false
+
+	result, err := AttachRing(
+		registry.Ring{Name: "r1", Members: []string{"stewreads"}},
+		[]registry.Manifest{disabled},
+		SyncOptions{ConfigPath: configPath, StatePath: statePath},
+	)
+	if err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	if result.HasChanges() {
+		t.Fatalf("expected no materialization for disabled member, got: %+v", result)
+	}
+
+	state, err := syncshared.LoadManagedState(statePath)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if !reflect.DeepEqual(state, map[string][]string{"stewreads": {"ring:r1"}}) {
+		t.Fatalf("expected ring ownership recorded for disabled member, got: %#v", state)
+	}
+
+	servers := readServers(t, configPath)
+	if _, ok := servers["stewreads"]; ok {
+		t.Fatalf("expected disabled member absent from config")
+	}
+}
+
 func TestSyncMigratesV1ManagedStateToV2(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, ".mcp.json")
@@ -832,5 +1013,47 @@ func newStewreadsManifest() registry.Manifest {
 		Env: map[string]string{
 			"STEWREADS_CONFIG_PATH": "~/.config/stewreads/config.toml",
 		},
+	}
+}
+
+func TestSyncConvergesEditedRingMembership(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+	opts := SyncOptions{ConfigPath: configPath, StatePath: statePath}
+
+	oldMember := newStewreadsManifest()
+	newMember := newStewreadsManifest()
+	newMember.Name = "arxiv"
+	manifests := []registry.Manifest{oldMember, newMember}
+
+	// Attach with stewreads as the only member.
+	if _, err := AttachRing(registry.Ring{Name: "r1", Members: []string{"stewreads"}}, manifests, opts); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+
+	// The ring was edited (snapshot import or hand edit): member is now
+	// arxiv. The next sync converges config and ownership.
+	editedRing := registry.Ring{Name: "r1", Members: []string{"arxiv"}}
+	syncOpts := opts
+	syncOpts.Rings = []registry.Ring{editedRing}
+	result, err := Sync(manifests, syncOpts)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+
+	if !reflect.DeepEqual(result.Removed, []string{"stewreads"}) {
+		t.Fatalf("expected ex-member removed... got: %+v", result)
+	}
+	if !reflect.DeepEqual(result.Added, []string{"arxiv"}) {
+		t.Fatalf("expected new member materialized, got: %+v", result)
+	}
+
+	state, err := syncshared.LoadManagedState(statePath)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if !reflect.DeepEqual(state, map[string][]string{"arxiv": {"ring:r1"}}) {
+		t.Fatalf("expected converged ring-only ownership, got: %#v", state)
 	}
 }
