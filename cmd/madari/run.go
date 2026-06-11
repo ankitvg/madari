@@ -846,6 +846,7 @@ func (a cliApp) cmdDoctor(args []string) error {
 			})
 		}
 		payload.Drift = driftToJSON(report.Drift)
+		payload.RingIssues = ringIssuesToJSON(report.RingIssues)
 		if err := writeJSON(a.stdout, payload); err != nil {
 			return err
 		}
@@ -891,6 +892,18 @@ func (a cliApp) cmdDoctor(args []string) error {
 			formatNameList(dr.Orphaned),
 			fix,
 		)
+	}
+
+	for _, issue := range report.RingIssues {
+		label := "ring " + issue.Ring
+		if issue.Target != "" {
+			scope := ""
+			if issue.Scope == clients.ScopeUser {
+				scope = ", user scope"
+			}
+			label = fmt.Sprintf("ring %s (%s%s)", issue.Ring, issue.Target, scope)
+		}
+		fmt.Fprintf(a.stdout, "%s: [%s] %s\n", label, issue.Severity, issue.Message)
 	}
 
 	if len(report.ManifestErrors) > 0 {

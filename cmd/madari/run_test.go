@@ -1506,7 +1506,7 @@ func TestRunWithStoreDoctorJSONReportsErrorsAndExitCode(t *testing.T) {
 	}
 
 	payload := decodeJSONObject(t, result.stdout)
-	assertJSONKeys(t, payload, "schema_version", "command", "servers_dir", "servers", "manifest_errors", "client_configs", "drift", "summary")
+	assertJSONKeys(t, payload, "schema_version", "command", "servers_dir", "servers", "manifest_errors", "client_configs", "drift", "ring_issues", "summary")
 	if payload["command"].(string) != "doctor" {
 		t.Fatalf("unexpected command: %v", payload["command"])
 	}
@@ -2061,4 +2061,276 @@ func TestRunWithStoreRingAttachWarnsDisabledMember(t *testing.T) {
 	if !strings.Contains(result.stdout, "no changes") {
 		t.Fatalf("expected no materialization, got: %s", result.stdout)
 	}
+}
+
+func TestRunWithStoreRingRender(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-code",
+		"--arg", "--stdio",
+		"--env", "STEWREADS_CONFIG_PATH=~/.config/stewreads/config.toml",
+		"--env", "STEWREADS_API_KEY=shhh",
+		"--secret-env", "STEWREADS_API_KEY"); result.code != 0 {
+		t.Fatalf("setup add stewreads failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "add", "desktop-only", "--command", commandPath, "--client", "claude-desktop"); result.code != 0 {
+		t.Fatalf("setup add desktop-only failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "add", "sleepy", "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+		t.Fatalf("setup add sleepy failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "disable", "sleepy"); result.code != 0 {
+		t.Fatalf("disable failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "research",
+		"--member", "stewreads", "--member", "desktop-only", "--member", "sleepy"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "ring", "render", "research", "--client", "claude-code")
+	if result.code != 0 {
+		t.Fatalf("ring render failed: %s", result.stderr)
+	}
+
+	expected := fmt.Sprintf(`{
+  "mcpServers": {
+    "stewreads": {
+      "command": %q,
+      "args": [
+        "--stdio"
+      ],
+      "env": {
+        "STEWREADS_CONFIG_PATH": "~/.config/stewreads/config.toml"
+      }
+    }
+  }
+}
+`, commandPath)
+	if result.stdout != expected {
+		t.Fatalf("render output drift:\nwant:\n%s\ngot:\n%s", expected, result.stdout)
+	}
+
+	for _, want := range []string{
+		"secret env values omitted (STEWREADS_API_KEY)",
+		"sleepy is disabled; omitted",
+		"desktop-only does not target claude-code; omitted",
+	} {
+		if !strings.Contains(result.stderr, want) {
+			t.Fatalf("expected warning %q, got stderr: %s", want, result.stderr)
+		}
+	}
+
+	// Render mutates nothing: no state directory appears.
+	if _, err := os.Stat(filepath.Join(filepath.Dir(store.ServersDir()), "state")); !os.IsNotExist(err) {
+		t.Fatalf("expected render to write no state, err=%v", err)
+	}
+
+	// Unknown ring and missing --client fail loudly.
+	result = runCmd(store, "ring", "render", "ghost", "--client", "claude-code")
+	if result.code == 0 || !strings.Contains(result.stderr, `ring "ghost" not found`) {
+		t.Fatalf("expected not-found error, got code=%d stderr=%s", result.code, result.stderr)
+	}
+	result = runCmd(store, "ring", "render", "research")
+	if result.code == 0 || !strings.Contains(result.stderr, "--client is required") {
+		t.Fatalf("expected required-client error, got code=%d stderr=%s", result.code, result.stderr)
+	}
+}
+
+func TestRunWithStoreRingStatus(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	for _, name := range []string{"stewreads", "arxiv"} {
+		if result := runCmd(store, "add", name, "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+			t.Fatalf("setup add %s failed: %s", name, result.stderr)
+		}
+	}
+	if result := runCmd(store, "ring", "create", "research", "--member", "stewreads", "--member", "arxiv"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	// Nothing attached yet.
+	result := runCmd(store, "ring", "status")
+	if result.code != 0 || !strings.Contains(result.stdout, "claude-code: no managed entries") {
+		t.Fatalf("expected empty status, got code=%d stdout=%s", result.code, result.stdout)
+	}
+
+	configPath := filepath.Join(t.TempDir(), ".mcp.json")
+	if result := runCmd(store, "ring", "attach", "research", "claude-code", "--config-path", configPath); result.code != 0 {
+		t.Fatalf("attach failed: %s", result.stderr)
+	}
+
+	result = runCmd(store, "ring", "status")
+	if result.code != 0 {
+		t.Fatalf("ring status failed: %s", result.stderr)
+	}
+	for _, want := range []string{
+		"claude-code:",
+		"research [ok] members=2 owned=2",
+		"arxiv: ring:research",
+		"stewreads: ring:research",
+	} {
+		if !strings.Contains(result.stdout, want) {
+			t.Fatalf("expected %q in status output, got: %s", want, result.stdout)
+		}
+	}
+
+	// JSON shape.
+	result = runCmd(store, "ring", "status", "--json")
+	if result.code != 0 {
+		t.Fatalf("ring status --json failed: %s", result.stderr)
+	}
+	payload := decodeJSONObject(t, result.stdout)
+	assertJSONKeys(t, payload, "schema_version", "command", "targets")
+	if payload["command"] != "ring status" {
+		t.Fatalf("unexpected command: %v", payload["command"])
+	}
+	targets := payload["targets"].([]any)
+	var ccode map[string]any
+	for _, item := range targets {
+		entry := item.(map[string]any)
+		assertJSONKeys(t, entry, "target", "scope", "rings", "servers")
+		if entry["target"] == "claude-code" && entry["scope"] == "default" {
+			ccode = entry
+		}
+	}
+	if ccode == nil {
+		t.Fatalf("expected claude-code default target, got: %v", targets)
+	}
+	rings := ccode["rings"].([]any)
+	if len(rings) != 1 {
+		t.Fatalf("expected one attached ring, got: %v", rings)
+	}
+	ring := rings[0].(map[string]any)
+	assertJSONKeys(t, ring, "name", "exists", "members", "owned", "pending", "stale", "missing_members")
+	if ring["name"] != "research" || ring["exists"] != true {
+		t.Fatalf("unexpected ring attachment: %v", ring)
+	}
+
+	// Delete the ring file out from under the attachment: status flags it,
+	// doctor reports an error-level ring issue.
+	if err := os.Remove(filepath.Join(store.RingsDir(), "research.toml")); err != nil {
+		t.Fatalf("remove ring file: %v", err)
+	}
+
+	result = runCmd(store, "ring", "status")
+	if result.code != 0 {
+		t.Fatalf("ring status failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "research [missing] ring file not found; release with `madari ring detach research claude-code`") {
+		t.Fatalf("expected missing-ring flag with detach guidance, got: %s", result.stdout)
+	}
+
+	result = runCmd(store, "doctor", "--json", "--client-config", "claude-code="+configPath)
+	if result.code == 0 {
+		t.Fatalf("expected doctor to exit non-zero for missing ring file")
+	}
+	payload = decodeJSONObject(t, result.stdout)
+	issues := payload["ring_issues"].([]any)
+	if len(issues) != 1 {
+		t.Fatalf("expected one ring issue, got: %v", issues)
+	}
+	issue := issues[0].(map[string]any)
+	assertJSONKeys(t, issue, "target", "scope", "ring", "severity", "message")
+	if issue["ring"] != "research" || issue["severity"] != "error" {
+		t.Fatalf("unexpected ring issue: %v", issue)
+	}
+
+	// Detach by name still works and clears the issue.
+	if result := runCmd(store, "ring", "detach", "research", "claude-code", "--config-path", configPath); result.code != 0 {
+		t.Fatalf("detach failed: %s", result.stderr)
+	}
+	result = runCmd(store, "ring", "status")
+	if !strings.Contains(result.stdout, "claude-code: no managed entries") {
+		t.Fatalf("expected clean status after detach, got: %s", result.stdout)
+	}
+}
+
+func TestRunWithStoreDoctorFlagsDanglingRingMember(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "research", "--member", "stewreads"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+	// Remove the member manifest after ring creation.
+	if result := runCmd(store, "remove", "stewreads"); result.code != 0 {
+		t.Fatalf("remove failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), ".mcp.json")
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+	result := runCmd(store, "doctor", "--client-config", "claude-code="+configPath)
+	if !strings.Contains(result.stdout, "ring research: [warn] member stewreads no longer exists in the registry") {
+		t.Fatalf("expected dangling-member warning, got: %s", result.stdout)
+	}
+}
+
+func TestRunWithStoreRingStatusFlagsStaleAndScopedPending(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	for _, name := range []string{"stewreads", "arxiv"} {
+		if result := runCmd(store, "add", name, "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+			t.Fatalf("setup add %s failed: %s", name, result.stderr)
+		}
+	}
+	if result := runCmd(store, "ring", "create", "research", "--member", "stewreads"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	// Attach in USER scope with a custom config path.
+	configPath := filepath.Join(t.TempDir(), "claude.json")
+	if result := runCmd(store, "ring", "attach", "research", "claude-code", "--scope", "user", "--config-path", configPath); result.code != 0 {
+		t.Fatalf("attach failed: %s", result.stderr)
+	}
+
+	// Edit the ring: stewreads removed (becomes a stale owner), arxiv added
+	// (becomes pending until the next sync).
+	edited := []byte("name = \"research\"\nmembers = [\"arxiv\"]\n")
+	if err := os.WriteFile(filepath.Join(store.RingsDir(), "research.toml"), edited, 0o644); err != nil {
+		t.Fatalf("rewrite ring file: %v", err)
+	}
+
+	result := runCmd(store, "ring", "status")
+	if result.code != 0 {
+		t.Fatalf("ring status failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "research [out-of-sync] members=1 owned=0 pending=arxiv stale=stewreads (run `madari sync claude-code --scope user`; pass --config-path if attached to a custom config)") {
+		t.Fatalf("expected out-of-sync line with scoped hint, got: %s", result.stdout)
+	}
+
+	// JSON carries the stale owners too.
+	result = runCmd(store, "ring", "status", "--json")
+	if result.code != 0 {
+		t.Fatalf("ring status --json failed: %s", result.stderr)
+	}
+	payload := decodeJSONObject(t, result.stdout)
+	for _, item := range payload["targets"].([]any) {
+		entry := item.(map[string]any)
+		if entry["target"] != "claude-code" || entry["scope"] != "user" {
+			continue
+		}
+		rings := entry["rings"].([]any)
+		if len(rings) != 1 {
+			t.Fatalf("expected one ring, got: %v", rings)
+		}
+		ring := rings[0].(map[string]any)
+		stale := ring["stale"].([]any)
+		if len(stale) != 1 || stale[0] != "stewreads" {
+			t.Fatalf("expected stewreads stale, got: %v", ring)
+		}
+		pending := ring["pending"].([]any)
+		if len(pending) != 1 || pending[0] != "arxiv" {
+			t.Fatalf("expected arxiv pending, got: %v", ring)
+		}
+		return
+	}
+	t.Fatalf("expected claude-code user target in: %s", result.stdout)
 }

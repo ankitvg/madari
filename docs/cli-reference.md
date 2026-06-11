@@ -46,6 +46,8 @@ madari ring show research
 madari ring attach research claude-code
 madari ring attach research claude-code --scope user
 madari ring detach research claude-code
+madari ring render research --client claude-code
+madari ring status
 ```
 
 Rings are named capability sets of servers stored at
@@ -60,6 +62,26 @@ in any attach/detach order. Disabled, secret-refused, or missing members stay
 owned but absent until they become eligible. Ring membership edits (including
 snapshot imports) reconcile on the next sync, attach, or detach. Attaching
 onto an entry madari does not manage is refused, even when values match.
+
+`ring render` prints a self-contained MCP config to stdout and mutates
+nothing — no state, no refcounts. Members are filtered by client
+compatibility; disabled, missing, or command-invalid members are omitted
+with stderr warnings, and static values for `[secret_env]` keys are never
+emitted (the warning names the keys to provide via the runtime environment).
+Ephemeral-session recipe:
+
+```bash
+claude --mcp-config <(madari ring render research --client claude-code)
+```
+
+`ring status` shows attached rings and per-server ownership sources for
+every client and scope, flags rings whose file is missing (with the
+`ring detach` command that releases the stale sources), and calls out
+members pending sync, stale owners left by membership edits (`stale`), and
+members missing from the registry. Remediation hints assume default config
+paths — pass `--config-path` when the ring was attached to a custom config. `madari doctor` reports
+the same conditions as `ring_issues` (missing ring file = error, dangling
+member = warning).
 
 ## Diagnostics
 
@@ -80,8 +102,8 @@ madari import --file madari-snapshot.json --apply
 
 ## JSON Output
 
-`list`, `status`, `doctor`, `sync --dry-run`, `ring list`, and `ring show`
-accept `--json` and emit a single JSON document on stdout with nothing else.
+`list`, `status`, `doctor`, `sync --dry-run`, `ring list`, `ring show`, and
+`ring status` accept `--json` and emit a single JSON document on stdout with nothing else.
 Every payload carries the envelope fields `schema_version` (currently `1`)
 and `command`. Field additions are backward-compatible; renames or removals
 bump `schema_version`. List-valued fields are always present (empty arrays,
@@ -94,6 +116,7 @@ madari doctor --json
 madari sync claude-code --dry-run --json
 madari ring list --json
 madari ring show research --json
+madari ring status --json
 ```
 
 `sync --json` requires `--dry-run`; the apply-mode output contract is not yet
@@ -256,6 +279,40 @@ itself.
   }
 }
 ```
+
+`madari ring status --json` reports per target+scope:
+
+```json
+{
+  "schema_version": 1,
+  "command": "ring status",
+  "targets": [
+    {
+      "target": "claude-code",
+      "scope": "default",
+      "rings": [
+        {
+          "name": "research",
+          "exists": true,
+          "members": ["arxiv", "stewreads"],
+          "owned": ["arxiv", "stewreads"],
+          "pending": [],
+          "stale": [],
+          "missing_members": []
+        }
+      ],
+      "servers": [
+        {"name": "arxiv", "sources": ["ring:research"]},
+        {"name": "stewreads", "sources": ["ring:research", "standalone"]}
+      ]
+    }
+  ]
+}
+```
+
+`madari doctor --json` additionally carries a `ring_issues` array
+(`{target, scope, ring, severity, message}`): an attached ring whose file is
+missing is error-level; a ring referencing a deleted manifest is a warning.
 
 ### Exit Codes
 

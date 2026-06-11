@@ -72,7 +72,20 @@ type Report struct {
 	ManifestErrors []ManifestError
 	ClientConfigs  []ClientConfigReport
 	Drift          []DriftReport
+	RingIssues     []RingIssue
 	Summary        Summary
+}
+
+// RingIssue reports a ring consistency problem: an attached ring whose file
+// no longer exists (error; ownership sources are never auto-removed, detach
+// releases them), or a ring referencing a deleted manifest (warning).
+// Registry-level issues carry no target/scope.
+type RingIssue struct {
+	Target   string
+	Scope    string
+	Ring     string
+	Severity IssueSeverity
+	Message  string
 }
 
 // DriftTarget names one managed-state/config pair to diff against manifests.
@@ -171,8 +184,68 @@ func Run(store *registry.Store, opts Options) (Report, error) {
 		report.Drift = checkDrift(manifests, opts.DriftTargets, opts.Rings)
 	}
 
+	report.RingIssues = checkRingIssues(manifests, opts.DriftTargets, opts.Rings)
+
 	report.Summary = summarize(report)
 	return report, nil
+}
+
+// checkRingIssues flags attached rings whose file is gone (per target+scope)
+// and ring members whose manifest no longer exists (registry-level). It runs
+// regardless of manifest errors: a stale ring source must never hide.
+func checkRingIssues(manifests []registry.Manifest, targets []DriftTarget, rings []registry.Ring) []RingIssue {
+	issues := []RingIssue{}
+
+	known := make(map[string]registry.Ring, len(rings))
+	for _, ring := range rings {
+		known[ring.Name] = ring
+	}
+	for _, target := range targets {
+		state, err := syncshared.LoadManagedState(target.StatePath)
+		if err != nil {
+			continue // drift already reports unreadable state
+		}
+		for _, ring := range syncshared.AttachedRings(state) {
+			if _, exists := known[ring]; exists {
+				continue
+			}
+			fix := fmt.Sprintf("madari ring detach %s %s", ring, target.Adapter.Target())
+			if target.Scope == clients.ScopeUser {
+				fix += " --scope user"
+			}
+			issues = append(issues, RingIssue{
+				Target:   target.Adapter.Target(),
+				Scope:    target.Scope,
+				Ring:     ring,
+				Severity: SeverityError,
+				Message:  fmt.Sprintf("ring file missing; release the stale sources with `%s` (pass --config-path if it was attached to a custom config)", fix),
+			})
+		}
+	}
+
+	manifestNames := make(map[string]bool, len(manifests))
+	for _, manifest := range manifests {
+		manifestNames[manifest.Name] = true
+	}
+	for _, ring := range rings {
+		for _, member := range ring.Members {
+			if !manifestNames[strings.TrimSpace(member)] {
+				issues = append(issues, RingIssue{
+					Ring:     ring.Name,
+					Severity: SeverityWarning,
+					Message:  fmt.Sprintf("member %s no longer exists in the registry", member),
+				})
+			}
+		}
+	}
+
+	sort.Slice(issues, func(i, j int) bool {
+		if issues[i].Ring != issues[j].Ring {
+			return issues[i].Ring < issues[j].Ring
+		}
+		return issues[i].Target < issues[j].Target
+	})
+	return issues
 }
 
 // checkDrift diffs materialized client entries against manifests by reading
@@ -271,6 +344,13 @@ func summarize(report Report) Summary {
 		if dr.Status == StatusError {
 			summary.Error++
 		} else if dr.Status == StatusWarning {
+			summary.Warning++
+		}
+	}
+	for _, issue := range report.RingIssues {
+		if issue.Severity == SeverityError {
+			summary.Error++
+		} else {
 			summary.Warning++
 		}
 	}
