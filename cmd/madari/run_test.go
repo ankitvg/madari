@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1899,6 +1900,88 @@ func TestRunWithStoreRingListAndShow(t *testing.T) {
 	result = runCmd(store, "ring", "show", "ghost")
 	if result.code == 0 || !strings.Contains(result.stderr, `ring "ghost" not found`) {
 		t.Fatalf("expected not-found error, got code=%d stderr=%s", result.code, result.stderr)
+	}
+}
+
+func TestRunWithStoreRingDelete(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "research", "--member", "stewreads"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "ring", "delete", "research", "--bogus")
+	if result.code == 0 || !strings.Contains(result.stderr, "flag provided but not defined") {
+		t.Fatalf("expected unknown-flag error, got code=%d stderr=%s", result.code, result.stderr)
+	}
+
+	result = runCmd(store, "ring", "delete")
+	if result.code == 0 || !strings.Contains(result.stderr, "usage: madari ring delete <name>") {
+		t.Fatalf("expected usage error, got code=%d stderr=%s", result.code, result.stderr)
+	}
+
+	result = runCmd(store, "ring", "delete", "--help")
+	if result.code != 0 || !strings.Contains(result.stdout, "madari ring delete <name>") {
+		t.Fatalf("expected delete help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+
+	result = runCmd(store, "ring", "delete", "ghost")
+	if result.code == 0 || !strings.Contains(result.stderr, `ring "ghost" not found`) {
+		t.Fatalf("expected not-found error, got code=%d stderr=%s", result.code, result.stderr)
+	}
+
+	result = runCmd(store, "ring", "delete", "research")
+	if result.code != 0 {
+		t.Fatalf("delete failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "deleted ring research") {
+		t.Fatalf("expected delete confirmation, got: %s", result.stdout)
+	}
+	if _, err := store.GetRing("research"); !errors.Is(err, registry.ErrRingNotFound) {
+		t.Fatalf("expected ring removed from registry, got: %v", err)
+	}
+}
+
+func TestRunWithStoreRingDeleteRefusesAttachedScopes(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "research", "--member", "stewreads"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	projectConfig := filepath.Join(t.TempDir(), ".mcp.json")
+	userConfig := filepath.Join(t.TempDir(), "claude.json")
+	if result := runCmd(store, "ring", "attach", "research", "claude-code", "--config-path", projectConfig); result.code != 0 {
+		t.Fatalf("project attach failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "attach", "research", "claude-code", "--scope", "user", "--config-path", userConfig); result.code != 0 {
+		t.Fatalf("user attach failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "ring", "delete", "research")
+	if result.code == 0 {
+		t.Fatalf("expected attached delete to fail")
+	}
+	for _, want := range []string{
+		`ring "research" is attached and cannot be deleted; detach it first:`,
+		"claude-code: `madari ring detach research claude-code`",
+		"claude-code (user scope): `madari ring detach research claude-code --scope user`",
+		"pass --config-path if the ring was attached to a custom config",
+	} {
+		if !strings.Contains(result.stderr, want) {
+			t.Fatalf("expected %q in refusal, got: %s", want, result.stderr)
+		}
+	}
+	if _, err := store.GetRing("research"); err != nil {
+		t.Fatalf("delete refusal should leave ring file untouched: %v", err)
 	}
 }
 
