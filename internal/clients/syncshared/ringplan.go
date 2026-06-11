@@ -30,7 +30,7 @@ func PlanAttach[T any](
 		return clients.SyncResult{}, nil, nil, fmt.Errorf("equal comparer is required")
 	}
 
-	reconciled, released := ReconcileRingSources(prev, rings)
+	reconciled, released := ReconcileRingSources(prev, rings, unmanagedExisting(existing, prev))
 	releasedSet := make(map[string]bool, len(released))
 	for _, name := range released {
 		releasedSet[name] = true
@@ -71,15 +71,19 @@ func PlanAttach[T any](
 	for _, member := range members {
 		member = strings.TrimSpace(member)
 		entry, known := entries[member]
-		if !known {
-			continue // no manifest: ownership recorded, nothing materialized
-		}
-		if entry.Refused {
-			result.Refused = append(result.Refused, member)
+		if !known || !entry.Eligible {
+			// Ownership is recorded but the member must be absent from the
+			// config; a previously materialized entry is scrubbed now (the
+			// conflict check above guarantees it is ours). For refused
+			// members this removes a static secret from a repo-scoped
+			// config immediately, not on some later sync.
+			if entry.Refused {
+				result.Refused = append(result.Refused, member)
+			}
+			if _, exists := existing[member]; exists {
+				result.Removed = append(result.Removed, member)
+			}
 			continue
-		}
-		if !entry.Eligible {
-			continue // e.g. disabled: ownership recorded, not materialized
 		}
 		existingValue, exists := existing[member]
 		switch {
@@ -101,6 +105,18 @@ func PlanAttach[T any](
 	return result, next, writeSet, nil
 }
 
+// unmanagedExisting lists config names madari does not own — reconciliation
+// must never grant these a ring source.
+func unmanagedExisting[T any](existing map[string]T, prev map[string][]string) map[string]bool {
+	blocked := map[string]bool{}
+	for name := range existing {
+		if _, owned := prev[name]; !owned {
+			blocked[name] = true
+		}
+	}
+	return blocked
+}
+
 // PlanDetach computes the config mutations and ownership state for detaching
 // a ring by name (the ring file is not required — detach must always be able
 // to release sources). Only entries that lose their last source leave the
@@ -112,7 +128,7 @@ func PlanDetach[T any](
 	ring string,
 	rings []registry.Ring,
 ) (clients.SyncResult, map[string][]string) {
-	reconciled, _ := ReconcileRingSources(prev, rings)
+	reconciled, _ := ReconcileRingSources(prev, rings, unmanagedExisting(existing, prev))
 	next := DetachRingState(reconciled, ring)
 
 	result := clients.SyncResult{}

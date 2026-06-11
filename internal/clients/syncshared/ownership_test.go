@@ -332,7 +332,7 @@ func TestReconcileRingSources(t *testing.T) {
 		{Name: "unattached", Members: []string{"other"}},
 	}
 
-	next, released := ReconcileRingSources(state, rings)
+	next, released := ReconcileRingSources(state, rings, nil)
 
 	expected := map[string][]string{
 		"kept":       {"ring:r1", "standalone"},

@@ -44,8 +44,9 @@ func PlanSync[T any](
 
 	// Ring membership edits converge here: reconciled sources drive
 	// ownership, while removal candidates are judged against the original
-	// state so fully released entries still leave the config.
-	reconciled, _ := ReconcileRingSources(prev, rings)
+	// state so fully released entries still leave the config. Unmanaged
+	// config collisions are never granted a ring source.
+	reconciled, _ := ReconcileRingSources(prev, rings, unmanagedExisting(existing, prev))
 
 	eligible := make(map[string]bool, len(entries))
 	for name, entry := range entries {

@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/ankitvg/madari/internal/registry"
 )
 
 func TestPlanAttachMaterializesMembers(t *testing.T) {
@@ -145,5 +147,89 @@ func TestPlanDetachHandlesEntryAbsentFromConfig(t *testing.T) {
 	}
 	if len(next) != 0 {
 		t.Fatalf("expected ownership released, got: %#v", next)
+	}
+}
+
+func TestPlanSyncNeverGrantsRingSourceToUnmanagedCollision(t *testing.T) {
+	// Ring r1 is attached; its membership was edited to include "weather",
+	// which already exists unmanaged in the client config. Reconciliation
+	// must not adopt it: a value mismatch is a conflict, never an overwrite.
+	_, _, _, err := PlanSync(
+		map[string]string{"weather": "theirs", "member": "v1"},
+		map[string][]string{"member": {"ring:r1"}},
+		map[string]Entry[string]{
+			"member":  {Value: "v1", Eligible: true},
+			"weather": {Value: "ours", Eligible: true},
+		},
+		[]registry.Ring{{Name: "r1", Members: []string{"member", "weather"}}},
+		func(a, b string) bool { return a == b },
+		errTestConflict,
+	)
+	if !errors.Is(err, errTestConflict) {
+		t.Fatalf("expected conflict for unmanaged collision via membership edit, got: %v", err)
+	}
+
+	// Equal values: tolerated unchanged, but never granted the ring source.
+	result, next, writeSet, err := PlanSync(
+		map[string]string{"weather": "same", "member": "v1"},
+		map[string][]string{"member": {"ring:r1"}},
+		map[string]Entry[string]{
+			"member":  {Value: "v1", Eligible: true},
+			"weather": {Value: "same", Eligible: true},
+		},
+		[]registry.Ring{{Name: "r1", Members: []string{"member", "weather"}}},
+		func(a, b string) bool { return a == b },
+		errTestConflict,
+	)
+	if err != nil {
+		t.Fatalf("plan sync: %v", err)
+	}
+	if !reflect.DeepEqual(result.Unchanged, []string{"member", "weather"}) {
+		t.Fatalf("expected equal collision tolerated, got: %+v", result)
+	}
+	if !reflect.DeepEqual(next, map[string][]string{"member": {"ring:r1"}}) {
+		t.Fatalf("expected weather to stay unowned, got: %#v", next)
+	}
+	if _, written := writeSet["weather"]; written {
+		t.Fatalf("expected unmanaged entry left unwritten, got: %#v", writeSet)
+	}
+}
+
+func TestPlanAttachScrubsIneligibleMaterializedMembers(t *testing.T) {
+	// Both members were materialized earlier; one is now secret-refused and
+	// one disabled. Re-attaching must scrub them from the config while
+	// keeping ownership — a stale secret must not linger until a later sync.
+	result, next, writeSet, err := PlanAttach(
+		map[string]string{"vault": "v-secret", "sleepy": "v1"},
+		map[string][]string{"vault": {"ring:r1"}, "sleepy": {"ring:r1"}},
+		"r1",
+		[]string{"vault", "sleepy"},
+		map[string]Entry[string]{
+			"vault":  {Refused: true},
+			"sleepy": {Eligible: false},
+		},
+		nil,
+		func(a, b string) bool { return a == b },
+		errTestConflict,
+	)
+	if err != nil {
+		t.Fatalf("plan attach: %v", err)
+	}
+
+	if !reflect.DeepEqual(result.Removed, []string{"sleepy", "vault"}) {
+		t.Fatalf("expected ineligible members scrubbed, got: %+v", result)
+	}
+	if !reflect.DeepEqual(result.Refused, []string{"vault"}) {
+		t.Fatalf("expected vault refused, got: %+v", result)
+	}
+	expectedState := map[string][]string{
+		"vault":  {"ring:r1"},
+		"sleepy": {"ring:r1"},
+	}
+	if !reflect.DeepEqual(next, expectedState) {
+		t.Fatalf("expected ownership retained, got: %#v", next)
+	}
+	if len(writeSet) != 0 {
+		t.Fatalf("expected empty write set, got: %#v", writeSet)
 	}
 }

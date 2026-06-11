@@ -83,13 +83,16 @@ func AttachedRings(state map[string][]string) []string {
 
 // ReconcileRingSources recomputes ring sources against current ring
 // membership for every ring that is attached per the state: new members gain
-// the ring's source, ex-members lose it. Sources of rings absent from the
-// given definitions (e.g. the ring file was deleted outside madari) are left
-// intact — doctor flags them and detach-by-name can always release them.
-// Returns the reconciled state plus the names whose sources emptied
-// (released entries leave the client config). The input map is never
-// mutated.
-func ReconcileRingSources(state map[string][]string, rings []registry.Ring) (map[string][]string, []string) {
+// the ring's source, ex-members lose it. Names in blocked are never granted
+// a source — callers pass the unmanaged config collisions so a membership
+// edit can never adopt or overwrite a hand-managed entry (the collision
+// surfaces through the normal conflict path instead). Sources of rings
+// absent from the given definitions (e.g. the ring file was deleted outside
+// madari) are left intact — doctor flags them and detach-by-name can always
+// release them. Returns the reconciled state plus the names whose sources
+// emptied (released entries leave the client config). The input map is
+// never mutated.
+func ReconcileRingSources(state map[string][]string, rings []registry.Ring, blocked map[string]bool) (map[string][]string, []string) {
 	attached := map[string]bool{}
 	for _, ring := range AttachedRings(state) {
 		attached[ring] = true
@@ -115,6 +118,9 @@ func ReconcileRingSources(state map[string][]string, rings []registry.Ring) (map
 			next[name] = withoutSource(sources, source)
 		}
 		for member := range members {
+			if blocked[member] {
+				continue
+			}
 			if !slices.Contains(next[member], source) {
 				next[member] = append(append([]string(nil), next[member]...), source)
 			}
