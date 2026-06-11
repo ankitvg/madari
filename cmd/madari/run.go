@@ -1156,7 +1156,7 @@ func (a cliApp) cmdExport(args []string) error {
 	if err := os.WriteFile(cleanPath, payload, 0o644); err != nil {
 		return fmt.Errorf("write snapshot file %q: %w", cleanPath, err)
 	}
-	fmt.Fprintf(a.stdout, "exported %d server(s) to %s\n", len(snapshot.Servers), cleanPath)
+	fmt.Fprintf(a.stdout, "exported %d server(s), %d ring(s) to %s\n", len(snapshot.Servers), len(snapshot.Rings), cleanPath)
 	return nil
 }
 
@@ -1211,6 +1211,9 @@ func (a cliApp) cmdImport(args []string) error {
 	fmt.Fprintf(a.stdout, "added: %s\n", formatNameList(result.Added))
 	fmt.Fprintf(a.stdout, "updated: %s\n", formatNameList(result.Updated))
 	fmt.Fprintf(a.stdout, "unchanged: %s\n", formatNameList(result.Unchanged))
+	fmt.Fprintf(a.stdout, "rings added: %s\n", formatNameList(result.RingsAdded))
+	fmt.Fprintf(a.stdout, "rings updated: %s\n", formatNameList(result.RingsUpdated))
+	fmt.Fprintf(a.stdout, "rings unchanged: %s\n", formatNameList(result.RingsUnchanged))
 	if !result.HasChanges() {
 		fmt.Fprintln(a.stdout, "no changes")
 	}
@@ -1692,7 +1695,7 @@ func printExportHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --file <path>              Write snapshot JSON to file (default: stdout)")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Export all server manifests as a versioned JSON snapshot.")
+	fmt.Fprintln(out, "  Export all server and ring manifests as a versioned JSON snapshot.")
 }
 
 func printImportHelp(out io.Writer) {
@@ -1704,8 +1707,9 @@ func printImportHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --apply                    Apply changes to registry (default: dry-run)")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Import a snapshot into the registry by adding/updating listed servers.")
-	fmt.Fprintln(out, "  Existing servers not present in the snapshot are left unchanged.")
+	fmt.Fprintln(out, "  Import a snapshot into the registry by adding/updating listed servers")
+	fmt.Fprintln(out, "  and rings. Existing servers and rings absent from the snapshot are")
+	fmt.Fprintln(out, "  left unchanged; importing rings never attaches or syncs them.")
 }
 
 func printHelp(out io.Writer) {

@@ -8,21 +8,28 @@ import (
 	"strings"
 )
 
-const SnapshotVersion = 1
+const (
+	snapshotVersionV1 = 1
+	SnapshotVersion   = 2
+)
 
 type Snapshot struct {
 	Version int        `json:"version"`
 	Servers []Manifest `json:"servers"`
+	Rings   []Ring     `json:"rings"`
 }
 
 type ImportResult struct {
-	Added     []string
-	Updated   []string
-	Unchanged []string
+	Added          []string
+	Updated        []string
+	Unchanged      []string
+	RingsAdded     []string
+	RingsUpdated   []string
+	RingsUnchanged []string
 }
 
 func (r ImportResult) HasChanges() bool {
-	return len(r.Added)+len(r.Updated) > 0
+	return len(r.Added)+len(r.Updated)+len(r.RingsAdded)+len(r.RingsUpdated) > 0
 }
 
 func ExportSnapshot(store *Store) (Snapshot, error) {
@@ -33,15 +40,40 @@ func ExportSnapshot(store *Store) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
+	rings, err := store.ListRings()
+	if err != nil {
+		return Snapshot{}, err
+	}
+
+	// A snapshot must round-trip: every exported ring member has to exist in
+	// the exported server set, or the fresh import of this backup would be
+	// refused. Fail loudly instead of writing a broken artifact.
+	exportable := make(map[string]struct{}, len(servers))
+	for _, server := range servers {
+		exportable[server.Name] = struct{}{}
+	}
+	for _, ring := range rings {
+		if err := validateRingMembersAgainst(ring, exportable); err != nil {
+			return Snapshot{}, fmt.Errorf("%w; update or delete the ring before exporting", err)
+		}
+	}
+
 	return Snapshot{
 		Version: SnapshotVersion,
 		Servers: servers,
+		Rings:   rings,
 	}, nil
 }
 
 func MarshalSnapshotJSON(snapshot Snapshot) ([]byte, error) {
-	if snapshot.Version == 0 {
+	if snapshot.Version == 0 || snapshot.Version == snapshotVersionV1 {
 		snapshot.Version = SnapshotVersion
+	}
+	if snapshot.Servers == nil {
+		snapshot.Servers = []Manifest{}
+	}
+	if snapshot.Rings == nil {
+		snapshot.Rings = []Ring{}
 	}
 	if err := snapshot.Validate(); err != nil {
 		return nil, err
@@ -65,6 +97,12 @@ func ParseSnapshotJSON(payload []byte) (Snapshot, error) {
 	if snapshot.Version == 0 {
 		snapshot.Version = SnapshotVersion
 	}
+	if snapshot.Servers == nil {
+		snapshot.Servers = []Manifest{}
+	}
+	if snapshot.Rings == nil {
+		snapshot.Rings = []Ring{}
+	}
 	if err := snapshot.Validate(); err != nil {
 		return Snapshot{}, err
 	}
@@ -86,6 +124,29 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 	existingByName := make(map[string]Manifest, len(existing))
 	for _, manifest := range existing {
 		existingByName[manifest.Name] = manifest
+	}
+	existingRings, err := store.ListRings()
+	if err != nil {
+		return ImportResult{}, err
+	}
+	existingRingsByName := make(map[string]Ring, len(existingRings))
+	for _, ring := range existingRings {
+		existingRingsByName[ring.Name] = ring
+	}
+
+	// Validate every ring before any write: a rejected snapshot must not
+	// partially mutate the registry.
+	allowedMembers := make(map[string]struct{}, len(existingByName)+len(snapshot.Servers))
+	for name := range existingByName {
+		allowedMembers[name] = struct{}{}
+	}
+	for _, server := range snapshot.Servers {
+		allowedMembers[server.Name] = struct{}{}
+	}
+	for _, ring := range snapshot.Rings {
+		if err := validateRingMembersAgainst(ring, allowedMembers); err != nil {
+			return ImportResult{}, err
+		}
 	}
 
 	servers := append([]Manifest(nil), snapshot.Servers...)
@@ -119,12 +180,44 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 		}
 	}
 
+	rings := append([]Ring(nil), snapshot.Rings...)
+	sort.Slice(rings, func(i, j int) bool {
+		return rings[i].Name < rings[j].Name
+	})
+	for _, incoming := range rings {
+		existingRing, exists := existingRingsByName[incoming.Name]
+		if !exists {
+			result.RingsAdded = append(result.RingsAdded, incoming.Name)
+			if apply {
+				if err := store.SaveRing(incoming); err != nil {
+					return ImportResult{}, fmt.Errorf("save imported ring %q: %w", incoming.Name, err)
+				}
+			}
+			continue
+		}
+
+		if ringsEqual(existingRing, incoming) {
+			result.RingsUnchanged = append(result.RingsUnchanged, incoming.Name)
+			continue
+		}
+
+		result.RingsUpdated = append(result.RingsUpdated, incoming.Name)
+		if apply {
+			if err := store.SaveRing(incoming); err != nil {
+				return ImportResult{}, fmt.Errorf("update imported ring %q: %w", incoming.Name, err)
+			}
+		}
+	}
+
 	return result, nil
 }
 
 func (s Snapshot) Validate() error {
-	if s.Version != SnapshotVersion {
+	if s.Version != snapshotVersionV1 && s.Version != SnapshotVersion {
 		return fmt.Errorf("unsupported snapshot version %d (supported: %d)", s.Version, SnapshotVersion)
+	}
+	if s.Version == snapshotVersionV1 && len(s.Rings) > 0 {
+		return fmt.Errorf("snapshot version %d does not support rings", snapshotVersionV1)
 	}
 
 	seen := map[string]struct{}{}
@@ -138,7 +231,34 @@ func (s Snapshot) Validate() error {
 		seen[server.Name] = struct{}{}
 	}
 
+	seenRings := map[string]struct{}{}
+	for _, ring := range s.Rings {
+		if err := ring.Validate(); err != nil {
+			return fmt.Errorf("invalid ring %q: %w", ring.Name, err)
+		}
+		if _, exists := seenRings[ring.Name]; exists {
+			return fmt.Errorf("duplicate ring name %q in snapshot", ring.Name)
+		}
+		seenRings[ring.Name] = struct{}{}
+	}
+
 	return nil
+}
+
+func validateRingMembersAgainst(ring Ring, allowed map[string]struct{}) error {
+	var missing []string
+	for _, member := range ring.Members {
+		member = strings.TrimSpace(member)
+		if _, ok := allowed[member]; ok {
+			continue
+		}
+		missing = append(missing, member)
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	sort.Strings(missing)
+	return fmt.Errorf("ring %q references unknown servers: %s", ring.Name, strings.Join(missing, ", "))
 }
 
 func manifestsEqual(a, b Manifest) bool {
@@ -180,4 +300,22 @@ func manifestsEqual(a, b Manifest) bool {
 	sort.Strings(aSecret)
 	sort.Strings(bSecret)
 	return slices.Equal(aSecret, bSecret)
+}
+
+func ringsEqual(a, b Ring) bool {
+	if a.Name != b.Name || a.Description != b.Description {
+		return false
+	}
+	aMembers := normalizedRingMembers(a)
+	bMembers := normalizedRingMembers(b)
+	return slices.Equal(aMembers, bMembers)
+}
+
+func normalizedRingMembers(r Ring) []string {
+	members := make([]string, 0, len(r.Members))
+	for _, member := range r.Members {
+		members = append(members, strings.TrimSpace(member))
+	}
+	sort.Strings(members)
+	return members
 }

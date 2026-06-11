@@ -17,7 +17,7 @@ import (
 
 func (a cliApp) cmdRing(args []string) error {
 	if len(args) == 0 {
-		return commandUsageError("ring", "madari ring <create|list|show|attach|detach|render|status> [options]")
+		return commandUsageError("ring", "madari ring <create|list|show|attach|detach|delete|render|status> [options]")
 	}
 	if isHelpToken(args[0]) {
 		printRingHelp(a.stdout)
@@ -36,12 +36,14 @@ func (a cliApp) cmdRing(args []string) error {
 		return a.cmdRingAttach(rest)
 	case "detach":
 		return a.cmdRingDetach(rest)
+	case "delete":
+		return a.cmdRingDelete(rest)
 	case "render":
 		return a.cmdRingRender(rest)
 	case "status":
 		return a.cmdRingStatus(rest)
 	default:
-		return commandInputError("ring", fmt.Sprintf("unknown ring subcommand %q (supported: create, list, show, attach, detach, render, status)", sub))
+		return commandInputError("ring", fmt.Sprintf("unknown ring subcommand %q (supported: create, list, show, attach, detach, delete, render, status)", sub))
 	}
 }
 
@@ -533,6 +535,99 @@ func (a cliApp) cmdRingDetach(args []string) error {
 	return nil
 }
 
+type ringDeleteHolder struct {
+	target string
+	scope  string
+}
+
+func (h ringDeleteHolder) label() string {
+	if h.scope == clients.ScopeUser {
+		return h.target + " (user scope)"
+	}
+	return h.target
+}
+
+func (h ringDeleteHolder) detachCommand(ring string) string {
+	command := fmt.Sprintf("madari ring detach %s %s", ring, h.target)
+	if h.scope == clients.ScopeUser {
+		command += " --scope user"
+	}
+	return command
+}
+
+func (a cliApp) cmdRingDelete(args []string) error {
+	if len(args) == 0 {
+		return commandUsageError("ring delete", "madari ring delete <name>")
+	}
+	if isHelpToken(args[0]) {
+		printRingDeleteHelp(a.stdout)
+		return nil
+	}
+
+	fs := flag.NewFlagSet("ring delete", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printRingDeleteHelp(a.stdout)
+			return nil
+		}
+		return commandInputError("ring delete", err.Error())
+	}
+	if fs.NArg() != 0 {
+		return commandUnexpectedArgsError("ring delete", fs.Args())
+	}
+
+	name := strings.TrimSpace(args[0])
+	if _, err := a.store.GetRing(name); err != nil {
+		if errors.Is(err, registry.ErrRingNotFound) {
+			return fmt.Errorf("ring %q not found", name)
+		}
+		return err
+	}
+
+	holders, err := a.ringDeleteHolders(name)
+	if err != nil {
+		return err
+	}
+	if len(holders) > 0 {
+		var b strings.Builder
+		fmt.Fprintf(&b, "ring %q is attached and cannot be deleted; detach it first:\n", name)
+		for _, holder := range holders {
+			fmt.Fprintf(&b, "  - %s: `%s`\n", holder.label(), holder.detachCommand(name))
+		}
+		b.WriteString("pass --config-path if the ring was attached to a custom config")
+		return fmt.Errorf("%s", b.String())
+	}
+
+	if err := a.store.RemoveRing(name); err != nil {
+		if errors.Is(err, registry.ErrRingNotFound) {
+			return fmt.Errorf("ring %q not found", name)
+		}
+		return err
+	}
+	fmt.Fprintf(a.stdout, "deleted ring %s\n", name)
+	return nil
+}
+
+func (a cliApp) ringDeleteHolders(name string) ([]ringDeleteHolder, error) {
+	source := syncshared.RingSource(name)
+	var holders []ringDeleteHolder
+	for _, ref := range a.managedStateRefs() {
+		state, err := syncshared.LoadManagedState(ref.path)
+		if err != nil {
+			return nil, err
+		}
+		for _, sources := range state {
+			if !slices.Contains(sources, source) {
+				continue
+			}
+			holders = append(holders, ringDeleteHolder{target: ref.target, scope: ref.scope})
+			break
+		}
+	}
+	return holders, nil
+}
+
 // warnRingMembers reports members that will be owned but not materialized.
 func (a cliApp) warnRingMembers(ring registry.Ring, manifests []registry.Manifest, target string) {
 	byName := make(map[string]registry.Manifest, len(manifests))
@@ -705,6 +800,7 @@ func printRingHelp(out io.Writer) {
 	fmt.Fprintln(out, "  show      Show one ring's members")
 	fmt.Fprintln(out, "  attach    Attach a ring to a client (materialize members)")
 	fmt.Fprintln(out, "  detach    Detach a ring from a client")
+	fmt.Fprintln(out, "  delete    Delete an unattached ring")
 	fmt.Fprintln(out, "  render    Print a self-contained MCP config for a ring")
 	fmt.Fprintln(out, "  status    Show attached rings and ownership per client")
 	fmt.Fprintln(out)
@@ -761,6 +857,16 @@ func printRingDetachHelp(out io.Writer) {
 	fmt.Fprintln(out, "  Release the ring's ownership; entries owned by nothing else leave the")
 	fmt.Fprintln(out, "  client config. Works by name even if the ring file no longer exists.")
 	fmt.Fprintln(out, "  Detaching a ring that is not attached is a no-op.")
+}
+
+func printRingDeleteHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari ring delete <name>")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  Delete an unattached ring from the registry. Deletion is refused while")
+	fmt.Fprintln(out, "  any client scope still records the ring as an ownership source; detach")
+	fmt.Fprintln(out, "  it first, passing --config-path if it was attached to a custom config.")
 }
 
 func printRingListHelp(out io.Writer) {
