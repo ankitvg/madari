@@ -46,8 +46,7 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 		return SyncResult{}, err
 	}
 
-	desiredServers := desiredServersForTarget(manifests)
-	result, err := buildPlan(existingServers, managedState, desiredServers)
+	result, nextState, writeSet, err := syncshared.PlanSync(existingServers, managedState, entriesForTarget(manifests), equalServer, ErrConflict)
 	if err != nil {
 		return SyncResult{}, err
 	}
@@ -60,21 +59,16 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 
 	// Rebuild from the raw entries so anything madari does not write keeps
 	// its JSON value, including fields and server shapes madari does not
-	// model. Only entries madari owns (managed) or introduces are serialized.
-	mutated := make(map[string]json.RawMessage, len(rawServers)+len(desiredServers))
+	// model. The write set contains exactly the entries madari owns or
+	// introduces; pre-existing unmanaged entries are never serialized.
+	mutated := make(map[string]json.RawMessage, len(rawServers)+len(writeSet))
 	for name, raw := range rawServers {
 		mutated[name] = raw
 	}
 	for _, name := range result.Removed {
 		delete(mutated, name)
 	}
-	for name, server := range desiredServers {
-		if _, exists := rawServers[name]; exists && len(managedState[name]) == 0 {
-			// Unmanaged entry whose values equal the manifest (buildPlan
-			// guarantees, else it errored as a conflict): no adoption, no
-			// rewrite — its JSON value stays untouched.
-			continue
-		}
+	for name, server := range writeSet {
 		entryPayload, err := json.Marshal(server)
 		if err != nil {
 			return SyncResult{}, fmt.Errorf("marshal server %q: %w", name, err)
@@ -107,7 +101,6 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 		return SyncResult{}, fmt.Errorf("write Claude config: %w", err)
 	}
 
-	nextState := syncshared.NextManagedState(managedState, syncshared.MapKeys(desiredServers), result.Added)
 	if err := syncshared.SaveManagedState(statePath, nextState); err != nil {
 		return SyncResult{}, fmt.Errorf("write managed sync state: %w", err)
 	}
@@ -151,33 +144,38 @@ func resolveStatePath(statePath string) (string, error) {
 	return syncshared.ResolvePath(statePath, DefaultStatePath)
 }
 
-func desiredServersForTarget(manifests []registry.Manifest) map[string]serverConfig {
-	servers := map[string]serverConfig{}
+// entriesForTarget classifies every Claude Desktop-targeted manifest for the
+// plan engine. Disabled manifests are ineligible (ownership release);
+// manifests for other clients are omitted entirely. The Claude Desktop
+// config is inherently user-scoped, so secrets are never refused here.
+func entriesForTarget(manifests []registry.Manifest) map[string]syncshared.Entry[serverConfig] {
+	entries := map[string]syncshared.Entry[serverConfig]{}
 	for _, manifest := range manifests {
-		if !manifest.Enabled {
-			continue
-		}
 		if !manifest.HasClient(Target) {
 			continue
 		}
-
-		entry := serverConfig{Command: manifest.Command}
-		if len(manifest.Args) > 0 {
-			entry.Args = append([]string(nil), manifest.Args...)
+		entry := syncshared.Entry[serverConfig]{}
+		if manifest.Enabled {
+			entry.Eligible = true
+			entry.Value = materializeServer(manifest)
 		}
-		if len(manifest.Env) > 0 {
-			entry.Env = map[string]string{}
-			for key, value := range manifest.Env {
-				entry.Env[key] = value
-			}
-		}
-		servers[manifest.Name] = entry
+		entries[manifest.Name] = entry
 	}
-	return servers
+	return entries
 }
 
-func buildPlan(existing map[string]serverConfig, managed map[string][]string, desired map[string]serverConfig) (SyncResult, error) {
-	return syncshared.BuildPlan(existing, managed, desired, equalServer, ErrConflict)
+func materializeServer(manifest registry.Manifest) serverConfig {
+	entry := serverConfig{Command: manifest.Command}
+	if len(manifest.Args) > 0 {
+		entry.Args = append([]string(nil), manifest.Args...)
+	}
+	if len(manifest.Env) > 0 {
+		entry.Env = map[string]string{}
+		for key, value := range manifest.Env {
+			entry.Env[key] = value
+		}
+	}
+	return entry
 }
 
 func equalServer(a, b serverConfig) bool {

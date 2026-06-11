@@ -6,12 +6,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/ankitvg/madari/internal/clients"
 )
 
 // ResolvePath resolves a path override (including "~" expansion) or falls back
@@ -25,82 +22,6 @@ func ResolvePath(override string, defaultResolver func() (string, error)) (strin
 		return filepath.Clean(resolved), nil
 	}
 	return defaultResolver()
-}
-
-// BuildPlan computes sync mutations against existing + managed state.
-//
-// A managed entry that is no longer desired loses its standalone source; it
-// is removed from client config only when no sources remain to own it.
-func BuildPlan[T any](
-	existing map[string]T,
-	managed map[string][]string,
-	desired map[string]T,
-	equal func(a, b T) bool,
-	conflictErr error,
-) (clients.SyncResult, error) {
-	if equal == nil {
-		return clients.SyncResult{}, fmt.Errorf("equal comparer is required")
-	}
-
-	result := clients.SyncResult{}
-	for name, sources := range managed {
-		if _, stillDesired := desired[name]; stillDesired {
-			continue
-		}
-		if len(withoutSource(sources, SourceStandalone)) > 0 {
-			continue
-		}
-		if _, exists := existing[name]; exists {
-			result.Removed = append(result.Removed, name)
-		}
-	}
-
-	var conflicts []string
-	for name, desiredServer := range desired {
-		existingServer, exists := existing[name]
-		_, managedByMadari := managed[name]
-
-		if !exists {
-			result.Added = append(result.Added, name)
-			continue
-		}
-		if !managedByMadari {
-			if equal(existingServer, desiredServer) {
-				result.Unchanged = append(result.Unchanged, name)
-				continue
-			}
-			conflicts = append(conflicts, name)
-			continue
-		}
-
-		if equal(existingServer, desiredServer) {
-			result.Unchanged = append(result.Unchanged, name)
-		} else {
-			result.Updated = append(result.Updated, name)
-		}
-	}
-
-	sort.Strings(result.Added)
-	sort.Strings(result.Updated)
-	sort.Strings(result.Removed)
-	sort.Strings(result.Unchanged)
-
-	if len(conflicts) == 0 {
-		return result, nil
-	}
-
-	sort.Strings(conflicts)
-	if conflictErr != nil {
-		return clients.SyncResult{}, fmt.Errorf(
-			"%w: unmanaged entries already exist with different values: %s",
-			conflictErr,
-			strings.Join(conflicts, ", "),
-		)
-	}
-	return clients.SyncResult{}, fmt.Errorf(
-		"unmanaged entries already exist with different values: %s",
-		strings.Join(conflicts, ", "),
-	)
 }
 
 // SourceStandalone marks an entry as owned by a direct (non-ring) sync.
@@ -171,45 +92,6 @@ func SaveManagedState(path string, servers map[string][]string) error {
 	payload = append(payload, '\n')
 
 	return WriteFileAtomically(path, payload, 0o644)
-}
-
-// NextManagedState computes post-sync managed state. A desired name is owned
-// only when Madari already owned it or introduced it in this sync (addedNames);
-// pre-existing unmanaged entries that happen to match desired values are never
-// adopted. Owned names carry SourceStandalone plus any other sources already
-// recorded. Names no longer desired lose their standalone source and stay
-// tracked only while other sources still own them.
-func NextManagedState(previous map[string][]string, desiredNames, addedNames []string) map[string][]string {
-	added := make(map[string]struct{}, len(addedNames))
-	for _, name := range addedNames {
-		added[name] = struct{}{}
-	}
-
-	next := make(map[string][]string, len(desiredNames))
-	desired := make(map[string]struct{}, len(desiredNames))
-	for _, name := range desiredNames {
-		desired[name] = struct{}{}
-		sources, owned := previous[name]
-		if !owned {
-			if _, introduced := added[name]; !introduced {
-				continue
-			}
-		}
-		sources = append([]string(nil), sources...)
-		if !slices.Contains(sources, SourceStandalone) {
-			sources = append(sources, SourceStandalone)
-		}
-		next[name] = sources
-	}
-	for name, sources := range previous {
-		if _, stillDesired := desired[name]; stillDesired {
-			continue
-		}
-		if remaining := withoutSource(sources, SourceStandalone); len(remaining) > 0 {
-			next[name] = remaining
-		}
-	}
-	return next
 }
 
 // withoutSource returns sources with every occurrence of source removed.

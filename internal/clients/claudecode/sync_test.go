@@ -549,6 +549,47 @@ func TestSyncRejectsUnknownScope(t *testing.T) {
 	}
 }
 
+func TestSyncNeverPromotesRingOnlyEntries(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+	state := `{"version":2,"managed_servers":{"stewreads":["ring:research"]}}`
+	if err := os.WriteFile(statePath, []byte(state), 0o644); err != nil {
+		t.Fatalf("write state fixture: %v", err)
+	}
+
+	// Plain sync materializes the ring-owned entry without claiming
+	// standalone for it.
+	result, err := Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+	if len(result.Added) != 1 || result.Added[0] != "stewreads" {
+		t.Fatalf("expected ring-owned entry materialized, got: %+v", result)
+	}
+
+	managed, err := syncshared.LoadManagedState(statePath)
+	if err != nil {
+		t.Fatalf("load managed state: %v", err)
+	}
+	expected := map[string][]string{"stewreads": {"ring:research"}}
+	if !reflect.DeepEqual(managed, expected) {
+		t.Fatalf("expected ring-only ownership preserved (no standalone promotion), got: %#v", managed)
+	}
+
+	servers := readServers(t, configPath)
+	if _, ok := servers["stewreads"]; !ok {
+		t.Fatalf("expected ring-owned entry in config")
+	}
+}
+
 func TestSyncMigratesV1ManagedStateToV2(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, ".mcp.json")
