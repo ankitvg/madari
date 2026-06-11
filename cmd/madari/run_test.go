@@ -1856,3 +1856,111 @@ func TestRunWithStoreRingDispatch(t *testing.T) {
 		t.Fatalf("expected ring help, got code=%d stdout=%s", result.code, result.stdout)
 	}
 }
+
+func TestRunWithStoreRingListAndShow(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	result := runCmd(store, "ring", "list")
+	if result.code != 0 || !strings.Contains(result.stdout, "no rings configured") {
+		t.Fatalf("expected empty ring list, got code=%d stdout=%s", result.code, result.stdout)
+	}
+
+	for _, name := range []string{"stewreads", "arxiv"} {
+		if result := runCmd(store, "add", name, "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+			t.Fatalf("setup add %s failed: %s", name, result.stderr)
+		}
+	}
+	if result := runCmd(store, "ring", "create", "research", "--member", "stewreads", "--member", "arxiv", "--description", "Research helpers"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	result = runCmd(store, "ring", "list")
+	if result.code != 0 {
+		t.Fatalf("ring list failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "NAME\tMEMBERS\tDESCRIPTION") {
+		t.Fatalf("expected ring list header, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "research\tarxiv,stewreads\tResearch helpers") {
+		t.Fatalf("expected ring row with sorted members, got: %s", result.stdout)
+	}
+
+	result = runCmd(store, "ring", "show", "research")
+	if result.code != 0 {
+		t.Fatalf("ring show failed: %s", result.stderr)
+	}
+	for _, want := range []string{"name: research", "description: Research helpers", "  - arxiv", "  - stewreads"} {
+		if !strings.Contains(result.stdout, want) {
+			t.Fatalf("expected %q in ring show output, got: %s", want, result.stdout)
+		}
+	}
+
+	result = runCmd(store, "ring", "show", "ghost")
+	if result.code == 0 || !strings.Contains(result.stderr, `ring "ghost" not found`) {
+		t.Fatalf("expected not-found error, got code=%d stderr=%s", result.code, result.stderr)
+	}
+}
+
+func TestRunWithStoreRingListJSON(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	result := runCmd(store, "ring", "list", "--json")
+	if result.code != 0 {
+		t.Fatalf("ring list --json failed: %s", result.stderr)
+	}
+	expectedEmpty := `{
+  "schema_version": 1,
+  "command": "ring list",
+  "rings": []
+}
+`
+	if result.stdout != expectedEmpty {
+		t.Fatalf("ring list --json schema drift:\nwant:\n%s\ngot:\n%s", expectedEmpty, result.stdout)
+	}
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "research", "--member", "stewreads"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	result = runCmd(store, "ring", "list", "--json")
+	if result.code != 0 {
+		t.Fatalf("ring list --json failed: %s", result.stderr)
+	}
+	expected := `{
+  "schema_version": 1,
+  "command": "ring list",
+  "rings": [
+    {
+      "name": "research",
+      "members": [
+        "stewreads"
+      ],
+      "description": ""
+    }
+  ]
+}
+`
+	if result.stdout != expected {
+		t.Fatalf("ring list --json schema drift:\nwant:\n%s\ngot:\n%s", expected, result.stdout)
+	}
+
+	result = runCmd(store, "ring", "show", "research", "--json")
+	if result.code != 0 {
+		t.Fatalf("ring show --json failed: %s", result.stderr)
+	}
+	payload := decodeJSONObject(t, result.stdout)
+	assertJSONKeys(t, payload, "schema_version", "command", "ring")
+	if payload["command"] != "ring show" {
+		t.Fatalf("unexpected command field: %v", payload["command"])
+	}
+	ring := payload["ring"].(map[string]any)
+	assertJSONKeys(t, ring, "name", "members", "description")
+	if ring["name"] != "research" {
+		t.Fatalf("unexpected ring payload: %v", ring)
+	}
+}
