@@ -43,11 +43,23 @@ and must sync with `--scope user`.
 madari ring create research --member stewreads --member arxiv --description "Research helpers"
 madari ring list
 madari ring show research
+madari ring attach research claude-code
+madari ring attach research claude-code --scope user
+madari ring detach research claude-code
 ```
 
 Rings are named capability sets of servers stored at
 `<config-root>/rings/<name>.toml` (see the manifest spec). Members reference
 registry entries by name and must exist when the ring is created.
+
+Attach records a `ring:<name>` ownership source for every member and
+materializes the eligible ones; detach releases the source, and an entry
+leaves the client config only when no source owns it. Ownership is
+reference-counted: overlapping rings and standalone+ring combinations resolve
+in any attach/detach order. Disabled, secret-refused, or missing members stay
+owned but absent until they become eligible. Ring membership edits (including
+snapshot imports) reconcile on the next sync, attach, or detach. Attaching
+onto an entry madari does not manage is refused, even when values match.
 
 ## Diagnostics
 

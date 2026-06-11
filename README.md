@@ -29,6 +29,8 @@ go install github.com/ankitvg/madari/cmd/madari@latest
 - `madari ring create <name> --member <server> [--member ...] [--description <text>]`
 - `madari ring list [--json]`
 - `madari ring show <name> [--json]`
+- `madari ring attach <ring> <client> [--scope project|user] [--dry-run] [--config-path <path>]`
+- `madari ring detach <ring> <client> [--scope project|user] [--dry-run] [--config-path <path>]`
 - `madari clients`
 - `madari doctor [--client-config target=path ...] [--json]`
 - `madari status [--client-config target=path ...] [--json]`
@@ -48,6 +50,7 @@ Notes:
 - `list` shows the managed sources owning each synced entry (`standalone` today; `-` when not synced), and `status` summarizes managed entries per client.
 - `list`, `status`, `doctor`, `sync --dry-run`, `ring list`, and `ring show` accept `--json` for machine-readable output with a versioned schema; schemas and exit codes are documented in `docs/cli-reference.md`.
 - Rings are named capability sets of servers (`madari ring …`). Members reference registry entries by name — the server manifest stays the single source of truth for command, args, and env.
+- `ring attach` records reference-counted ownership (`ring:<name>` sources) and materializes eligible members; `ring detach` releases it, and an entry only leaves the client config when nothing owns it anymore. Overlapping rings and standalone+ring combinations resolve by refcount, in any order. Attaching onto an entry madari does not manage is refused — even when values match.
 - Supported sync clients: `claude-desktop` and `claude-code`.
 - Default sync config paths:
   - `claude-desktop`: platform-specific Claude Desktop config path.

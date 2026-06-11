@@ -1964,3 +1964,101 @@ func TestRunWithStoreRingListJSON(t *testing.T) {
 		t.Fatalf("unexpected ring payload: %v", ring)
 	}
 }
+
+func TestRunWithStoreRingAttachDetachFlow(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	for _, name := range []string{"stewreads", "arxiv"} {
+		if result := runCmd(store, "add", name, "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+			t.Fatalf("setup add %s failed: %s", name, result.stderr)
+		}
+	}
+	if result := runCmd(store, "ring", "create", "r1", "--member", "stewreads"); result.code != 0 {
+		t.Fatalf("ring create r1 failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "r2", "--member", "stewreads", "--member", "arxiv"); result.code != 0 {
+		t.Fatalf("ring create r2 failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), ".mcp.json")
+
+	// Attach unknown ring fails.
+	result := runCmd(store, "ring", "attach", "ghost", "claude-code", "--config-path", configPath)
+	if result.code == 0 || !strings.Contains(result.stderr, `ring "ghost" not found`) {
+		t.Fatalf("expected unknown-ring error, got code=%d stderr=%s", result.code, result.stderr)
+	}
+
+	// Attach both rings (overlapping member).
+	result = runCmd(store, "ring", "attach", "r1", "claude-code", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("attach r1 failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "added: stewreads") {
+		t.Fatalf("expected stewreads added, got: %s", result.stdout)
+	}
+	result = runCmd(store, "ring", "attach", "r2", "claude-code", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("attach r2 failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "added: arxiv") {
+		t.Fatalf("expected arxiv added, got: %s", result.stdout)
+	}
+
+	// list shows ring sources.
+	result = runCmd(store, "list")
+	if !strings.Contains(result.stdout, "stewreads\tenabled\t"+commandPath+"\tclaude-code\tring:r1,ring:r2") {
+		t.Fatalf("expected overlapping ring sources in list, got: %s", result.stdout)
+	}
+
+	// Detach r1: shared member survives via r2.
+	result = runCmd(store, "ring", "detach", "r1", "claude-code", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("detach r1 failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "no changes") {
+		t.Fatalf("expected no config changes while r2 owns shared member, got: %s", result.stdout)
+	}
+
+	// Detach r2: everything leaves the config.
+	result = runCmd(store, "ring", "detach", "r2", "claude-code", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("detach r2 failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "removed: arxiv,stewreads") {
+		t.Fatalf("expected both members removed, got: %s", result.stdout)
+	}
+
+	// Re-detach is a friendly no-op.
+	result = runCmd(store, "ring", "detach", "r2", "claude-code", "--config-path", configPath)
+	if result.code != 0 || !strings.Contains(result.stdout, "not attached") {
+		t.Fatalf("expected no-op notice, got code=%d stdout=%s", result.code, result.stdout)
+	}
+}
+
+func TestRunWithStoreRingAttachWarnsDisabledMember(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "r1", "--member", "stewreads"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "disable", "stewreads"); result.code != 0 {
+		t.Fatalf("disable failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), ".mcp.json")
+	result := runCmd(store, "ring", "attach", "r1", "claude-code", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("attach failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stderr, "stewreads is disabled; ownership recorded") {
+		t.Fatalf("expected disabled-member warning, got: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "no changes") {
+		t.Fatalf("expected no materialization, got: %s", result.stdout)
+	}
+}
