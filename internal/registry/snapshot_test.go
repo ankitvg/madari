@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,13 @@ func TestSnapshotExportParseRoundTrip(t *testing.T) {
 		Clients: []string{"claude-desktop"},
 	}); err != nil {
 		t.Fatalf("save beta manifest: %v", err)
+	}
+	if err := store.SaveRing(Ring{
+		Name:        "research",
+		Members:     []string{"beta", "alpha"},
+		Description: "Research helpers",
+	}); err != nil {
+		t.Fatalf("save ring: %v", err)
 	}
 
 	snapshot, err := ExportSnapshot(store)
@@ -49,6 +57,12 @@ func TestSnapshotExportParseRoundTrip(t *testing.T) {
 	if parsed.Servers[0].Name != "alpha" && parsed.Servers[1].Name != "alpha" {
 		t.Fatalf("expected alpha in parsed servers: %#v", parsed.Servers)
 	}
+	if len(parsed.Rings) != 1 || parsed.Rings[0].Name != "research" {
+		t.Fatalf("expected research ring in parsed snapshot, got: %#v", parsed.Rings)
+	}
+	if got := strings.Join(parsed.Rings[0].Members, ","); got != "alpha,beta" {
+		t.Fatalf("expected deterministic ring members, got: %s", got)
+	}
 }
 
 func TestMarshalSnapshotUsesSnakeCaseKeys(t *testing.T) {
@@ -66,6 +80,13 @@ func TestMarshalSnapshotUsesSnakeCaseKeys(t *testing.T) {
 				},
 			},
 		},
+		Rings: []Ring{
+			{
+				Name:        "research",
+				Members:     []string{"alpha"},
+				Description: "Research helpers",
+			},
+		},
 	}
 
 	payload, err := MarshalSnapshotJSON(snapshot)
@@ -73,7 +94,7 @@ func TestMarshalSnapshotUsesSnakeCaseKeys(t *testing.T) {
 		t.Fatalf("marshal snapshot failed: %v", err)
 	}
 	text := string(payload)
-	for _, key := range []string{`"name"`, `"command"`, `"args"`, `"enabled"`, `"clients"`, `"required_env"`, `"keys"`} {
+	for _, key := range []string{`"name"`, `"command"`, `"args"`, `"enabled"`, `"clients"`, `"required_env"`, `"keys"`, `"rings"`, `"members"`, `"description"`} {
 		if !strings.Contains(text, key) {
 			t.Fatalf("expected payload to contain key %s, payload=%s", key, text)
 		}
@@ -82,6 +103,20 @@ func TestMarshalSnapshotUsesSnakeCaseKeys(t *testing.T) {
 		if strings.Contains(text, legacy) {
 			t.Fatalf("expected payload to omit legacy key %s, payload=%s", legacy, text)
 		}
+	}
+}
+
+func TestParseSnapshotV1TreatsMissingRingsAsEmpty(t *testing.T) {
+	payload := []byte(`{"version":1,"servers":[{"name":"alpha","command":"/usr/bin/env","enabled":true,"clients":["claude-desktop"]}]}`)
+	snapshot, err := ParseSnapshotJSON(payload)
+	if err != nil {
+		t.Fatalf("parse v1 snapshot: %v", err)
+	}
+	if snapshot.Version != 1 {
+		t.Fatalf("expected v1 snapshot to keep version 1, got %d", snapshot.Version)
+	}
+	if len(snapshot.Rings) != 0 {
+		t.Fatalf("expected missing v1 rings to parse as empty, got: %#v", snapshot.Rings)
 	}
 }
 
@@ -159,6 +194,110 @@ func TestImportSnapshotDryRunAndApply(t *testing.T) {
 	}
 }
 
+func TestImportSnapshotRingsDryRunAndApply(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "servers"))
+	for _, manifest := range []Manifest{
+		{Name: "alpha", Command: "/usr/bin/env", Enabled: true, Clients: []string{"claude-desktop"}},
+		{Name: "beta", Command: "/usr/bin/env", Enabled: true, Clients: []string{"claude-desktop"}},
+	} {
+		if err := store.Save(manifest); err != nil {
+			t.Fatalf("save manifest %s: %v", manifest.Name, err)
+		}
+	}
+	for _, ring := range []Ring{
+		{Name: "research", Members: []string{"alpha"}, Description: "old"},
+		{Name: "stable", Members: []string{"alpha"}, Description: "same"},
+		{Name: "local", Members: []string{"alpha"}, Description: "preserved"},
+	} {
+		if err := store.SaveRing(ring); err != nil {
+			t.Fatalf("save ring %s: %v", ring.Name, err)
+		}
+	}
+
+	snapshot := Snapshot{
+		Version: SnapshotVersion,
+		Servers: []Manifest{
+			{Name: "gamma", Command: "/usr/bin/env", Enabled: true, Clients: []string{"claude-desktop"}},
+		},
+		Rings: []Ring{
+			{Name: "portable", Members: []string{"gamma", "alpha"}, Description: "new"},
+			{Name: "research", Members: []string{"beta", "alpha"}, Description: "new"},
+			{Name: "stable", Members: []string{"alpha"}, Description: "same"},
+		},
+	}
+
+	dryRunResult, err := ImportSnapshot(store, snapshot, false)
+	if err != nil {
+		t.Fatalf("dry-run import failed: %v", err)
+	}
+	if len(dryRunResult.RingsAdded) != 1 || dryRunResult.RingsAdded[0] != "portable" {
+		t.Fatalf("expected portable ring added in dry-run, got: %+v", dryRunResult)
+	}
+	if len(dryRunResult.RingsUpdated) != 1 || dryRunResult.RingsUpdated[0] != "research" {
+		t.Fatalf("expected research ring updated in dry-run, got: %+v", dryRunResult)
+	}
+	if len(dryRunResult.RingsUnchanged) != 1 || dryRunResult.RingsUnchanged[0] != "stable" {
+		t.Fatalf("expected stable ring unchanged in dry-run, got: %+v", dryRunResult)
+	}
+	researchAfterDryRun, err := store.GetRing("research")
+	if err != nil {
+		t.Fatalf("load research after dry-run: %v", err)
+	}
+	if researchAfterDryRun.Description != "old" {
+		t.Fatalf("expected dry-run not to change ring, got: %#v", researchAfterDryRun)
+	}
+	if _, err := store.GetRing("portable"); !errors.Is(err, ErrRingNotFound) {
+		t.Fatalf("expected dry-run not to create portable, got: %v", err)
+	}
+
+	applyResult, err := ImportSnapshot(store, snapshot, true)
+	if err != nil {
+		t.Fatalf("apply import failed: %v", err)
+	}
+	if len(applyResult.RingsAdded) != 1 || applyResult.RingsAdded[0] != "portable" {
+		t.Fatalf("expected portable ring added in apply, got: %+v", applyResult)
+	}
+	if len(applyResult.RingsUpdated) != 1 || applyResult.RingsUpdated[0] != "research" {
+		t.Fatalf("expected research ring updated in apply, got: %+v", applyResult)
+	}
+	researchAfterApply, err := store.GetRing("research")
+	if err != nil {
+		t.Fatalf("load research after apply: %v", err)
+	}
+	if researchAfterApply.Description != "new" || strings.Join(researchAfterApply.Members, ",") != "alpha,beta" {
+		t.Fatalf("expected research ring updated, got: %#v", researchAfterApply)
+	}
+	if _, err := store.GetRing("portable"); err != nil {
+		t.Fatalf("expected portable ring to exist after apply: %v", err)
+	}
+	if _, err := store.GetRing("local"); err != nil {
+		t.Fatalf("existing ring absent from snapshot should be preserved: %v", err)
+	}
+}
+
+func TestImportSnapshotRejectsUnknownRingMembers(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "servers"))
+	if err := store.Save(Manifest{Name: "alpha", Command: "/usr/bin/env", Enabled: true, Clients: []string{"claude-desktop"}}); err != nil {
+		t.Fatalf("save alpha: %v", err)
+	}
+
+	snapshot := Snapshot{
+		Version: SnapshotVersion,
+		Servers: []Manifest{
+			{Name: "beta", Command: "/usr/bin/env", Enabled: true, Clients: []string{"claude-desktop"}},
+		},
+		Rings: []Ring{
+			{Name: "good", Members: []string{"alpha", "beta"}},
+			{Name: "bad", Members: []string{"ghost"}},
+		},
+	}
+
+	_, err := ImportSnapshot(store, snapshot, false)
+	if err == nil || !strings.Contains(err.Error(), `ring "bad" references unknown servers: ghost`) {
+		t.Fatalf("expected unknown ring member error, got: %v", err)
+	}
+}
+
 func TestParseSnapshotRejectsInvalidPayloads(t *testing.T) {
 	_, err := ParseSnapshotJSON([]byte(""))
 	if err == nil || !strings.Contains(err.Error(), "empty") {
@@ -173,6 +312,16 @@ func TestParseSnapshotRejectsInvalidPayloads(t *testing.T) {
 	_, err = ParseSnapshotJSON([]byte(`{"version":99,"servers":[]}`))
 	if err == nil || !strings.Contains(err.Error(), "unsupported snapshot version") {
 		t.Fatalf("expected unsupported version error, got: %v", err)
+	}
+
+	_, err = ParseSnapshotJSON([]byte(`{"version":1,"servers":[],"rings":[{"name":"research","members":["alpha"]}]}`))
+	if err == nil || !strings.Contains(err.Error(), "does not support rings") {
+		t.Fatalf("expected v1 rings error, got: %v", err)
+	}
+
+	_, err = ParseSnapshotJSON([]byte(`{"version":2,"servers":[],"rings":[{"name":"research","members":["alpha"]},{"name":"research","members":["beta"]}]}`))
+	if err == nil || !strings.Contains(err.Error(), "duplicate ring name") {
+		t.Fatalf("expected duplicate ring error, got: %v", err)
 	}
 }
 
