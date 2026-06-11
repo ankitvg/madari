@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 
 	"github.com/ankitvg/madari/internal/doctor"
+	"github.com/ankitvg/madari/internal/registry"
 )
 
 // jsonSchemaVersion identifies the envelope version shared by all --json
@@ -119,6 +121,34 @@ type syncJSON struct {
 	Unchanged     []string `json:"unchanged"`
 	Skipped       []string `json:"skipped"`
 	Refused       []string `json:"refused"`
+}
+
+type ringListJSON struct {
+	SchemaVersion int        `json:"schema_version"`
+	Command       string     `json:"command"`
+	Rings         []ringJSON `json:"rings"`
+}
+
+type ringShowJSON struct {
+	SchemaVersion int      `json:"schema_version"`
+	Command       string   `json:"command"`
+	Ring          ringJSON `json:"ring"`
+}
+
+type ringJSON struct {
+	Name        string   `json:"name"`
+	Members     []string `json:"members"`
+	Description string   `json:"description"`
+}
+
+func ringToJSON(ring registry.Ring) ringJSON {
+	members := append([]string(nil), ring.Members...)
+	sort.Strings(members)
+	return ringJSON{
+		Name:        ring.Name,
+		Members:     nonNilStrings(members),
+		Description: ring.Description,
+	}
 }
 
 // writeJSON emits one indented JSON document followed by a newline; --json

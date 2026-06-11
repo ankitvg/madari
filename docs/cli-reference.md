@@ -37,6 +37,18 @@ values for `[secret_env]` keys are refused per entry at project scope (other
 servers keep syncing; a previously materialized secret entry is scrubbed)
 and must sync with `--scope user`.
 
+## Rings
+
+```bash
+madari ring create research --member stewreads --member arxiv --description "Research helpers"
+madari ring list
+madari ring show research
+```
+
+Rings are named capability sets of servers stored at
+`<config-root>/rings/<name>.toml` (see the manifest spec). Members reference
+registry entries by name and must exist when the ring is created.
+
 ## Diagnostics
 
 ```bash
@@ -56,17 +68,20 @@ madari import --file madari-snapshot.json --apply
 
 ## JSON Output
 
-`list`, `status`, `doctor`, and `sync --dry-run` accept `--json` and emit a
-single JSON document on stdout with nothing else. Every payload carries the
-envelope fields `schema_version` (currently `1`) and `command`. Field
-additions are backward-compatible; renames or removals bump `schema_version`.
-List-valued fields are always present (empty arrays, never `null`).
+`list`, `status`, `doctor`, `sync --dry-run`, `ring list`, and `ring show`
+accept `--json` and emit a single JSON document on stdout with nothing else.
+Every payload carries the envelope fields `schema_version` (currently `1`)
+and `command`. Field additions are backward-compatible; renames or removals
+bump `schema_version`. List-valued fields are always present (empty arrays,
+never `null`).
 
 ```bash
 madari list --json
 madari status --json
 madari doctor --json
 madari sync claude-code --dry-run --json
+madari ring list --json
+madari ring show research --json
 ```
 
 `sync --json` requires `--dry-run`; the apply-mode output contract is not yet
@@ -197,6 +212,36 @@ itself.
   "unchanged": [],
   "skipped": [],
   "refused": []
+}
+```
+
+`madari ring list --json`:
+
+```json
+{
+  "schema_version": 1,
+  "command": "ring list",
+  "rings": [
+    {
+      "name": "research",
+      "members": ["arxiv", "stewreads"],
+      "description": "Research helpers"
+    }
+  ]
+}
+```
+
+`madari ring show <name> --json` wraps the same ring object:
+
+```json
+{
+  "schema_version": 1,
+  "command": "ring show",
+  "ring": {
+    "name": "research",
+    "members": ["arxiv", "stewreads"],
+    "description": "Research helpers"
+  }
 }
 ```
 
