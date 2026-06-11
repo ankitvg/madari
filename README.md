@@ -26,6 +26,9 @@ go install github.com/ankitvg/madari/cmd/madari@latest
 - `madari enable <name>`
 - `madari disable <name>`
 - `madari sync <client> [--dry-run] [--config-path <path>] [--json] [--scope project|user]`
+- `madari ring create <name> --member <server> [--member ...] [--description <text>]`
+- `madari ring list [--json]`
+- `madari ring show <name> [--json]`
 - `madari clients`
 - `madari doctor [--client-config target=path ...] [--json]`
 - `madari status [--client-config target=path ...] [--json]`
@@ -43,7 +46,8 @@ Notes:
 - `sync` skips servers with missing/non-executable command paths and continues syncing others.
 - Manifests can mark secret env keys (`[secret_env]`, or `--secret-env` on `add`/`install`); sync refuses to write their static values into the repo-scoped Claude Code `.mcp.json` — refused entries are reported with guidance (and scrubbed if previously materialized) while other servers sync normally. Use `madari sync claude-code --scope user` to materialize them into the user-scoped `~/.claude.json` instead.
 - `list` shows the managed sources owning each synced entry (`standalone` today; `-` when not synced), and `status` summarizes managed entries per client.
-- `list`, `status`, `doctor`, and `sync --dry-run` accept `--json` for machine-readable output with a versioned schema; schemas and exit codes are documented in `docs/cli-reference.md`.
+- `list`, `status`, `doctor`, `sync --dry-run`, `ring list`, and `ring show` accept `--json` for machine-readable output with a versioned schema; schemas and exit codes are documented in `docs/cli-reference.md`.
+- Rings are named capability sets of servers (`madari ring …`). Members reference registry entries by name — the server manifest stays the single source of truth for command, args, and env.
 - Supported sync clients: `claude-desktop` and `claude-code`.
 - Default sync config paths:
   - `claude-desktop`: platform-specific Claude Desktop config path.
