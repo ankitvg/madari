@@ -2302,7 +2302,7 @@ func TestRunWithStoreRingStatusFlagsStaleAndScopedPending(t *testing.T) {
 	if result.code != 0 {
 		t.Fatalf("ring status failed: %s", result.stderr)
 	}
-	if !strings.Contains(result.stdout, "research [out-of-sync] members=1 owned=0 pending=arxiv stale=stewreads (run madari sync claude-code --scope user)") {
+	if !strings.Contains(result.stdout, "research [out-of-sync] members=1 owned=0 pending=arxiv stale=stewreads (run `madari sync claude-code --scope user`; pass --config-path if attached to a custom config)") {
 		t.Fatalf("expected out-of-sync line with scoped hint, got: %s", result.stdout)
 	}
 

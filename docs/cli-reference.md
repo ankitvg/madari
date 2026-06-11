@@ -75,9 +75,11 @@ claude --mcp-config <(madari ring render research --client claude-code)
 ```
 
 `ring status` shows attached rings and per-server ownership sources for
-every client and scope, flags rings whose file is missing (with the exact
+every client and scope, flags rings whose file is missing (with the
 `ring detach` command that releases the stale sources), and calls out
-members pending sync or missing from the registry. `madari doctor` reports
+members pending sync, stale owners left by membership edits (`stale`), and
+members missing from the registry. Remediation hints assume default config
+paths — pass `--config-path` when the ring was attached to a custom config. `madari doctor` reports
 the same conditions as `ring_issues` (missing ring file = error, dangling
 member = warning).
 
@@ -295,6 +297,7 @@ itself.
           "members": ["arxiv", "stewreads"],
           "owned": ["arxiv", "stewreads"],
           "pending": [],
+          "stale": [],
           "missing_members": []
         }
       ],

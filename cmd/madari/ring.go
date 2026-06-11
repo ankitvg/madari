@@ -230,7 +230,7 @@ func (a cliApp) cmdRingStatus(args []string) error {
 					line += fmt.Sprintf(" stale=%s", strings.Join(att.stale, ","))
 				}
 				if len(att.pending)+len(att.stale) > 0 {
-					line += fmt.Sprintf(" (run %s)", syncHint)
+					line += fmt.Sprintf(" (run `%s`; pass --config-path if attached to a custom config)", syncHint)
 				}
 				if len(att.missingMembers) > 0 {
 					line += fmt.Sprintf(" missing-from-registry=%s", strings.Join(att.missingMembers, ","))
