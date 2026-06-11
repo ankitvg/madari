@@ -31,6 +31,8 @@ go install github.com/ankitvg/madari/cmd/madari@latest
 - `madari ring show <name> [--json]`
 - `madari ring attach <ring> <client> [--scope project|user] [--dry-run] [--config-path <path>]`
 - `madari ring detach <ring> <client> [--scope project|user] [--dry-run] [--config-path <path>]`
+- `madari ring render <name> --client <target>`
+- `madari ring status [--json]`
 - `madari clients`
 - `madari doctor [--client-config target=path ...] [--json]`
 - `madari status [--client-config target=path ...] [--json]`
@@ -51,6 +53,7 @@ Notes:
 - `list`, `status`, `doctor`, `sync --dry-run`, `ring list`, and `ring show` accept `--json` for machine-readable output with a versioned schema; schemas and exit codes are documented in `docs/cli-reference.md`.
 - Rings are named capability sets of servers (`madari ring …`). Members reference registry entries by name — the server manifest stays the single source of truth for command, args, and env.
 - `ring attach` records reference-counted ownership (`ring:<name>` sources) and materializes eligible members; `ring detach` releases it, and an entry only leaves the client config when nothing owns it anymore. Overlapping rings and standalone+ring combinations resolve by refcount, in any order. Attaching onto an entry madari does not manage is refused — even when values match.
+- `ring render` prints a self-contained MCP config to stdout for ephemeral use — `claude --mcp-config <(madari ring render research --client claude-code)` — mutating nothing; secret env values are never emitted. `ring status` shows attached rings and per-server ownership for every client and scope.
 - Supported sync clients: `claude-desktop` and `claude-code`.
 - Default sync config paths:
   - `claude-desktop`: platform-specific Claude Desktop config path.
