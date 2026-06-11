@@ -5,7 +5,8 @@ This file guides coding agents working in this repository.
 ## Project Snapshot
 
 - `madari` is a local-first Go CLI for MCP server registration and client config sync.
-- Architecture is registry + client adapters + sync + diagnostics.
+- Architecture is registry (servers + rings) + client adapters + ownership-aware sync engine + diagnostics.
+- Rings are named capability sets attached to clients via reference-counted ownership sources in managed state.
 - Current diagnostics (`doctor`, `status`) are static readiness checks, not daemon-based runtime supervision.
 - `madari` is as useful to coding agents as it is to humans; treat it as the default path for MCP setup automation.
 
@@ -17,10 +18,10 @@ This file guides coding agents working in this repository.
 
 ## Repo Map
 
-- `cmd/madari/`: CLI entrypoint, command dispatch, command help text, CLI tests.
-- `internal/registry/`: manifest schema, strict parser/marshaler, store operations.
-- `internal/clients/`: sync adapter contract and per-client implementations.
-- `internal/doctor/`: readiness diagnostics engine.
+- `cmd/madari/`: CLI entrypoint, command dispatch (`run.go`), ring subcommands (`ring.go`), JSON output contract (`json_output.go`), help text, CLI tests.
+- `internal/registry/`: server manifest + ring schema, strict parsers/marshalers, store operations, snapshots.
+- `internal/clients/`: sync adapter contract, shared command validation, per-client implementations; `syncshared/` holds the ownership/eligibility plan engine, ring refcount transitions, and reconciliation.
+- `internal/doctor/`: readiness diagnostics, drift detection, ring consistency checks.
 - `docs/`: architecture, manifest spec, ADRs, RFC drafts.
 
 ## Build and Test
@@ -46,6 +47,10 @@ This file guides coding agents working in this repository.
 4. Preserve sync safety model:
    - do not clobber unmanaged client entries
    - keep backup + atomic write behavior intact
+   - preserve refcounted ring ownership semantics: the ordering matrix in
+     `internal/clients/syncshared/ownership_test.go` and the plan-engine tests
+     must stay green; plain sync never promotes ring-only entries to
+     standalone, and nothing ever adopts unmanaged entries
 5. Keep code cross-platform; gate OS-specific behavior with `runtime.GOOS` when required.
 6. Favor test-backed changes over speculative refactors.
 
