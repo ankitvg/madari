@@ -46,6 +46,7 @@ madari ring show research
 madari ring attach research claude-code
 madari ring attach research claude-code --scope user
 madari ring detach research claude-code
+madari ring delete research
 madari ring render research --client claude-code
 madari ring status
 ```
@@ -62,6 +63,11 @@ in any attach/detach order. Disabled, secret-refused, or missing members stay
 owned but absent until they become eligible. Ring membership edits (including
 snapshot imports) reconcile on the next sync, attach, or detach. Attaching
 onto an entry madari does not manage is refused, even when values match.
+
+`ring delete` removes the ring definition only after every target/scope has
+released its `ring:<name>` ownership source. If the ring is still attached,
+the command exits non-zero and prints scoped `ring detach` guidance. Deleting
+a ring never edits client configs or managed state.
 
 `ring render` prints a self-contained MCP config to stdout and mutates
 nothing — no state, no refcounts. Members are filtered by client
@@ -99,6 +105,13 @@ madari export --file madari-snapshot.json
 madari import --file madari-snapshot.json
 madari import --file madari-snapshot.json --apply
 ```
+
+Snapshots are versioned JSON documents containing server manifests and ring
+definitions. Export writes the current snapshot version with both `servers`
+and `rings`. Import is a dry-run by default; `--apply` adds or updates listed
+servers and rings, never deletes entries absent from the snapshot, and never
+attaches or syncs imported rings. Ring membership changes converge through
+the normal reconciliation pass on the next sync, attach, or detach.
 
 ## JSON Output
 
