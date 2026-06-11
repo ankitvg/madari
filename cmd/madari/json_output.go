@@ -67,7 +67,34 @@ type doctorJSON struct {
 	ManifestErrors []manifestErrorJSON `json:"manifest_errors"`
 	ClientConfigs  []doctorConfigJSON  `json:"client_configs"`
 	Drift          []driftJSON         `json:"drift"`
+	RingIssues     []ringIssueJSON     `json:"ring_issues"`
 	Summary        summaryJSON         `json:"summary"`
+}
+
+type ringIssueJSON struct {
+	Target   string `json:"target"`
+	Scope    string `json:"scope"`
+	Ring     string `json:"ring"`
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
+}
+
+func ringIssuesToJSON(issues []doctor.RingIssue) []ringIssueJSON {
+	out := make([]ringIssueJSON, 0, len(issues))
+	for _, issue := range issues {
+		scope := issue.Scope
+		if scope == "" && issue.Target != "" {
+			scope = "default"
+		}
+		out = append(out, ringIssueJSON{
+			Target:   issue.Target,
+			Scope:    scope,
+			Ring:     issue.Ring,
+			Severity: string(issue.Severity),
+			Message:  issue.Message,
+		})
+	}
+	return out
 }
 
 type driftJSON struct {
@@ -149,6 +176,33 @@ func ringToJSON(ring registry.Ring) ringJSON {
 		Members:     nonNilStrings(members),
 		Description: ring.Description,
 	}
+}
+
+type ringStatusJSON struct {
+	SchemaVersion int                    `json:"schema_version"`
+	Command       string                 `json:"command"`
+	Targets       []ringStatusTargetJSON `json:"targets"`
+}
+
+type ringStatusTargetJSON struct {
+	Target  string               `json:"target"`
+	Scope   string               `json:"scope"`
+	Rings   []ringAttachmentJSON `json:"rings"`
+	Servers []ringServerJSON     `json:"servers"`
+}
+
+type ringAttachmentJSON struct {
+	Name           string   `json:"name"`
+	Exists         bool     `json:"exists"`
+	Members        []string `json:"members"`
+	Owned          []string `json:"owned"`
+	Pending        []string `json:"pending"`
+	MissingMembers []string `json:"missing_members"`
+}
+
+type ringServerJSON struct {
+	Name    string   `json:"name"`
+	Sources []string `json:"sources"`
 }
 
 // writeJSON emits one indented JSON document followed by a newline; --json

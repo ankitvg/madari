@@ -17,7 +17,7 @@ import (
 
 func (a cliApp) cmdRing(args []string) error {
 	if len(args) == 0 {
-		return commandUsageError("ring", "madari ring <create|list|show|attach|detach|render> [options]")
+		return commandUsageError("ring", "madari ring <create|list|show|attach|detach|render|status> [options]")
 	}
 	if isHelpToken(args[0]) {
 		printRingHelp(a.stdout)
@@ -38,9 +38,199 @@ func (a cliApp) cmdRing(args []string) error {
 		return a.cmdRingDetach(rest)
 	case "render":
 		return a.cmdRingRender(rest)
+	case "status":
+		return a.cmdRingStatus(rest)
 	default:
-		return commandInputError("ring", fmt.Sprintf("unknown ring subcommand %q (supported: create, list, show, attach, detach, render)", sub))
+		return commandInputError("ring", fmt.Sprintf("unknown ring subcommand %q (supported: create, list, show, attach, detach, render, status)", sub))
 	}
+}
+
+// ringTargetStatus is the per-(target, scope) view ring status reports.
+type ringTargetStatus struct {
+	target  string
+	scope   string
+	rings   []ringAttachment
+	servers []serverSources
+}
+
+type ringAttachment struct {
+	name           string
+	exists         bool
+	members        []string
+	owned          []string
+	pending        []string
+	missingMembers []string
+}
+
+type serverSources struct {
+	name    string
+	sources []string
+}
+
+func (a cliApp) cmdRingStatus(args []string) error {
+	if len(args) == 1 && isHelpToken(args[0]) {
+		printRingStatusHelp(a.stdout)
+		return nil
+	}
+	fs := flag.NewFlagSet("ring status", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var jsonOut bool
+	fs.BoolVar(&jsonOut, "json", false, "Emit JSON instead of text")
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printRingStatusHelp(a.stdout)
+			return nil
+		}
+		return commandInputError("ring status", err.Error())
+	}
+	if fs.NArg() != 0 {
+		return commandUnexpectedArgsError("ring status", fs.Args())
+	}
+
+	manifests, err := a.store.List()
+	if err != nil {
+		return err
+	}
+	manifestNames := make(map[string]bool, len(manifests))
+	for _, manifest := range manifests {
+		manifestNames[manifest.Name] = true
+	}
+
+	statuses := []ringTargetStatus{}
+	for _, ref := range a.managedStateRefs() {
+		state, err := syncshared.LoadManagedState(ref.path)
+		if err != nil {
+			return err
+		}
+		ts := ringTargetStatus{target: ref.target, scope: ref.scope}
+
+		for _, name := range syncshared.AttachedRings(state) {
+			attachment := ringAttachment{name: name}
+			ring, err := a.store.GetRing(name)
+			switch {
+			case errors.Is(err, registry.ErrRingNotFound):
+				// exists stays false; stale sources released via detach.
+			case err != nil:
+				return err
+			default:
+				attachment.exists = true
+				members := append([]string(nil), ring.Members...)
+				sort.Strings(members)
+				attachment.members = members
+				source := syncshared.RingSource(name)
+				for _, member := range members {
+					member = strings.TrimSpace(member)
+					if slices.Contains(state[member], source) {
+						attachment.owned = append(attachment.owned, member)
+					} else {
+						attachment.pending = append(attachment.pending, member)
+					}
+					if !manifestNames[member] {
+						attachment.missingMembers = append(attachment.missingMembers, member)
+					}
+				}
+			}
+			ts.rings = append(ts.rings, attachment)
+		}
+
+		serverNames := syncshared.MapKeys(state)
+		sort.Strings(serverNames)
+		for _, name := range serverNames {
+			ts.servers = append(ts.servers, serverSources{name: name, sources: state[name]})
+		}
+		statuses = append(statuses, ts)
+	}
+
+	if jsonOut {
+		payload := ringStatusJSON{
+			SchemaVersion: jsonSchemaVersion,
+			Command:       "ring status",
+			Targets:       make([]ringStatusTargetJSON, 0, len(statuses)),
+		}
+		for _, ts := range statuses {
+			scope := ts.scope
+			if scope == "" {
+				scope = "default"
+			}
+			targetJSON := ringStatusTargetJSON{
+				Target:  ts.target,
+				Scope:   scope,
+				Rings:   make([]ringAttachmentJSON, 0, len(ts.rings)),
+				Servers: make([]ringServerJSON, 0, len(ts.servers)),
+			}
+			for _, att := range ts.rings {
+				targetJSON.Rings = append(targetJSON.Rings, ringAttachmentJSON{
+					Name:           att.name,
+					Exists:         att.exists,
+					Members:        nonNilStrings(att.members),
+					Owned:          nonNilStrings(att.owned),
+					Pending:        nonNilStrings(att.pending),
+					MissingMembers: nonNilStrings(att.missingMembers),
+				})
+			}
+			for _, server := range ts.servers {
+				targetJSON.Servers = append(targetJSON.Servers, ringServerJSON{
+					Name:    server.name,
+					Sources: nonNilStrings(server.sources),
+				})
+			}
+			payload.Targets = append(payload.Targets, targetJSON)
+		}
+		return writeJSON(a.stdout, payload)
+	}
+
+	for _, ts := range statuses {
+		label := ts.target
+		if ts.scope == clients.ScopeUser {
+			label += " (user scope)"
+		}
+		if len(ts.servers) == 0 {
+			fmt.Fprintf(a.stdout, "%s: no managed entries\n", label)
+			continue
+		}
+		fmt.Fprintf(a.stdout, "%s:\n", label)
+		if len(ts.rings) == 0 {
+			fmt.Fprintln(a.stdout, "  rings: -")
+		} else {
+			fmt.Fprintln(a.stdout, "  rings:")
+			for _, att := range ts.rings {
+				if !att.exists {
+					fix := fmt.Sprintf("madari ring detach %s %s", att.name, ts.target)
+					if ts.scope == clients.ScopeUser {
+						fix += " --scope user"
+					}
+					fmt.Fprintf(a.stdout, "    %s [missing] ring file not found; release with `%s`\n", att.name, fix)
+					continue
+				}
+				line := fmt.Sprintf("    %s [ok] members=%d owned=%d", att.name, len(att.members), len(att.owned))
+				if len(att.pending) > 0 {
+					line += fmt.Sprintf(" pending=%s (run madari sync %s)", strings.Join(att.pending, ","), ts.target)
+				}
+				if len(att.missingMembers) > 0 {
+					line += fmt.Sprintf(" missing-from-registry=%s", strings.Join(att.missingMembers, ","))
+				}
+				fmt.Fprintln(a.stdout, line)
+			}
+		}
+		fmt.Fprintln(a.stdout, "  servers:")
+		for _, server := range ts.servers {
+			fmt.Fprintf(a.stdout, "    %s: %s\n", server.name, strings.Join(server.sources, ", "))
+		}
+	}
+	return nil
+}
+
+func printRingStatusHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari ring status [--json]")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Options:")
+	fmt.Fprintln(out, "  --json                     Emit JSON instead of text")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  Show attached rings and per-server ownership sources for every client")
+	fmt.Fprintln(out, "  and scope. Flags rings whose file is missing (release with ring detach)")
+	fmt.Fprintln(out, "  and members that are pending sync or missing from the registry.")
 }
 
 // renderedServer is the self-contained client config entry ring render emits.
@@ -490,6 +680,7 @@ func printRingHelp(out io.Writer) {
 	fmt.Fprintln(out, "  attach    Attach a ring to a client (materialize members)")
 	fmt.Fprintln(out, "  detach    Detach a ring from a client")
 	fmt.Fprintln(out, "  render    Print a self-contained MCP config for a ring")
+	fmt.Fprintln(out, "  status    Show attached rings and ownership per client")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Rings are named capability sets of MCP servers. Members reference")
