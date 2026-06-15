@@ -23,6 +23,7 @@ type ringRenderTarget struct {
 var ringRenderTargets = map[string]ringRenderTarget{
 	claudedesktop.Target: {target: claudedesktop.Target, render: renderMCPServersJSON},
 	claudecode.Target:    {target: claudecode.Target, render: renderMCPServersJSON},
+	"gemini":             {target: "gemini", render: renderMCPServersJSON},
 }
 
 func supportedRingRenderTargets() []string {

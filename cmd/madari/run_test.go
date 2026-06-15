@@ -2244,6 +2244,52 @@ func TestRunWithStoreRingRender(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreRingRenderJSONTargets(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if _, ok := syncAdapters["gemini"]; ok {
+		t.Fatal("gemini must not be registered as a sync adapter")
+	}
+
+	if result := runCmd(store, "add", "portable", "--command", commandPath,
+		"--client", "claude-desktop",
+		"--client", "gemini",
+		"--arg", "--stdio",
+		"--env", "PORTABLE_MODE=1"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "portable-ring", "--member", "portable"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	expected := map[string]map[string]renderedServer{
+		"mcpServers": {
+			"portable": {
+				Command: commandPath,
+				Args:    []string{"--stdio"},
+				Env:     map[string]string{"PORTABLE_MODE": "1"},
+			},
+		},
+	}
+	for _, target := range []string{"claude-desktop", "gemini"} {
+		result := runCmd(store, "ring", "render", "portable-ring", "--client", target)
+		if result.code != 0 {
+			t.Fatalf("ring render %s failed: %s", target, result.stderr)
+		}
+		if result.stderr != "" {
+			t.Fatalf("expected no render warnings for %s, got: %s", target, result.stderr)
+		}
+		var got map[string]map[string]renderedServer
+		if err := json.Unmarshal([]byte(result.stdout), &got); err != nil {
+			t.Fatalf("parse render output for %s: %v\n%s", target, err, result.stdout)
+		}
+		if !reflect.DeepEqual(got, expected) {
+			t.Fatalf("render output for %s drift:\nwant: %#v\ngot: %#v", target, expected, got)
+		}
+	}
+}
+
 func TestRunWithStoreRingStatus(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
