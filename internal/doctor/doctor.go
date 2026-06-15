@@ -439,6 +439,8 @@ func inspectClientConfig(target, path string) ClientConfigReport {
 	switch target {
 	case "codex":
 		return inspectCodexTOMLClientConfig(payload, report)
+	case "vibe":
+		return inspectVibeTOMLClientConfig(payload, report)
 	case "":
 		if filepath.Ext(path) == ".toml" {
 			return inspectCodexTOMLClientConfig(payload, report)
@@ -482,6 +484,46 @@ func inspectCodexTOMLClientConfig(payload []byte, report ClientConfigReport) Cli
 			report.Status = StatusError
 			report.Message = "invalid mcp_servers value: expected table"
 			return report
+		}
+	}
+
+	report.Status = StatusReady
+	report.Message = "ok"
+	return report
+}
+
+func inspectVibeTOMLClientConfig(payload []byte, report ClientConfigReport) ClientConfigReport {
+	root := map[string]any{}
+	if err := toml.Unmarshal(payload, &root); err != nil {
+		report.Status = StatusError
+		report.Message = fmt.Sprintf("invalid TOML: %v", err)
+		return report
+	}
+
+	if raw, exists := root["mcp_servers"]; exists {
+		servers, ok := raw.([]any)
+		if !ok {
+			report.Status = StatusError
+			report.Message = "invalid mcp_servers value: expected array"
+			return report
+		}
+		for i, rawServer := range servers {
+			server, ok := rawServer.(map[string]any)
+			if !ok {
+				report.Status = StatusError
+				report.Message = fmt.Sprintf("invalid mcp_servers[%d] value: expected table", i)
+				return report
+			}
+			if name, ok := server["name"].(string); !ok || strings.TrimSpace(name) == "" {
+				report.Status = StatusError
+				report.Message = fmt.Sprintf("invalid mcp_servers[%d].name value: expected non-empty string", i)
+				return report
+			}
+			if transport, ok := server["transport"].(string); !ok || strings.TrimSpace(transport) == "" {
+				report.Status = StatusError
+				report.Message = fmt.Sprintf("invalid mcp_servers[%d].transport value: expected non-empty string", i)
+				return report
+			}
 		}
 	}
 

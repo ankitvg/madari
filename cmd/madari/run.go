@@ -17,6 +17,7 @@ import (
 	"github.com/ankitvg/madari/internal/clients/codex"
 	"github.com/ankitvg/madari/internal/clients/gemini"
 	"github.com/ankitvg/madari/internal/clients/syncshared"
+	"github.com/ankitvg/madari/internal/clients/vibe"
 	"github.com/ankitvg/madari/internal/doctor"
 	"github.com/ankitvg/madari/internal/registry"
 )
@@ -28,6 +29,7 @@ var syncAdapters = map[string]clients.ClientAdapter{
 	claudecode.Target:    claudecode.Adapter{},
 	codex.Target:         codex.Adapter{},
 	gemini.Target:        gemini.Adapter{},
+	vibe.Target:          vibe.Adapter{},
 }
 
 func supportedSyncTargets() []string {
