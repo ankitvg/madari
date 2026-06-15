@@ -261,13 +261,6 @@ func printRingStatusHelp(out io.Writer) {
 	fmt.Fprintln(out, "  and members that are pending sync or missing from the registry.")
 }
 
-// renderedServer is the self-contained client config entry ring render emits.
-type renderedServer struct {
-	Command string            `json:"command"`
-	Args    []string          `json:"args,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
-}
-
 func (a cliApp) cmdRingRender(args []string) error {
 	if len(args) == 0 {
 		return commandUsageError("ring render", "madari ring render <name> --client <target>")
@@ -296,8 +289,9 @@ func (a cliApp) cmdRingRender(args []string) error {
 	if target == "" {
 		return commandInputError("ring render", "--client is required")
 	}
-	if _, ok := syncAdapters[target]; !ok {
-		return commandInputError("ring render", fmt.Sprintf("unsupported client %q (supported: %s)", target, strings.Join(supportedSyncTargets(), ", ")))
+	renderTarget, ok := ringRenderTargets[target]
+	if !ok {
+		return commandInputError("ring render", fmt.Sprintf("unsupported render target %q (supported: %s)", target, strings.Join(supportedRingRenderTargets(), ", ")))
 	}
 
 	ring, err := a.store.GetRing(name)
@@ -318,7 +312,7 @@ func (a cliApp) cmdRingRender(args []string) error {
 
 	// Render mutates nothing: no state, no refcounts, no config files. The
 	// output is a self-contained config for ephemeral use (for example
-	// `claude --mcp-config`); stdout carries only the JSON document.
+	// `claude --mcp-config`); stdout carries only the rendered config.
 	servers := map[string]renderedServer{}
 	members := append([]string(nil), ring.Members...)
 	sort.Strings(members)
@@ -345,6 +339,7 @@ func (a cliApp) cmdRingRender(args []string) error {
 		if len(manifest.Args) > 0 {
 			entry.Args = append([]string(nil), manifest.Args...)
 		}
+		entry.RuntimeEnvKeys = runtimeEnvKeys(manifest.RequiredEnv.Keys, manifest.SecretEnv.Keys)
 		secret := make(map[string]bool, len(manifest.SecretEnv.Keys))
 		for _, key := range manifest.SecretEnv.Keys {
 			secret[strings.TrimSpace(key)] = true
@@ -367,7 +362,7 @@ func (a cliApp) cmdRingRender(args []string) error {
 		servers[member] = entry
 	}
 
-	return writeJSON(a.stdout, map[string]map[string]renderedServer{"mcpServers": servers})
+	return renderTarget.render(a.stdout, servers)
 }
 
 func printRingRenderHelp(out io.Writer) {
@@ -376,10 +371,12 @@ func printRingRenderHelp(out io.Writer) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
 	fmt.Fprintln(out, "  --client <target>          Target client the rendered config is for (required)")
+	fmt.Fprintf(out, "                            Supported render targets: %s\n", strings.Join(supportedRingRenderTargets(), ", "))
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Print a self-contained MCP config for the ring to stdout, for ephemeral")
 	fmt.Fprintln(out, "  use such as `claude --mcp-config <(madari ring render research --client claude-code)`.")
+	fmt.Fprintln(out, "  Claude and Gemini targets emit JSON; Codex and Vibe targets emit TOML.")
 	fmt.Fprintln(out, "  Members are filtered by client compatibility; disabled, missing, or")
 	fmt.Fprintln(out, "  command-invalid members are omitted with a warning. Static values for")
 	fmt.Fprintln(out, "  [secret_env] keys are never emitted — provide them via the runtime")

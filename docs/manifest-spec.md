@@ -15,10 +15,17 @@ Each managed server is stored as a TOML document.
 - `clients` (array of strings, required): client IDs.
 - `description` (string, optional): friendly description.
 
-Supported client IDs:
+Known client IDs:
 
 - `claude-desktop`
 - `claude-code`
+- `gemini`
+- `codex`
+- `vibe`
+
+`claude-desktop` and `claude-code` are sync-capable today. `gemini`,
+`codex`, and `vibe` are render targets for `madari ring render`; they are
+not persistent sync targets unless adapter support is added separately.
 
 ### `[env]`
 

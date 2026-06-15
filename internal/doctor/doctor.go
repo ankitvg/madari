@@ -123,6 +123,9 @@ type Options struct {
 	Adapters            []clients.ClientAdapter
 	ConfigPathOverrides map[string]string // keyed by Target(), e.g. {"claude-desktop": "/custom/path"}
 	EnvLookup           func(string) string
+	// ServerTargets are client IDs whose manifests should receive server-level
+	// readiness checks. If empty, adapter targets are used for compatibility.
+	ServerTargets []string
 	// DriftTargets enables drift detection for the listed state/config
 	// pairs.
 	DriftTargets []DriftTarget
@@ -149,9 +152,14 @@ func Run(store *registry.Store, opts Options) (Report, error) {
 	}
 	report.ManifestErrors = manifestErrors
 
+	serverTargets := opts.ServerTargets
+	if len(serverTargets) == 0 {
+		serverTargets = adapterTargets(opts.Adapters)
+	}
+
 	report.Servers = make([]ServerReport, 0, len(manifests))
 	for _, manifest := range manifests {
-		report.Servers = append(report.Servers, inspectServer(manifest, envLookup, opts.Adapters))
+		report.Servers = append(report.Servers, inspectServer(manifest, envLookup, serverTargets))
 	}
 	sort.Slice(report.Servers, func(i, j int) bool {
 		return report.Servers[i].Name < report.Servers[j].Name
@@ -357,7 +365,7 @@ func summarize(report Report) Summary {
 	return summary
 }
 
-func inspectServer(manifest registry.Manifest, envLookup func(string) string, adapters []clients.ClientAdapter) ServerReport {
+func inspectServer(manifest registry.Manifest, envLookup func(string) string, targets []string) ServerReport {
 	report := ServerReport{
 		Name:    manifest.Name,
 		Enabled: manifest.Enabled,
@@ -367,7 +375,7 @@ func inspectServer(manifest registry.Manifest, envLookup func(string) string, ad
 		Issues:  []Issue{},
 	}
 
-	if !manifest.Enabled || !hasSyncTarget(manifest, adapters) {
+	if !manifest.Enabled || !hasTarget(manifest, targets) {
 		return report
 	}
 
@@ -498,9 +506,17 @@ func loadManifests(serversDir string) ([]registry.Manifest, []ManifestError, err
 	return manifests, manifestErrors, nil
 }
 
-func hasSyncTarget(manifest registry.Manifest, adapters []clients.ClientAdapter) bool {
+func adapterTargets(adapters []clients.ClientAdapter) []string {
+	targets := make([]string, 0, len(adapters))
 	for _, adapter := range adapters {
-		if manifest.HasClient(adapter.Target()) {
+		targets = append(targets, adapter.Target())
+	}
+	return targets
+}
+
+func hasTarget(manifest registry.Manifest, targets []string) bool {
+	for _, target := range targets {
+		if manifest.HasClient(target) {
 			return true
 		}
 	}

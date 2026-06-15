@@ -1238,6 +1238,28 @@ func TestRunWithStoreDoctorReturnsErrorForInvalidClaudeCodeConfig(t *testing.T) 
 	}
 }
 
+func TestRunWithStoreDoctorChecksRenderOnlyTargets(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "portable", "--command", commandPath,
+		"--client", "codex",
+		"--required-env", "PORTABLE_TOKEN"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "doctor")
+	if result.code != 0 {
+		t.Fatalf("doctor with render-only warning should exit 0, got code=%d stderr=%s stdout=%s", result.code, result.stderr, result.stdout)
+	}
+	if !strings.Contains(result.stdout, "portable [warn]") || !strings.Contains(result.stdout, "missing required env key PORTABLE_TOKEN") {
+		t.Fatalf("expected render-only target to receive server diagnostics, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "summary: total=1 ready=0 warn=1 error=0 skipped=0") {
+		t.Fatalf("expected render-only target not to be skipped, got: %s", result.stdout)
+	}
+}
+
 func TestRunWithStoreStatusHealthy(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
@@ -2241,6 +2263,154 @@ func TestRunWithStoreRingRender(t *testing.T) {
 	result = runCmd(store, "ring", "render", "research")
 	if result.code == 0 || !strings.Contains(result.stderr, "--client is required") {
 		t.Fatalf("expected required-client error, got code=%d stderr=%s", result.code, result.stderr)
+	}
+	result = runCmd(store, "ring", "render", "research", "--client", "unknown-client")
+	if result.code == 0 || !strings.Contains(result.stderr, `unsupported render target "unknown-client"`) || !strings.Contains(result.stderr, "codex") || !strings.Contains(result.stderr, "vibe") {
+		t.Fatalf("expected unsupported render-target error, got code=%d stderr=%s", result.code, result.stderr)
+	}
+}
+
+func TestRunWithStoreRingRenderJSONTargets(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if _, ok := syncAdapters["gemini"]; ok {
+		t.Fatal("gemini must not be registered as a sync adapter")
+	}
+
+	if result := runCmd(store, "add", "portable", "--command", commandPath,
+		"--client", "claude-desktop",
+		"--client", "gemini",
+		"--arg", "--stdio",
+		"--env", "PORTABLE_MODE=1"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "portable-ring", "--member", "portable"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	expected := map[string]map[string]renderedServer{
+		"mcpServers": {
+			"portable": {
+				Command: commandPath,
+				Args:    []string{"--stdio"},
+				Env:     map[string]string{"PORTABLE_MODE": "1"},
+			},
+		},
+	}
+	for _, target := range []string{"claude-desktop", "gemini"} {
+		result := runCmd(store, "ring", "render", "portable-ring", "--client", target)
+		if result.code != 0 {
+			t.Fatalf("ring render %s failed: %s", target, result.stderr)
+		}
+		if result.stderr != "" {
+			t.Fatalf("expected no render warnings for %s, got: %s", target, result.stderr)
+		}
+		var got map[string]map[string]renderedServer
+		if err := json.Unmarshal([]byte(result.stdout), &got); err != nil {
+			t.Fatalf("parse render output for %s: %v\n%s", target, err, result.stdout)
+		}
+		if !reflect.DeepEqual(got, expected) {
+			t.Fatalf("render output for %s drift:\nwant: %#v\ngot: %#v", target, expected, got)
+		}
+	}
+}
+
+func TestRunWithStoreRingRenderTOMLTargets(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	for _, target := range []string{"codex", "vibe"} {
+		if _, ok := syncAdapters[target]; ok {
+			t.Fatalf("%s must not be registered as a sync adapter", target)
+		}
+	}
+
+	if result := runCmd(store, "add", "portable", "--command", commandPath,
+		"--client", "codex",
+		"--client", "vibe",
+		"--arg", "--stdio",
+		"--env", "PORTABLE_MODE=1",
+		"--required-env", "PORTABLE_TOKEN",
+		"--secret-env", "PORTABLE_SECRET"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "portable-ring", "--member", "portable"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	tests := []struct {
+		target string
+		want   string
+	}{
+		{
+			target: "codex",
+			want: fmt.Sprintf(`[mcp_servers.portable]
+command = %s
+args = ["--stdio"]
+env_vars = ["PORTABLE_SECRET", "PORTABLE_TOKEN"]
+
+[mcp_servers.portable.env]
+PORTABLE_MODE = "1"
+`, tomlString(commandPath)),
+		},
+		{
+			target: "vibe",
+			want: fmt.Sprintf(`[[mcp_servers]]
+name = "portable"
+transport = "stdio"
+command = %s
+args = ["--stdio"]
+env = { PORTABLE_MODE = "1" }
+`, tomlString(commandPath)),
+		},
+	}
+
+	for _, tt := range tests {
+		result := runCmd(store, "ring", "render", "portable-ring", "--client", tt.target)
+		if result.code != 0 {
+			t.Fatalf("ring render %s failed: %s", tt.target, result.stderr)
+		}
+		if result.stderr != "" {
+			t.Fatalf("expected no render warnings for %s, got: %s", tt.target, result.stderr)
+		}
+		if result.stdout != tt.want {
+			t.Fatalf("render output for %s drift:\nwant:\n%s\ngot:\n%s", tt.target, tt.want, result.stdout)
+		}
+	}
+}
+
+func TestRunWithStoreRingRenderCodexEnvVarsForRuntimeEnv(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "vault", "--command", commandPath,
+		"--client", "codex",
+		"--required-env", "VAULT_ACCOUNT",
+		"--secret-env", "VAULT_TOKEN",
+		"--env", "VAULT_TOKEN=shhh"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "vault-ring", "--member", "vault"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "ring", "render", "vault-ring", "--client", "codex")
+	if result.code != 0 {
+		t.Fatalf("ring render codex failed: %s", result.stderr)
+	}
+	want := fmt.Sprintf(`[mcp_servers.vault]
+command = %s
+env_vars = ["VAULT_ACCOUNT", "VAULT_TOKEN"]
+`, tomlString(commandPath))
+	if result.stdout != want {
+		t.Fatalf("render output for codex drift:\nwant:\n%s\ngot:\n%s", want, result.stdout)
+	}
+	if strings.Contains(result.stdout, "shhh") {
+		t.Fatalf("expected static secret value to stay out of codex render output, got:\n%s", result.stdout)
+	}
+	if !strings.Contains(result.stderr, "secret env values omitted (VAULT_TOKEN)") {
+		t.Fatalf("expected secret omission warning, got: %s", result.stderr)
 	}
 }
 

@@ -55,8 +55,9 @@ Notes:
 - Rings are named capability sets of servers (`madari ring …`). Members reference registry entries by name — the server manifest stays the single source of truth for command, args, and env.
 - `ring attach` records reference-counted ownership (`ring:<name>` sources) and materializes eligible members; `ring detach` releases it, and an entry only leaves the client config when nothing owns it anymore. Overlapping rings and standalone+ring combinations resolve by refcount, in any order. Attaching onto an entry madari does not manage is refused — even when values match.
 - `ring delete` removes only unattached ring definitions. It refuses while any client scope still records `ring:<name>` ownership and prints scoped detach guidance; deletion never edits client configs or managed state.
-- `ring render` prints a self-contained MCP config to stdout for ephemeral use — `claude --mcp-config <(madari ring render research --client claude-code)` — mutating nothing; secret env values are never emitted. `ring status` shows attached rings and per-server ownership for every client and scope.
+- `ring render` prints a self-contained MCP config to stdout for ephemeral use — `claude --mcp-config <(madari ring render research --client claude-code)` — mutating nothing; secret env values are never emitted. Render targets are independent from persistent sync support: Claude and Gemini emit JSON, while Codex and Vibe emit TOML. `ring status` shows attached rings and per-server ownership for every client and scope.
 - Supported sync clients: `claude-desktop` and `claude-code`.
+- Supported render targets: `claude-code`, `claude-desktop`, `gemini`, `codex`, and `vibe`.
 - Default sync config paths:
   - `claude-desktop`: platform-specific Claude Desktop config path.
   - `claude-code`: `<current working directory>/.mcp.json`.
@@ -64,7 +65,7 @@ Notes:
 - `export` writes a versioned JSON snapshot of server and ring manifests for backup/sharing (stdout by default).
 - `import` is dry-run by default and only adds/updates listed servers and rings (`--apply` persists). Existing servers and rings absent from the snapshot are left unchanged; imported rings are not attached or synced.
 
-Claude Code project config shape (`.mcp.json`):
+Claude and Gemini config shape:
 
 ```json
 {
@@ -78,6 +79,29 @@ Claude Code project config shape (`.mcp.json`):
     }
   }
 }
+```
+
+Codex render output uses TOML tables:
+
+```toml
+[mcp_servers.stewreads]
+command = "/Users/me/.local/bin/stewreads-mcp"
+args = ["--stdio"]
+env_vars = ["STEWREADS_API_KEY"]
+
+[mcp_servers.stewreads.env]
+STEWREADS_CONFIG_PATH = "~/.config/stewreads/config.toml"
+```
+
+Vibe render output uses TOML array entries:
+
+```toml
+[[mcp_servers]]
+name = "stewreads"
+transport = "stdio"
+command = "/Users/me/.local/bin/stewreads-mcp"
+args = ["--stdio"]
+env = { STEWREADS_CONFIG_PATH = "~/.config/stewreads/config.toml" }
 ```
 
 Example:
@@ -107,6 +131,9 @@ madari ring create research --member stewreads --member arxiv
 madari ring attach research claude-code
 madari ring status
 claude --mcp-config <(madari ring render research --client claude-code)
+madari ring render research --client gemini
+madari ring render research --client codex
+madari ring render research --client vibe
 madari ring detach research claude-code
 madari ring delete research
 ```

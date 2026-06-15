@@ -17,7 +17,7 @@ type testAdapter struct {
 	configPath string
 }
 
-func (a testAdapter) Target() string                    { return a.target }
+func (a testAdapter) Target() string                     { return a.target }
 func (a testAdapter) DefaultConfigPath() (string, error) { return a.configPath, nil }
 func (a testAdapter) Sync(_ []registry.Manifest, _ clients.SyncOptions) (clients.SyncResult, error) {
 	return clients.SyncResult{}, nil
@@ -122,6 +122,44 @@ func TestRunMissingRequiredEnvWarns(t *testing.T) {
 	}
 	if len(report.Servers) != 1 || report.Servers[0].Status != StatusWarning {
 		t.Fatalf("expected warning server status, got: %+v", report.Servers)
+	}
+}
+
+func TestRunChecksRenderOnlyServerTarget(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix fixture mode bits are used in this test")
+	}
+	tmp := t.TempDir()
+	store := registry.NewStore(filepath.Join(tmp, "servers"))
+
+	commandPath := writeTestExecutable(t, tmp, "render-only-mcp")
+	if err := store.Save(registry.Manifest{
+		Name:    "render-only",
+		Command: commandPath,
+		Enabled: true,
+		Clients: []string{"codex"},
+		RequiredEnv: registry.RequiredEnv{
+			Keys: []string{"MISSING_RENDER_ENV"},
+		},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+
+	report, err := Run(store, Options{
+		ServerTargets: []string{"codex"},
+		EnvLookup: func(string) string {
+			return ""
+		},
+	})
+	if err != nil {
+		t.Fatalf("doctor run failed: %v", err)
+	}
+
+	if report.Summary.Warning != 1 || report.Summary.Skipped != 0 {
+		t.Fatalf("expected render-only target warning without skip, got: %+v", report.Summary)
+	}
+	if len(report.Servers) != 1 || report.Servers[0].Status != StatusWarning {
+		t.Fatalf("expected render-only server warning, got: %+v", report.Servers)
 	}
 }
 

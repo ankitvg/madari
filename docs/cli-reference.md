@@ -48,6 +48,9 @@ madari ring attach research claude-code --scope user
 madari ring detach research claude-code
 madari ring delete research
 madari ring render research --client claude-code
+madari ring render research --client gemini
+madari ring render research --client codex
+madari ring render research --client vibe
 madari ring status
 ```
 
@@ -74,6 +77,12 @@ nothing — no state, no refcounts. Members are filtered by client
 compatibility; disabled, missing, or command-invalid members are omitted
 with stderr warnings, and static values for `[secret_env]` keys are never
 emitted (the warning names the keys to provide via the runtime environment).
+Render targets are independent from sync adapters. `claude-code`,
+`claude-desktop`, and `gemini` emit JSON with top-level `mcpServers`;
+`codex` emits TOML `[mcp_servers.<name>]` tables; `vibe` emits TOML
+`[[mcp_servers]]` entries with `transport = "stdio"`.
+Codex render output also emits `env_vars = [...]` for `[required_env]` and
+`[secret_env]` keys so runtime-provided environment values can be forwarded.
 Ephemeral-session recipe:
 
 ```bash

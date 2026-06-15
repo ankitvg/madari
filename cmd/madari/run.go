@@ -35,6 +35,22 @@ func supportedSyncTargets() []string {
 	return targets
 }
 
+func supportedDoctorServerTargets() []string {
+	targetSet := map[string]bool{}
+	for _, target := range supportedSyncTargets() {
+		targetSet[target] = true
+	}
+	for _, target := range supportedRingRenderTargets() {
+		targetSet[target] = true
+	}
+	targets := make([]string, 0, len(targetSet))
+	for target := range targetSet {
+		targets = append(targets, target)
+	}
+	sort.Strings(targets)
+	return targets
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		printHelp(stdout)
@@ -795,6 +811,7 @@ func (a cliApp) cmdDoctor(args []string) error {
 	report, err := doctor.Run(a.store, doctor.Options{
 		Adapters:            adapters,
 		ConfigPathOverrides: configPathOverrides,
+		ServerTargets:       supportedDoctorServerTargets(),
 		DriftTargets:        a.driftTargets(adapters, configPathOverrides),
 		Rings:               rings,
 	})
@@ -985,6 +1002,7 @@ func (a cliApp) cmdStatus(args []string) error {
 	report, err := doctor.Run(a.store, doctor.Options{
 		Adapters:            adapters,
 		ConfigPathOverrides: configPathOverrides,
+		ServerTargets:       supportedDoctorServerTargets(),
 		DriftTargets:        a.driftTargets(adapters, configPathOverrides),
 		Rings:               rings,
 	})
@@ -1640,7 +1658,7 @@ func printSyncHelp(out io.Writer) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Sync enabled servers from Madari registry into a target client config.")
-	fmt.Fprintf(out, "  Supported clients: %s.\n", strings.Join(supportedSyncTargets(), ", "))
+	fmt.Fprintf(out, "  Supported sync clients: %s.\n", strings.Join(supportedSyncTargets(), ", "))
 	fmt.Fprintln(out, "  Servers with static values for [secret_env] keys are refused at project")
 	fmt.Fprintln(out, "  scope; sync them with --scope user.")
 }
@@ -1650,7 +1668,7 @@ func printClientsHelp(out io.Writer) {
 	fmt.Fprintln(out, "  madari clients")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  List all supported MCP clients with their config path and readiness status.")
+	fmt.Fprintln(out, "  List all sync-capable MCP clients with their config path and readiness status.")
 	fmt.Fprintln(out, "  Output is sorted by status: error first, then ready, then warn.")
 }
 
@@ -1724,7 +1742,7 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  disable   Disable a server")
 	fmt.Fprintln(out, "  sync      Sync server manifests to a client config")
 	fmt.Fprintln(out, "  ring      Manage rings (named capability sets of servers)")
-	fmt.Fprintln(out, "  clients   List supported clients and config readiness")
+	fmt.Fprintln(out, "  clients   List sync client config readiness")
 	fmt.Fprintln(out, "  doctor    Run diagnostics on local MCP setup")
 	fmt.Fprintln(out, "  status    Show concise readiness summary")
 	fmt.Fprintln(out, "  export    Export registry snapshot")
