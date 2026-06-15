@@ -2290,6 +2290,67 @@ func TestRunWithStoreRingRenderJSONTargets(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreRingRenderTOMLTargets(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	for _, target := range []string{"codex", "vibe"} {
+		if _, ok := syncAdapters[target]; ok {
+			t.Fatalf("%s must not be registered as a sync adapter", target)
+		}
+	}
+
+	if result := runCmd(store, "add", "portable", "--command", commandPath,
+		"--client", "codex",
+		"--client", "vibe",
+		"--arg", "--stdio",
+		"--env", "PORTABLE_MODE=1"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "portable-ring", "--member", "portable"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	tests := []struct {
+		target string
+		want   string
+	}{
+		{
+			target: "codex",
+			want: fmt.Sprintf(`[mcp_servers.portable]
+command = %s
+args = ["--stdio"]
+
+[mcp_servers.portable.env]
+PORTABLE_MODE = "1"
+`, tomlString(commandPath)),
+		},
+		{
+			target: "vibe",
+			want: fmt.Sprintf(`[[mcp_servers]]
+name = "portable"
+transport = "stdio"
+command = %s
+args = ["--stdio"]
+env = { PORTABLE_MODE = "1" }
+`, tomlString(commandPath)),
+		},
+	}
+
+	for _, tt := range tests {
+		result := runCmd(store, "ring", "render", "portable-ring", "--client", tt.target)
+		if result.code != 0 {
+			t.Fatalf("ring render %s failed: %s", tt.target, result.stderr)
+		}
+		if result.stderr != "" {
+			t.Fatalf("expected no render warnings for %s, got: %s", tt.target, result.stderr)
+		}
+		if result.stdout != tt.want {
+			t.Fatalf("render output for %s drift:\nwant:\n%s\ngot:\n%s", tt.target, tt.want, result.stdout)
+		}
+	}
+}
+
 func TestRunWithStoreRingStatus(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
