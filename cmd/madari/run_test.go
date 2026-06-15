@@ -2308,7 +2308,9 @@ func TestRunWithStoreRingRenderTOMLTargets(t *testing.T) {
 		"--client", "codex",
 		"--client", "vibe",
 		"--arg", "--stdio",
-		"--env", "PORTABLE_MODE=1"); result.code != 0 {
+		"--env", "PORTABLE_MODE=1",
+		"--required-env", "PORTABLE_TOKEN",
+		"--secret-env", "PORTABLE_SECRET"); result.code != 0 {
 		t.Fatalf("setup add failed: %s", result.stderr)
 	}
 	if result := runCmd(store, "ring", "create", "portable-ring", "--member", "portable"); result.code != 0 {
@@ -2324,6 +2326,7 @@ func TestRunWithStoreRingRenderTOMLTargets(t *testing.T) {
 			want: fmt.Sprintf(`[mcp_servers.portable]
 command = %s
 args = ["--stdio"]
+env_vars = ["PORTABLE_SECRET", "PORTABLE_TOKEN"]
 
 [mcp_servers.portable.env]
 PORTABLE_MODE = "1"
@@ -2352,6 +2355,40 @@ env = { PORTABLE_MODE = "1" }
 		if result.stdout != tt.want {
 			t.Fatalf("render output for %s drift:\nwant:\n%s\ngot:\n%s", tt.target, tt.want, result.stdout)
 		}
+	}
+}
+
+func TestRunWithStoreRingRenderCodexEnvVarsForRuntimeEnv(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "vault", "--command", commandPath,
+		"--client", "codex",
+		"--required-env", "VAULT_ACCOUNT",
+		"--secret-env", "VAULT_TOKEN",
+		"--env", "VAULT_TOKEN=shhh"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "vault-ring", "--member", "vault"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "ring", "render", "vault-ring", "--client", "codex")
+	if result.code != 0 {
+		t.Fatalf("ring render codex failed: %s", result.stderr)
+	}
+	want := fmt.Sprintf(`[mcp_servers.vault]
+command = %s
+env_vars = ["VAULT_ACCOUNT", "VAULT_TOKEN"]
+`, tomlString(commandPath))
+	if result.stdout != want {
+		t.Fatalf("render output for codex drift:\nwant:\n%s\ngot:\n%s", want, result.stdout)
+	}
+	if strings.Contains(result.stdout, "shhh") {
+		t.Fatalf("expected static secret value to stay out of codex render output, got:\n%s", result.stdout)
+	}
+	if !strings.Contains(result.stderr, "secret env values omitted (VAULT_TOKEN)") {
+		t.Fatalf("expected secret omission warning, got: %s", result.stderr)
 	}
 }
 

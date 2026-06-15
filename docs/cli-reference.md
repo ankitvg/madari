@@ -81,6 +81,8 @@ Render targets are independent from sync adapters. `claude-code`,
 `claude-desktop`, and `gemini` emit JSON with top-level `mcpServers`;
 `codex` emits TOML `[mcp_servers.<name>]` tables; `vibe` emits TOML
 `[[mcp_servers]]` entries with `transport = "stdio"`.
+Codex render output also emits `env_vars = [...]` for `[required_env]` and
+`[secret_env]` keys so runtime-provided environment values can be forwarded.
 Ephemeral-session recipe:
 
 ```bash

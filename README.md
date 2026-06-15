@@ -87,6 +87,7 @@ Codex render output uses TOML tables:
 [mcp_servers.stewreads]
 command = "/Users/me/.local/bin/stewreads-mcp"
 args = ["--stdio"]
+env_vars = ["STEWREADS_API_KEY"]
 
 [mcp_servers.stewreads.env]
 STEWREADS_CONFIG_PATH = "~/.config/stewreads/config.toml"

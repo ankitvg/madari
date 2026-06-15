@@ -12,9 +12,10 @@ import (
 
 // renderedServer is the self-contained client config entry ring render emits.
 type renderedServer struct {
-	Command string            `json:"command"`
-	Args    []string          `json:"args,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
+	Command        string            `json:"command"`
+	Args           []string          `json:"args,omitempty"`
+	Env            map[string]string `json:"env,omitempty"`
+	RuntimeEnvKeys []string          `json:"-"`
 }
 
 type ringRenderTarget struct {
@@ -55,6 +56,9 @@ func renderCodexTOML(out io.Writer, servers map[string]renderedServer) error {
 		if len(entry.Args) > 0 {
 			fmt.Fprintf(out, "args = %s\n", tomlStringArray(entry.Args))
 		}
+		if len(entry.RuntimeEnvKeys) > 0 {
+			fmt.Fprintf(out, "env_vars = %s\n", tomlStringArray(entry.RuntimeEnvKeys))
+		}
 		if len(entry.Env) > 0 {
 			fmt.Fprintln(out)
 			fmt.Fprintf(out, "[mcp_servers.%s.env]\n", tomlKey(name))
@@ -85,6 +89,25 @@ func renderVibeTOML(out io.Writer, servers map[string]renderedServer) error {
 		}
 	}
 	return nil
+}
+
+func runtimeEnvKeys(keyGroups ...[]string) []string {
+	seen := map[string]bool{}
+	for _, keys := range keyGroups {
+		for _, key := range keys {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				continue
+			}
+			seen[key] = true
+		}
+	}
+	keys := make([]string, 0, len(seen))
+	for key := range seen {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func sortedServerNames(servers map[string]renderedServer) []string {

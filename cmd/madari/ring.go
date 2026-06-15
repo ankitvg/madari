@@ -312,7 +312,7 @@ func (a cliApp) cmdRingRender(args []string) error {
 
 	// Render mutates nothing: no state, no refcounts, no config files. The
 	// output is a self-contained config for ephemeral use (for example
-	// `claude --mcp-config`); stdout carries only the JSON document.
+	// `claude --mcp-config`); stdout carries only the rendered config.
 	servers := map[string]renderedServer{}
 	members := append([]string(nil), ring.Members...)
 	sort.Strings(members)
@@ -339,6 +339,7 @@ func (a cliApp) cmdRingRender(args []string) error {
 		if len(manifest.Args) > 0 {
 			entry.Args = append([]string(nil), manifest.Args...)
 		}
+		entry.RuntimeEnvKeys = runtimeEnvKeys(manifest.RequiredEnv.Keys, manifest.SecretEnv.Keys)
 		secret := make(map[string]bool, len(manifest.SecretEnv.Keys))
 		for _, key := range manifest.SecretEnv.Keys {
 			secret[strings.TrimSpace(key)] = true
