@@ -28,14 +28,18 @@ madari sync claude-desktop
 madari sync claude-code --dry-run
 madari sync claude-code
 madari sync claude-code --scope user
+madari sync gemini --dry-run
+madari sync gemini
+madari sync gemini --scope user
 ```
 
-`--scope` applies to `claude-code` only: `project` (default) targets the
-repo-scoped `.mcp.json`, `user` targets the user-scoped `~/.claude.json`.
-Each scope tracks its managed entries independently. Servers carrying static
-values for `[secret_env]` keys are refused per entry at project scope (other
-servers keep syncing; a previously materialized secret entry is scrubbed)
-and must sync with `--scope user`.
+`--scope` applies to clients with project and user configs: `claude-code`
+(`.mcp.json` or `~/.claude.json`) and `gemini` (`.gemini/settings.json` or
+`~/.gemini/settings.json`). `project` is the default. Each scope tracks its
+managed entries independently. Servers carrying static values for
+`[secret_env]` keys are refused per entry at project scope (other servers
+keep syncing; a previously materialized secret entry is scrubbed) and must
+sync with `--scope user`.
 
 ## Rings
 
@@ -45,7 +49,10 @@ madari ring list
 madari ring show research
 madari ring attach research claude-code
 madari ring attach research claude-code --scope user
+madari ring attach research gemini
+madari ring attach research gemini --scope user
 madari ring detach research claude-code
+madari ring detach research gemini
 madari ring delete research
 madari ring render research --client claude-code
 madari ring render research --client gemini
@@ -174,12 +181,15 @@ summaries cover every sync target):
   "summary": {"total": 1, "ready": 1, "warning": 0, "error": 0, "skipped": 0},
   "client_configs": [
     {"target": "claude-code", "status": "skipped"},
-    {"target": "claude-desktop", "status": "ready"}
+    {"target": "claude-desktop", "status": "ready"},
+    {"target": "gemini", "status": "skipped"}
   ],
   "managed": [
     {"target": "claude-code", "scope": "default", "entries": 0, "sources": []},
     {"target": "claude-code", "scope": "user", "entries": 0, "sources": []},
-    {"target": "claude-desktop", "scope": "default", "entries": 1, "sources": ["standalone"]}
+    {"target": "claude-desktop", "scope": "default", "entries": 1, "sources": ["standalone"]},
+    {"target": "gemini", "scope": "default", "entries": 0, "sources": []},
+    {"target": "gemini", "scope": "user", "entries": 0, "sources": []}
   ],
   "manifest_errors": 0,
   "drift": [
@@ -359,3 +369,4 @@ madari version
 
 - `claude-desktop`
 - `claude-code`
+- `gemini`

@@ -23,9 +23,9 @@ Known client IDs:
 - `codex`
 - `vibe`
 
-`claude-desktop` and `claude-code` are sync-capable today. `gemini`,
-`codex`, and `vibe` are render targets for `madari ring render`; they are
-not persistent sync targets unless adapter support is added separately.
+`claude-desktop`, `claude-code`, and `gemini` are sync-capable today.
+`codex` and `vibe` are render targets for `madari ring render`; they are not
+persistent sync targets unless adapter support is added separately.
 
 ### `[env]`
 
@@ -39,8 +39,9 @@ Key/value static environment variables.
 
 - `keys` (array of strings): env vars whose values are secrets. Sync refuses
   to materialize a static `[env]` value for a secret key into repo-scoped
-  client configs (for example the Claude Code project `.mcp.json`); secret
-  values may only land in user-scoped configs.
+  client configs (for example Claude Code `.mcp.json` or Gemini
+  `.gemini/settings.json`); secret values may only land in user-scoped
+  configs.
 
 ## Example
 

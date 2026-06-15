@@ -49,18 +49,19 @@ Notes:
 - `install --manager npm` requires `--command` because npm package names can differ from executable names.
 - `add` resolves `--command` to an absolute executable path and stores that path in the manifest.
 - `sync` skips servers with missing/non-executable command paths and continues syncing others.
-- Manifests can mark secret env keys (`[secret_env]`, or `--secret-env` on `add`/`install`); sync refuses to write their static values into the repo-scoped Claude Code `.mcp.json` — refused entries are reported with guidance (and scrubbed if previously materialized) while other servers sync normally. Use `madari sync claude-code --scope user` to materialize them into the user-scoped `~/.claude.json` instead.
+- Manifests can mark secret env keys (`[secret_env]`, or `--secret-env` on `add`/`install`); sync refuses to write their static values into repo-scoped configs such as Claude Code `.mcp.json` and Gemini `.gemini/settings.json` — refused entries are reported with guidance (and scrubbed if previously materialized) while other servers sync normally. Use `madari sync <client> --scope user` for clients that support user scope.
 - `list` shows the managed sources owning each synced entry (`standalone` today; `-` when not synced), and `status` summarizes managed entries per client.
 - `list`, `status`, `doctor`, `sync --dry-run`, `ring list`, `ring show`, and `ring status` accept `--json` for machine-readable output with a versioned schema; schemas and exit codes are documented in `docs/cli-reference.md`.
 - Rings are named capability sets of servers (`madari ring …`). Members reference registry entries by name — the server manifest stays the single source of truth for command, args, and env.
 - `ring attach` records reference-counted ownership (`ring:<name>` sources) and materializes eligible members; `ring detach` releases it, and an entry only leaves the client config when nothing owns it anymore. Overlapping rings and standalone+ring combinations resolve by refcount, in any order. Attaching onto an entry madari does not manage is refused — even when values match.
 - `ring delete` removes only unattached ring definitions. It refuses while any client scope still records `ring:<name>` ownership and prints scoped detach guidance; deletion never edits client configs or managed state.
 - `ring render` prints a self-contained MCP config to stdout for ephemeral use — `claude --mcp-config <(madari ring render research --client claude-code)` — mutating nothing; secret env values are never emitted. Render targets are independent from persistent sync support: Claude and Gemini emit JSON, while Codex and Vibe emit TOML. `ring status` shows attached rings and per-server ownership for every client and scope.
-- Supported sync clients: `claude-desktop` and `claude-code`.
+- Supported sync clients: `claude-desktop`, `claude-code`, and `gemini`.
 - Supported render targets: `claude-code`, `claude-desktop`, `gemini`, `codex`, and `vibe`.
 - Default sync config paths:
   - `claude-desktop`: platform-specific Claude Desktop config path.
   - `claude-code`: `<current working directory>/.mcp.json`.
+  - `gemini`: `<current working directory>/.gemini/settings.json`.
 - `install --config-path` can only be used when exactly one sync target is selected.
 - `export` writes a versioned JSON snapshot of server and ring manifests for backup/sharing (stdout by default).
 - `import` is dry-run by default and only adds/updates listed servers and rings (`--apply` persists). Existing servers and rings absent from the snapshot are left unchanged; imported rings are not attached or synced.
@@ -111,10 +112,12 @@ madari install stewreads-mcp
 madari install @modelcontextprotocol/server-sequential-thinking --manager npm --command mcp-server-sequential-thinking
 madari add stewreads --command /Users/me/.local/bin/stewreads-mcp --client claude-desktop
 madari add stewreads --command /Users/me/.local/bin/stewreads-mcp --client claude-code
+madari add stewreads --command /Users/me/.local/bin/stewreads-mcp --client gemini
 madari list
 madari status
 madari sync claude-desktop --dry-run
 madari sync claude-code --dry-run
+madari sync gemini --dry-run
 madari export --file madari-snapshot.json
 madari import --file madari-snapshot.json
 madari import --file madari-snapshot.json --apply
@@ -129,12 +132,14 @@ spin it up ephemerally:
 ```bash
 madari ring create research --member stewreads --member arxiv
 madari ring attach research claude-code
+madari ring attach research gemini
 madari ring status
 claude --mcp-config <(madari ring render research --client claude-code)
 madari ring render research --client gemini
 madari ring render research --client codex
 madari ring render research --client vibe
 madari ring detach research claude-code
+madari ring detach research gemini
 madari ring delete research
 ```
 
@@ -160,7 +165,7 @@ go test ./...
 - Reference-counted ring ownership: entries leave a client config only when nothing owns them
 - `doctor` and `status` for diagnostics, drift detection, and ring consistency
 - Supports `uv` and `npm` package manager installs, plus manual `add` for any runtime/framework
-- macOS, Linux, and Windows; supports Claude Desktop and Claude Code sync targets
+- macOS, Linux, and Windows; supports Claude Desktop, Claude Code, and Gemini sync targets
 
 ## Principles
 
