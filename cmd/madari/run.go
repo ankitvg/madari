@@ -14,6 +14,7 @@ import (
 	"github.com/ankitvg/madari/internal/clients"
 	claudedesktop "github.com/ankitvg/madari/internal/clients/claude-desktop"
 	"github.com/ankitvg/madari/internal/clients/claudecode"
+	"github.com/ankitvg/madari/internal/clients/gemini"
 	"github.com/ankitvg/madari/internal/clients/syncshared"
 	"github.com/ankitvg/madari/internal/doctor"
 	"github.com/ankitvg/madari/internal/registry"
@@ -24,6 +25,7 @@ var version = "0.0.0-dev"
 var syncAdapters = map[string]clients.ClientAdapter{
 	claudedesktop.Target: claudedesktop.Adapter{},
 	claudecode.Target:    claudecode.Adapter{},
+	gemini.Target:        gemini.Adapter{},
 }
 
 func supportedSyncTargets() []string {
@@ -199,7 +201,7 @@ func (a cliApp) cmdInstall(args []string) error {
 	fs.StringVar(&command, "command", "", "Server command (defaults to package name)")
 	fs.StringVar(&description, "description", "", "Server description")
 	fs.StringVar(&manager, "manager", "uv", "Package manager used for installation")
-	fs.StringVar(&configPath, "config-path", "", "Override Claude config path for sync")
+	fs.StringVar(&configPath, "config-path", "", "Override target client config path for sync")
 	fs.BoolVar(&disabled, "disabled", false, "Create server in disabled state")
 	fs.BoolVar(&noSync, "no-sync", false, "Skip automatic sync after install")
 	fs.BoolVar(&skipInstall, "skip-install", false, "Skip package installation step")
@@ -476,8 +478,8 @@ type managedStateRef struct {
 	path   string
 }
 
-// managedStateRefs lists every managed-state file across sync targets;
-// claude-code has one per scope.
+// managedStateRefs lists every managed-state file across sync targets; clients
+// with both project- and user-scoped configs have one per scope.
 func (a cliApp) managedStateRefs() []managedStateRef {
 	refs := []managedStateRef{}
 	for _, adapter := range sortedAdapters() {
@@ -485,7 +487,7 @@ func (a cliApp) managedStateRefs() []managedStateRef {
 			target: adapter.Target(),
 			path:   a.managedStatePath(adapter.Target()),
 		})
-		if adapter.Target() == claudecode.Target {
+		if targetSupportsUserScope(adapter.Target()) {
 			refs = append(refs, managedStateRef{
 				target: adapter.Target(),
 				scope:  clients.ScopeUser,
@@ -497,7 +499,7 @@ func (a cliApp) managedStateRefs() []managedStateRef {
 }
 
 // driftTargets enumerates the managed-state/config pairs doctor and status
-// diff for drift; claude-code gets one per scope.
+// diff for drift; clients with user scope get one per scope.
 func (a cliApp) driftTargets(adapters []clients.ClientAdapter, configPathOverrides map[string]string) []doctor.DriftTarget {
 	targets := make([]doctor.DriftTarget, 0, len(adapters)+1)
 	for _, adapter := range adapters {
@@ -506,7 +508,7 @@ func (a cliApp) driftTargets(adapters []clients.ClientAdapter, configPathOverrid
 			StatePath:  a.managedStatePath(adapter.Target()),
 			ConfigPath: configPathOverrides[adapter.Target()],
 		})
-		if adapter.Target() == claudecode.Target {
+		if targetSupportsUserScope(adapter.Target()) {
 			targets = append(targets, doctor.DriftTarget{
 				Adapter:   adapter,
 				Scope:     clients.ScopeUser,
@@ -634,7 +636,7 @@ func (a cliApp) cmdSync(args []string) error {
 	fs.BoolVar(&dryRun, "dry-run", false, "Preview changes without writing files")
 	fs.StringVar(&configPath, "config-path", "", "Override client config path")
 	fs.BoolVar(&jsonOut, "json", false, "Emit JSON instead of text (requires --dry-run)")
-	fs.StringVar(&scope, "scope", "", "Target config scope for claude-code: project (default) or user")
+	fs.StringVar(&scope, "scope", "", "Target config scope for supported clients: project (default) or user")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printSyncHelp(a.stdout)
@@ -650,8 +652,8 @@ func (a cliApp) cmdSync(args []string) error {
 	}
 	scope = strings.TrimSpace(scope)
 	if scope != "" {
-		if target != claudecode.Target {
-			return commandInputError("sync", fmt.Sprintf("--scope is only supported for %s", claudecode.Target))
+		if !targetSupportsUserScope(target) {
+			return commandInputError("sync", fmt.Sprintf("--scope is only supported for %s", strings.Join(userScopedSyncTargets(), ", ")))
 		}
 		if scope != clients.ScopeProject && scope != clients.ScopeUser {
 			return commandInputError("sync", fmt.Sprintf("unknown scope %q (supported: %s, %s)", scope, clients.ScopeProject, clients.ScopeUser))
@@ -1261,6 +1263,25 @@ func sortedAdapters() []clients.ClientAdapter {
 	return adapters
 }
 
+func userScopedSyncTargets() []string {
+	targets := []string{}
+	for _, target := range supportedSyncTargets() {
+		if targetSupportsUserScope(target) {
+			targets = append(targets, target)
+		}
+	}
+	return targets
+}
+
+func targetSupportsUserScope(target string) bool {
+	switch target {
+	case claudecode.Target, gemini.Target:
+		return true
+	default:
+		return false
+	}
+}
+
 func parseClientConfigOverrides(pairs []string) (map[string]string, error) {
 	overrides := map[string]string{}
 	for _, pair := range pairs {
@@ -1653,8 +1674,8 @@ func printSyncHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --dry-run                  Preview changes without writing files")
 	fmt.Fprintln(out, "  --config-path <path>       Override target client config path")
 	fmt.Fprintln(out, "  --json                     Emit JSON instead of text (requires --dry-run)")
-	fmt.Fprintln(out, "  --scope project|user       Claude Code only: target the repo-scoped .mcp.json")
-	fmt.Fprintln(out, "                             (project, default) or the user-scoped ~/.claude.json")
+	fmt.Fprintf(out, "  --scope project|user       Supported by %s; project is the default\n", strings.Join(userScopedSyncTargets(), ", "))
+	fmt.Fprintln(out, "                             and user targets the client's user config")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Sync enabled servers from Madari registry into a target client config.")

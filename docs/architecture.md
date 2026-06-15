@@ -18,7 +18,7 @@
 
 2. Client Adapters
 - Translate registry entries into client-specific config.
-- Current adapters: Claude Desktop and Claude Code.
+- Current adapters: Claude Desktop, Claude Code, and Gemini.
 - Adapters own read/merge/write behavior for their client format.
 
 3. Sync Engine
@@ -29,7 +29,7 @@
 
 4. Managed Sync State (ownership)
 - Path: `<config-root>/state/<target>-managed.json`, one file per sync
-  target and scope (Claude Code has separate project- and user-scope files).
+  target and scope (project/user-scoped clients have separate state files).
 - Versioned JSON (current: version 2) mapping each managed server name to
   the sources that own it: `standalone` and/or `ring:<name>`.
 - Version 1 files (bare name lists) are read transparently as

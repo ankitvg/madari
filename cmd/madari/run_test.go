@@ -914,6 +914,46 @@ func TestRunWithStoreSyncClaudeCodeApply(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreSyncGeminiApply(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	addResult := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "gemini")
+	if addResult.code != 0 {
+		t.Fatalf("setup add failed: %s", addResult.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), ".gemini", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("create config dir: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{"weather":{"command":"uv"}}}`), 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	result := runCmd(store, "sync", "gemini", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("sync apply failed with stderr: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "mode: applied") {
+		t.Fatalf("expected applied mode output, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "sync target: gemini") {
+		t.Fatalf("expected gemini target output, got: %s", result.stdout)
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after sync: %v", err)
+	}
+	if !strings.Contains(string(after), "\"stewreads\"") {
+		t.Fatalf("expected synced config to include stewreads server, got: %s", string(after))
+	}
+	if !strings.Contains(string(after), "\"weather\"") {
+		t.Fatalf("expected synced config to preserve existing weather server, got: %s", string(after))
+	}
+}
+
 func TestRunWithStoreSyncSkipsMissingExecutable(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("executable fixture handling not needed in this test environment")
@@ -1121,6 +1161,9 @@ func TestRunWithStoreClientsListsAllAdapters(t *testing.T) {
 	if !strings.Contains(result.stdout, "claude-code") {
 		t.Fatalf("expected claude-code in clients output, got: %s", result.stdout)
 	}
+	if !strings.Contains(result.stdout, "gemini") {
+		t.Fatalf("expected gemini in clients output, got: %s", result.stdout)
+	}
 }
 
 func TestRunWithStoreClientsShowsHeaderAndStatus(t *testing.T) {
@@ -1235,6 +1278,39 @@ func TestRunWithStoreDoctorReturnsErrorForInvalidClaudeCodeConfig(t *testing.T) 
 	}
 	if !strings.Contains(result.stdout, "claude-code config:") {
 		t.Fatalf("expected doctor output to include claude-code config details, got: %s", result.stdout)
+	}
+}
+
+func TestRunWithStoreDoctorAndStatusInspectGeminiConfig(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "gemini"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), ".gemini", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("create config dir: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
+		t.Fatalf("write Gemini config fixture: %v", err)
+	}
+
+	result := runCmd(store, "doctor", "--client-config", "gemini="+configPath)
+	if result.code != 0 {
+		t.Fatalf("doctor expected success, got code=%d stderr=%s stdout=%s", result.code, result.stderr, result.stdout)
+	}
+	if !strings.Contains(result.stdout, "gemini config:") {
+		t.Fatalf("expected doctor output to include gemini config details, got: %s", result.stdout)
+	}
+
+	result = runCmd(store, "status", "--client-config", "gemini="+configPath)
+	if result.code != 0 {
+		t.Fatalf("status expected success, got code=%d stderr=%s stdout=%s", result.code, result.stderr, result.stdout)
+	}
+	if !strings.Contains(result.stdout, "gemini-config: ready") {
+		t.Fatalf("expected status output to include gemini config readiness, got: %s", result.stdout)
 	}
 }
 
@@ -1583,7 +1659,7 @@ func TestRunWithStoreSyncScopeValidation(t *testing.T) {
 	if result.code == 0 {
 		t.Fatalf("expected --scope on claude-desktop to fail")
 	}
-	if !strings.Contains(result.stderr, "--scope is only supported for claude-code") {
+	if !strings.Contains(result.stderr, "--scope is only supported for claude-code, gemini") {
 		t.Fatalf("expected scope support error, got: %s", result.stderr)
 	}
 
@@ -1639,7 +1715,7 @@ func TestRunWithStoreSecretEnvPlacementFlow(t *testing.T) {
 	}
 
 	// status counts user-scope managed entries (no exit-code assertion:
-	// user-scope drift inspects the machine's real ~/.claude.json).
+	// user-scope drift inspects the machine's real user config).
 	result = runCmd(store, "status", "--client-config", "claude-code="+projectConfig)
 	if !strings.Contains(result.stdout, "claude-code-user-managed: entries=1 sources=standalone") {
 		t.Fatalf("expected user-scope managed summary in status, got: %s", result.stdout)
@@ -2165,6 +2241,49 @@ func TestRunWithStoreRingAttachDetachFlow(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreRingAttachDetachGemini(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "gemini"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "research", "--member", "stewreads"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), ".gemini", "settings.json")
+	result := runCmd(store, "ring", "attach", "research", "gemini", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("attach failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "sync target: gemini") || !strings.Contains(result.stdout, "added: stewreads") {
+		t.Fatalf("expected gemini attach output, got: %s", result.stdout)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read Gemini config after attach: %v", err)
+	}
+	if !strings.Contains(string(after), "\"stewreads\"") {
+		t.Fatalf("expected attached ring member in Gemini config, got: %s", after)
+	}
+
+	result = runCmd(store, "ring", "detach", "research", "gemini", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("detach failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "removed: stewreads") {
+		t.Fatalf("expected gemini detach removal, got: %s", result.stdout)
+	}
+	after, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read Gemini config after detach: %v", err)
+	}
+	if strings.Contains(string(after), "\"stewreads\"") {
+		t.Fatalf("expected detached ring member removed from Gemini config, got: %s", after)
+	}
+}
+
 func TestRunWithStoreRingAttachWarnsDisabledMember(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
@@ -2273,10 +2392,6 @@ func TestRunWithStoreRingRender(t *testing.T) {
 func TestRunWithStoreRingRenderJSONTargets(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
-
-	if _, ok := syncAdapters["gemini"]; ok {
-		t.Fatal("gemini must not be registered as a sync adapter")
-	}
 
 	if result := runCmd(store, "add", "portable", "--command", commandPath,
 		"--client", "claude-desktop",
