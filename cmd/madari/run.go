@@ -14,6 +14,7 @@ import (
 	"github.com/ankitvg/madari/internal/clients"
 	claudedesktop "github.com/ankitvg/madari/internal/clients/claude-desktop"
 	"github.com/ankitvg/madari/internal/clients/claudecode"
+	"github.com/ankitvg/madari/internal/clients/codex"
 	"github.com/ankitvg/madari/internal/clients/gemini"
 	"github.com/ankitvg/madari/internal/clients/syncshared"
 	"github.com/ankitvg/madari/internal/doctor"
@@ -25,6 +26,7 @@ var version = "0.0.0-dev"
 var syncAdapters = map[string]clients.ClientAdapter{
 	claudedesktop.Target: claudedesktop.Adapter{},
 	claudecode.Target:    claudecode.Adapter{},
+	codex.Target:         codex.Adapter{},
 	gemini.Target:        gemini.Adapter{},
 }
 

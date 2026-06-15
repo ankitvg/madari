@@ -12,6 +12,7 @@ import (
 	"github.com/ankitvg/madari/internal/clients"
 	"github.com/ankitvg/madari/internal/clients/syncshared"
 	"github.com/ankitvg/madari/internal/registry"
+	"github.com/pelletier/go-toml/v2"
 )
 
 type Status string
@@ -178,7 +179,7 @@ func Run(store *registry.Store, opts Options) (Report, error) {
 		if err != nil {
 			return Report{}, err
 		}
-		cr := inspectClientConfig(configPath)
+		cr := inspectClientConfig(adapter.Target(), configPath)
 		cr.Target = adapter.Target()
 		report.ClientConfigs = append(report.ClientConfigs, cr)
 	}
@@ -413,10 +414,10 @@ func resolveAdapterConfigPath(adapter clients.ClientAdapter, overrides map[strin
 }
 
 func InspectConfigPath(path string) ClientConfigReport {
-	return inspectClientConfig(path)
+	return inspectClientConfig("", path)
 }
 
-func inspectClientConfig(path string) ClientConfigReport {
+func inspectClientConfig(target, path string) ClientConfigReport {
 	report := ClientConfigReport{Path: path}
 	payload, err := os.ReadFile(path)
 	if err != nil {
@@ -431,6 +432,13 @@ func inspectClientConfig(path string) ClientConfigReport {
 	}
 
 	report.Exists = true
+	if target == "codex" || filepath.Ext(path) == ".toml" {
+		return inspectTOMLClientConfig(payload, report)
+	}
+	return inspectJSONClientConfig(payload, report)
+}
+
+func inspectJSONClientConfig(payload []byte, report ClientConfigReport) ClientConfigReport {
 	root := map[string]json.RawMessage{}
 	if err := json.Unmarshal(payload, &root); err != nil {
 		report.Status = StatusError
@@ -443,6 +451,30 @@ func inspectClientConfig(path string) ClientConfigReport {
 		if err := json.Unmarshal(raw, &servers); err != nil {
 			report.Status = StatusError
 			report.Message = fmt.Sprintf("invalid mcpServers object: %v", err)
+			return report
+		}
+	}
+
+	report.Status = StatusReady
+	report.Message = "ok"
+	return report
+}
+
+func inspectTOMLClientConfig(payload []byte, report ClientConfigReport) ClientConfigReport {
+	root := map[string]any{}
+	if err := toml.Unmarshal(payload, &root); err != nil {
+		report.Status = StatusError
+		report.Message = fmt.Sprintf("invalid TOML: %v", err)
+		return report
+	}
+
+	if raw, exists := root["mcp_servers"]; exists {
+		switch raw.(type) {
+		case map[string]any, []any:
+			// Codex uses a table; Vibe uses an array of tables.
+		default:
+			report.Status = StatusError
+			report.Message = "invalid mcp_servers value: expected table or array"
 			return report
 		}
 	}
