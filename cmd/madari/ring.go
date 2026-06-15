@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/ankitvg/madari/internal/clients"
-	"github.com/ankitvg/madari/internal/clients/claudecode"
 	"github.com/ankitvg/madari/internal/clients/syncshared"
 	"github.com/ankitvg/madari/internal/registry"
 )
@@ -402,7 +401,7 @@ func (a cliApp) parseRingOpArgs(command string, args []string, usage string, pri
 	fs.SetOutput(io.Discard)
 	fs.BoolVar(&dryRun, "dry-run", false, "Preview changes without writing files")
 	fs.StringVar(&configPath, "config-path", "", "Override client config path")
-	fs.StringVar(&scope, "scope", "", "Target config scope for claude-code: project (default) or user")
+	fs.StringVar(&scope, "scope", "", "Target config scope for supported clients: project (default) or user")
 	if parseErr := fs.Parse(args[2:]); parseErr != nil {
 		if errors.Is(parseErr, flag.ErrHelp) {
 			printHelp(a.stdout)
@@ -416,8 +415,8 @@ func (a cliApp) parseRingOpArgs(command string, args []string, usage string, pri
 
 	scope = strings.TrimSpace(scope)
 	if scope != "" {
-		if target != claudecode.Target {
-			return "", "", "", "", false, commandInputError(command, fmt.Sprintf("--scope is only supported for %s", claudecode.Target))
+		if !targetSupportsUserScope(target) {
+			return "", "", "", "", false, commandInputError(command, fmt.Sprintf("--scope is only supported for %s", strings.Join(userScopedSyncTargets(), ", ")))
 		}
 		if scope != clients.ScopeProject && scope != clients.ScopeUser {
 			return "", "", "", "", false, commandInputError(command, fmt.Sprintf("unknown scope %q (supported: %s, %s)", scope, clients.ScopeProject, clients.ScopeUser))
@@ -830,7 +829,7 @@ func printRingAttachHelp(out io.Writer) {
 	fmt.Fprintln(out, "  madari ring attach <ring> <client> [--scope project|user] [--dry-run] [--config-path <path>]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
-	fmt.Fprintln(out, "  --scope project|user       Claude Code only: target scope (default: project)")
+	fmt.Fprintf(out, "  --scope project|user       Supported by %s (default: project)\n", strings.Join(userScopedSyncTargets(), ", "))
 	fmt.Fprintln(out, "  --dry-run                  Preview changes without writing files")
 	fmt.Fprintln(out, "  --config-path <path>       Override client config path")
 	fmt.Fprintln(out)
@@ -846,7 +845,7 @@ func printRingDetachHelp(out io.Writer) {
 	fmt.Fprintln(out, "  madari ring detach <ring> <client> [--scope project|user] [--dry-run] [--config-path <path>]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
-	fmt.Fprintln(out, "  --scope project|user       Claude Code only: target scope (default: project)")
+	fmt.Fprintf(out, "  --scope project|user       Supported by %s (default: project)\n", strings.Join(userScopedSyncTargets(), ", "))
 	fmt.Fprintln(out, "  --dry-run                  Preview changes without writing files")
 	fmt.Fprintln(out, "  --config-path <path>       Override client config path")
 	fmt.Fprintln(out)
