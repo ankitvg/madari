@@ -442,6 +442,46 @@ func TestRunInspectsVibeTOMLClientConfig(t *testing.T) {
 	if cc.Status != StatusError || !strings.Contains(cc.Message, "expected array") {
 		t.Fatalf("expected Vibe to reject table mcp_servers, got: %+v", cc)
 	}
+
+	invalidCommands := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{
+			name:    "missing stdio command",
+			payload: "[[mcp_servers]]\nname = \"broken\"\ntransport = \"stdio\"\n",
+			want:    "command",
+		},
+		{
+			name:    "non-string stdio command",
+			payload: "[[mcp_servers]]\nname = \"broken\"\ntransport = \"stdio\"\ncommand = 1\n",
+			want:    "expected string or array of strings",
+		},
+		{
+			name:    "empty string stdio command",
+			payload: "[[mcp_servers]]\nname = \"broken\"\ntransport = \"stdio\"\ncommand = \"\"\n",
+			want:    "expected non-empty string",
+		},
+	}
+	for _, tc := range invalidCommands {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(configPath, []byte(tc.payload), 0o644); err != nil {
+				t.Fatalf("write invalid command toml config: %v", err)
+			}
+			report, err = Run(store, Options{Adapters: []clients.ClientAdapter{adapter}})
+			if err != nil {
+				t.Fatalf("doctor run failed: %v", err)
+			}
+			cc, ok = findClientConfig(report, "vibe")
+			if !ok {
+				t.Fatalf("expected vibe client config report, got: %+v", report.ClientConfigs)
+			}
+			if cc.Status != StatusError || !strings.Contains(cc.Message, tc.want) {
+				t.Fatalf("expected Vibe to reject %s, got: %+v", tc.name, cc)
+			}
+		})
+	}
 }
 
 func TestRunSelectsConfigParserByClientTarget(t *testing.T) {
