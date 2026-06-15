@@ -33,6 +33,8 @@ madari sync gemini
 madari sync gemini --scope user
 madari sync codex --dry-run
 madari sync codex
+madari sync vibe --dry-run
+madari sync vibe
 ```
 
 `--scope` applies to clients with project and user configs: `claude-code`
@@ -49,6 +51,11 @@ values are written under `[mcp_servers.<name>.env]`; `[required_env]` and
 `[secret_env]` keys are forwarded through `env_vars`, and static secret
 values are not written into Codex config.
 
+`vibe` sync targets Vibe's user config (`$VIBE_HOME/config.toml`, or
+`~/.vibe/config.toml` when `VIBE_HOME` is unset). Static `[env]` values are
+written into `[[mcp_servers]]` stdio entries. Existing unmanaged HTTP,
+streamable HTTP, or hand-managed stdio entries are preserved and never adopted.
+
 ## Rings
 
 ```bash
@@ -60,9 +67,11 @@ madari ring attach research claude-code --scope user
 madari ring attach research gemini
 madari ring attach research gemini --scope user
 madari ring attach research codex
+madari ring attach research vibe
 madari ring detach research claude-code
 madari ring detach research gemini
 madari ring detach research codex
+madari ring detach research vibe
 madari ring delete research
 madari ring render research --client claude-code
 madari ring render research --client gemini
@@ -193,7 +202,8 @@ summaries cover every sync target):
     {"target": "claude-code", "status": "skipped"},
     {"target": "codex", "status": "skipped"},
     {"target": "claude-desktop", "status": "ready"},
-    {"target": "gemini", "status": "skipped"}
+    {"target": "gemini", "status": "skipped"},
+    {"target": "vibe", "status": "skipped"}
   ],
   "managed": [
     {"target": "claude-code", "scope": "default", "entries": 0, "sources": []},
@@ -201,7 +211,8 @@ summaries cover every sync target):
     {"target": "codex", "scope": "default", "entries": 0, "sources": []},
     {"target": "claude-desktop", "scope": "default", "entries": 1, "sources": ["standalone"]},
     {"target": "gemini", "scope": "default", "entries": 0, "sources": []},
-    {"target": "gemini", "scope": "user", "entries": 0, "sources": []}
+    {"target": "gemini", "scope": "user", "entries": 0, "sources": []},
+    {"target": "vibe", "scope": "default", "entries": 0, "sources": []}
   ],
   "manifest_errors": 0,
   "drift": [

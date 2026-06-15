@@ -57,13 +57,15 @@ Notes:
 - `ring delete` removes only unattached ring definitions. It refuses while any client scope still records `ring:<name>` ownership and prints scoped detach guidance; deletion never edits client configs or managed state.
 - `ring render` prints a self-contained MCP config to stdout for ephemeral use — `claude --mcp-config <(madari ring render research --client claude-code)` — mutating nothing; secret env values are never emitted. Render targets are independent from persistent sync support: Claude and Gemini emit JSON, while Codex and Vibe emit TOML. `ring status` shows attached rings and per-server ownership for every client and scope.
 - Codex sync writes static non-secret `[env]` values under `[mcp_servers.<name>.env]` and forwards `[required_env]` plus `[secret_env]` keys through `env_vars`; static secret values are not written into Codex config.
-- Supported sync clients: `claude-desktop`, `claude-code`, `gemini`, and `codex`.
+- Vibe sync writes static `[env]` values into user-scoped `[[mcp_servers]]` entries and preserves unmanaged HTTP/streamable/manual entries.
+- Supported sync clients: `claude-desktop`, `claude-code`, `gemini`, `codex`, and `vibe`.
 - Supported render targets: `claude-code`, `claude-desktop`, `gemini`, `codex`, and `vibe`.
 - Default sync config paths:
   - `claude-desktop`: platform-specific Claude Desktop config path.
   - `claude-code`: `<current working directory>/.mcp.json`.
   - `gemini`: `<current working directory>/.gemini/settings.json`.
   - `codex`: `$CODEX_HOME/config.toml` or `~/.codex/config.toml`.
+  - `vibe`: `$VIBE_HOME/config.toml` or `~/.vibe/config.toml`.
 - `install --config-path` can only be used when exactly one sync target is selected.
 - `export` writes a versioned JSON snapshot of server and ring manifests for backup/sharing (stdout by default).
 - `import` is dry-run by default and only adds/updates listed servers and rings (`--apply` persists). Existing servers and rings absent from the snapshot are left unchanged; imported rings are not attached or synced.
@@ -96,7 +98,7 @@ env_vars = ["STEWREADS_API_KEY"]
 STEWREADS_CONFIG_PATH = "~/.config/stewreads/config.toml"
 ```
 
-Vibe render output uses TOML array entries:
+Vibe sync/render output uses TOML array entries:
 
 ```toml
 [[mcp_servers]]
@@ -116,12 +118,14 @@ madari add stewreads --command /Users/me/.local/bin/stewreads-mcp --client claud
 madari add stewreads --command /Users/me/.local/bin/stewreads-mcp --client claude-code
 madari add stewreads --command /Users/me/.local/bin/stewreads-mcp --client gemini
 madari add stewreads --command /Users/me/.local/bin/stewreads-mcp --client codex
+madari add stewreads --command /Users/me/.local/bin/stewreads-mcp --client vibe
 madari list
 madari status
 madari sync claude-desktop --dry-run
 madari sync claude-code --dry-run
 madari sync gemini --dry-run
 madari sync codex --dry-run
+madari sync vibe --dry-run
 madari export --file madari-snapshot.json
 madari import --file madari-snapshot.json
 madari import --file madari-snapshot.json --apply
@@ -171,7 +175,7 @@ go test ./...
 - Reference-counted ring ownership: entries leave a client config only when nothing owns them
 - `doctor` and `status` for diagnostics, drift detection, and ring consistency
 - Supports `uv` and `npm` package manager installs, plus manual `add` for any runtime/framework
-- macOS, Linux, and Windows; supports Claude Desktop, Claude Code, Gemini, and Codex sync targets
+- macOS, Linux, and Windows; supports Claude Desktop, Claude Code, Gemini, Codex, and Vibe sync targets
 
 ## Principles
 

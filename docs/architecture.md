@@ -18,7 +18,7 @@
 
 2. Client Adapters
 - Translate registry entries into client-specific config.
-- Current adapters: Claude Desktop, Claude Code, Gemini, and Codex.
+- Current adapters: Claude Desktop, Claude Code, Gemini, Codex, and Vibe.
 - Adapters own read/merge/write behavior for their client format.
 
 3. Sync Engine
