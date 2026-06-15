@@ -996,6 +996,55 @@ func TestRunWithStoreSyncCodexApply(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreSyncVibeApply(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	addResult := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "vibe")
+	if addResult.code != 0 {
+		t.Fatalf("setup add failed: %s", addResult.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte(`active_model = "dev"
+
+[[mcp_servers]]
+name = "weather"
+transport = "http"
+url = "http://localhost:8000"
+`), 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	result := runCmd(store, "sync", "vibe", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("sync apply failed with stderr: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "mode: applied") {
+		t.Fatalf("expected applied mode output, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "sync target: vibe") {
+		t.Fatalf("expected vibe target output, got: %s", result.stdout)
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after sync: %v", err)
+	}
+	for _, want := range []string{
+		"active_model",
+		"dev",
+		"weather",
+		"stewreads",
+		"transport = 'stdio'",
+		commandPath,
+	} {
+		if !strings.Contains(string(after), want) {
+			t.Fatalf("expected synced Vibe config to contain %q, got: %s", want, after)
+		}
+	}
+}
+
 func TestRunWithStoreSyncSkipsMissingExecutable(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("executable fixture handling not needed in this test environment")
@@ -1209,6 +1258,9 @@ func TestRunWithStoreClientsListsAllAdapters(t *testing.T) {
 	if !strings.Contains(result.stdout, "gemini") {
 		t.Fatalf("expected gemini in clients output, got: %s", result.stdout)
 	}
+	if !strings.Contains(result.stdout, "vibe") {
+		t.Fatalf("expected vibe in clients output, got: %s", result.stdout)
+	}
 }
 
 func TestRunWithStoreClientsShowsHeaderAndStatus(t *testing.T) {
@@ -1389,7 +1441,37 @@ func TestRunWithStoreDoctorAndStatusInspectCodexConfig(t *testing.T) {
 	}
 }
 
-func TestRunWithStoreDoctorChecksRenderOnlyTargets(t *testing.T) {
+func TestRunWithStoreDoctorAndStatusInspectVibeConfig(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "vibe"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte("[[mcp_servers]]\nname = \"weather\"\ntransport = \"http\"\nurl = \"http://localhost:8000\"\n"), 0o644); err != nil {
+		t.Fatalf("write Vibe config fixture: %v", err)
+	}
+
+	result := runCmd(store, "doctor", "--client-config", "vibe="+configPath)
+	if result.code != 0 {
+		t.Fatalf("doctor expected success, got code=%d stderr=%s stdout=%s", result.code, result.stderr, result.stdout)
+	}
+	if !strings.Contains(result.stdout, "vibe config:") {
+		t.Fatalf("expected doctor output to include vibe config details, got: %s", result.stdout)
+	}
+
+	result = runCmd(store, "status", "--client-config", "vibe="+configPath)
+	if result.code != 0 {
+		t.Fatalf("status expected success, got code=%d stderr=%s stdout=%s", result.code, result.stderr, result.stdout)
+	}
+	if !strings.Contains(result.stdout, "vibe-config: ready") {
+		t.Fatalf("expected status output to include vibe config readiness, got: %s", result.stdout)
+	}
+}
+
+func TestRunWithStoreDoctorChecksVibeTarget(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
 
@@ -1399,15 +1481,20 @@ func TestRunWithStoreDoctorChecksRenderOnlyTargets(t *testing.T) {
 		t.Fatalf("setup add failed: %s", result.stderr)
 	}
 
-	result := runCmd(store, "doctor")
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte("mcp_servers = []\n"), 0o644); err != nil {
+		t.Fatalf("write Vibe config fixture: %v", err)
+	}
+
+	result := runCmd(store, "doctor", "--client-config", "vibe="+configPath)
 	if result.code != 0 {
-		t.Fatalf("doctor with render-only warning should exit 0, got code=%d stderr=%s stdout=%s", result.code, result.stderr, result.stdout)
+		t.Fatalf("doctor with Vibe warning should exit 0, got code=%d stderr=%s stdout=%s", result.code, result.stderr, result.stdout)
 	}
 	if !strings.Contains(result.stdout, "portable [warn]") || !strings.Contains(result.stdout, "missing required env key PORTABLE_TOKEN") {
-		t.Fatalf("expected render-only target to receive server diagnostics, got: %s", result.stdout)
+		t.Fatalf("expected Vibe target to receive server diagnostics, got: %s", result.stdout)
 	}
 	if !strings.Contains(result.stdout, "summary: total=1 ready=0 warn=1 error=0 skipped=0") {
-		t.Fatalf("expected render-only target not to be skipped, got: %s", result.stdout)
+		t.Fatalf("expected Vibe target not to be skipped, got: %s", result.stdout)
 	}
 }
 
@@ -2402,6 +2489,49 @@ func TestRunWithStoreRingAttachDetachCodex(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreRingAttachDetachVibe(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "vibe"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "research", "--member", "stewreads"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	result := runCmd(store, "ring", "attach", "research", "vibe", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("attach failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "sync target: vibe") || !strings.Contains(result.stdout, "added: stewreads") {
+		t.Fatalf("expected vibe attach output, got: %s", result.stdout)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read Vibe config after attach: %v", err)
+	}
+	if !strings.Contains(string(after), "stewreads") || !strings.Contains(string(after), "[[mcp_servers]]") {
+		t.Fatalf("expected attached ring member in Vibe config, got: %s", after)
+	}
+
+	result = runCmd(store, "ring", "detach", "research", "vibe", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("detach failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "removed: stewreads") {
+		t.Fatalf("expected vibe detach removal, got: %s", result.stdout)
+	}
+	after, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read Vibe config after detach: %v", err)
+	}
+	if strings.Contains(string(after), "stewreads") {
+		t.Fatalf("expected detached ring member removed from Vibe config, got: %s", after)
+	}
+}
+
 func TestRunWithStoreRingAttachWarnsDisabledMember(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
@@ -2552,10 +2682,6 @@ func TestRunWithStoreRingRenderJSONTargets(t *testing.T) {
 func TestRunWithStoreRingRenderTOMLTargets(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
-
-	if _, ok := syncAdapters["vibe"]; ok {
-		t.Fatal("vibe must not be registered as a sync adapter")
-	}
 
 	if result := runCmd(store, "add", "portable", "--command", commandPath,
 		"--client", "codex",

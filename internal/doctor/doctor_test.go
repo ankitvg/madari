@@ -393,6 +393,97 @@ func TestRunInspectsTOMLClientConfig(t *testing.T) {
 	}
 }
 
+func TestRunInspectsVibeTOMLClientConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix fixture mode bits are used in this test")
+	}
+	tmp := t.TempDir()
+	store := registry.NewStore(filepath.Join(tmp, "servers"))
+
+	commandPath := writeTestExecutable(t, tmp, "vibe-mcp")
+	if err := store.Save(registry.Manifest{
+		Name:    "vibe-server",
+		Command: commandPath,
+		Enabled: true,
+		Clients: []string{"vibe"},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+
+	configPath := filepath.Join(tmp, "vibe-config")
+	if err := os.WriteFile(configPath, []byte("[[mcp_servers]]\nname = \"weather\"\ntransport = \"http\"\nurl = \"http://localhost:8000\"\n"), 0o644); err != nil {
+		t.Fatalf("write toml config: %v", err)
+	}
+
+	adapter := testAdapter{target: "vibe", configPath: configPath}
+	report, err := Run(store, Options{Adapters: []clients.ClientAdapter{adapter}})
+	if err != nil {
+		t.Fatalf("doctor run failed: %v", err)
+	}
+	cc, ok := findClientConfig(report, "vibe")
+	if !ok {
+		t.Fatalf("expected vibe client config report, got: %+v", report.ClientConfigs)
+	}
+	if cc.Status != StatusReady {
+		t.Fatalf("expected ready Vibe TOML config status, got: %+v", cc)
+	}
+
+	if err := os.WriteFile(configPath, []byte("[mcp_servers]\n"), 0o644); err != nil {
+		t.Fatalf("write table toml config: %v", err)
+	}
+	report, err = Run(store, Options{Adapters: []clients.ClientAdapter{adapter}})
+	if err != nil {
+		t.Fatalf("doctor run failed: %v", err)
+	}
+	cc, ok = findClientConfig(report, "vibe")
+	if !ok {
+		t.Fatalf("expected vibe client config report, got: %+v", report.ClientConfigs)
+	}
+	if cc.Status != StatusError || !strings.Contains(cc.Message, "expected array") {
+		t.Fatalf("expected Vibe to reject table mcp_servers, got: %+v", cc)
+	}
+
+	invalidCommands := []struct {
+		name    string
+		payload string
+		want    string
+	}{
+		{
+			name:    "missing stdio command",
+			payload: "[[mcp_servers]]\nname = \"broken\"\ntransport = \"stdio\"\n",
+			want:    "command",
+		},
+		{
+			name:    "non-string stdio command",
+			payload: "[[mcp_servers]]\nname = \"broken\"\ntransport = \"stdio\"\ncommand = 1\n",
+			want:    "expected string or array of strings",
+		},
+		{
+			name:    "empty string stdio command",
+			payload: "[[mcp_servers]]\nname = \"broken\"\ntransport = \"stdio\"\ncommand = \"\"\n",
+			want:    "expected non-empty string",
+		},
+	}
+	for _, tc := range invalidCommands {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(configPath, []byte(tc.payload), 0o644); err != nil {
+				t.Fatalf("write invalid command toml config: %v", err)
+			}
+			report, err = Run(store, Options{Adapters: []clients.ClientAdapter{adapter}})
+			if err != nil {
+				t.Fatalf("doctor run failed: %v", err)
+			}
+			cc, ok = findClientConfig(report, "vibe")
+			if !ok {
+				t.Fatalf("expected vibe client config report, got: %+v", report.ClientConfigs)
+			}
+			if cc.Status != StatusError || !strings.Contains(cc.Message, tc.want) {
+				t.Fatalf("expected Vibe to reject %s, got: %+v", tc.name, cc)
+			}
+		})
+	}
+}
+
 func TestRunSelectsConfigParserByClientTarget(t *testing.T) {
 	tmp := t.TempDir()
 	store := registry.NewStore(filepath.Join(tmp, "servers"))

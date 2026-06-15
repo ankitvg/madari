@@ -439,6 +439,8 @@ func inspectClientConfig(target, path string) ClientConfigReport {
 	switch target {
 	case "codex":
 		return inspectCodexTOMLClientConfig(payload, report)
+	case "vibe":
+		return inspectVibeTOMLClientConfig(payload, report)
 	case "":
 		if filepath.Ext(path) == ".toml" {
 			return inspectCodexTOMLClientConfig(payload, report)
@@ -488,6 +490,78 @@ func inspectCodexTOMLClientConfig(payload []byte, report ClientConfigReport) Cli
 	report.Status = StatusReady
 	report.Message = "ok"
 	return report
+}
+
+func inspectVibeTOMLClientConfig(payload []byte, report ClientConfigReport) ClientConfigReport {
+	root := map[string]any{}
+	if err := toml.Unmarshal(payload, &root); err != nil {
+		report.Status = StatusError
+		report.Message = fmt.Sprintf("invalid TOML: %v", err)
+		return report
+	}
+
+	if raw, exists := root["mcp_servers"]; exists {
+		servers, ok := raw.([]any)
+		if !ok {
+			report.Status = StatusError
+			report.Message = "invalid mcp_servers value: expected array"
+			return report
+		}
+		for i, rawServer := range servers {
+			server, ok := rawServer.(map[string]any)
+			if !ok {
+				report.Status = StatusError
+				report.Message = fmt.Sprintf("invalid mcp_servers[%d] value: expected table", i)
+				return report
+			}
+			if name, ok := server["name"].(string); !ok || strings.TrimSpace(name) == "" {
+				report.Status = StatusError
+				report.Message = fmt.Sprintf("invalid mcp_servers[%d].name value: expected non-empty string", i)
+				return report
+			}
+			transport, ok := server["transport"].(string)
+			if !ok || strings.TrimSpace(transport) == "" {
+				report.Status = StatusError
+				report.Message = fmt.Sprintf("invalid mcp_servers[%d].transport value: expected non-empty string", i)
+				return report
+			}
+			if strings.TrimSpace(transport) == "stdio" {
+				if err := validateVibeStdioCommand(server["command"]); err != nil {
+					report.Status = StatusError
+					report.Message = fmt.Sprintf("invalid mcp_servers[%d].command value: %v", i, err)
+					return report
+				}
+			}
+		}
+	}
+
+	report.Status = StatusReady
+	report.Message = "ok"
+	return report
+}
+
+func validateVibeStdioCommand(raw any) error {
+	command, ok := raw.(string)
+	if ok {
+		if strings.TrimSpace(command) == "" {
+			return fmt.Errorf("expected non-empty string")
+		}
+		return nil
+	}
+
+	values, ok := raw.([]any)
+	if !ok {
+		return fmt.Errorf("expected string or array of strings")
+	}
+	if len(values) == 0 {
+		return fmt.Errorf("expected non-empty array")
+	}
+	for _, value := range values {
+		if _, ok := value.(string); !ok {
+			return fmt.Errorf("expected string or array of strings")
+		}
+	}
+	return nil
 }
 
 func loadManifests(serversDir string) ([]registry.Manifest, []ManifestError, error) {
