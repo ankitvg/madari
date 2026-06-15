@@ -954,6 +954,48 @@ func TestRunWithStoreSyncGeminiApply(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreSyncCodexApply(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	addResult := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "codex")
+	if addResult.code != 0 {
+		t.Fatalf("setup add failed: %s", addResult.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte("model = \"gpt-5\"\n\n[mcp_servers.weather]\ncommand = \"uv\"\n"), 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	result := runCmd(store, "sync", "codex", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("sync apply failed with stderr: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "mode: applied") {
+		t.Fatalf("expected applied mode output, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "sync target: codex") {
+		t.Fatalf("expected codex target output, got: %s", result.stdout)
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after sync: %v", err)
+	}
+	for _, want := range []string{
+		"model = ",
+		"gpt-5",
+		"[mcp_servers.weather]",
+		"[mcp_servers.stewreads]",
+		commandPath,
+	} {
+		if !strings.Contains(string(after), want) {
+			t.Fatalf("expected synced Codex config to contain %q, got: %s", want, after)
+		}
+	}
+}
+
 func TestRunWithStoreSyncSkipsMissingExecutable(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("executable fixture handling not needed in this test environment")
@@ -1161,6 +1203,9 @@ func TestRunWithStoreClientsListsAllAdapters(t *testing.T) {
 	if !strings.Contains(result.stdout, "claude-code") {
 		t.Fatalf("expected claude-code in clients output, got: %s", result.stdout)
 	}
+	if !strings.Contains(result.stdout, "codex") {
+		t.Fatalf("expected codex in clients output, got: %s", result.stdout)
+	}
 	if !strings.Contains(result.stdout, "gemini") {
 		t.Fatalf("expected gemini in clients output, got: %s", result.stdout)
 	}
@@ -1314,12 +1359,42 @@ func TestRunWithStoreDoctorAndStatusInspectGeminiConfig(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreDoctorAndStatusInspectCodexConfig(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "codex"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(configPath, []byte("[mcp_servers]\n"), 0o644); err != nil {
+		t.Fatalf("write Codex config fixture: %v", err)
+	}
+
+	result := runCmd(store, "doctor", "--client-config", "codex="+configPath)
+	if result.code != 0 {
+		t.Fatalf("doctor expected success, got code=%d stderr=%s stdout=%s", result.code, result.stderr, result.stdout)
+	}
+	if !strings.Contains(result.stdout, "codex config:") {
+		t.Fatalf("expected doctor output to include codex config details, got: %s", result.stdout)
+	}
+
+	result = runCmd(store, "status", "--client-config", "codex="+configPath)
+	if result.code != 0 {
+		t.Fatalf("status expected success, got code=%d stderr=%s stdout=%s", result.code, result.stderr, result.stdout)
+	}
+	if !strings.Contains(result.stdout, "codex-config: ready") {
+		t.Fatalf("expected status output to include codex config readiness, got: %s", result.stdout)
+	}
+}
+
 func TestRunWithStoreDoctorChecksRenderOnlyTargets(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
 
 	if result := runCmd(store, "add", "portable", "--command", commandPath,
-		"--client", "codex",
+		"--client", "vibe",
 		"--required-env", "PORTABLE_TOKEN"); result.code != 0 {
 		t.Fatalf("setup add failed: %s", result.stderr)
 	}
@@ -2284,6 +2359,49 @@ func TestRunWithStoreRingAttachDetachGemini(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreRingAttachDetachCodex(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "codex"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "research", "--member", "stewreads"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	result := runCmd(store, "ring", "attach", "research", "codex", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("attach failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "sync target: codex") || !strings.Contains(result.stdout, "added: stewreads") {
+		t.Fatalf("expected codex attach output, got: %s", result.stdout)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read Codex config after attach: %v", err)
+	}
+	if !strings.Contains(string(after), "[mcp_servers.stewreads]") {
+		t.Fatalf("expected attached ring member in Codex config, got: %s", after)
+	}
+
+	result = runCmd(store, "ring", "detach", "research", "codex", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("detach failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "removed: stewreads") {
+		t.Fatalf("expected codex detach removal, got: %s", result.stdout)
+	}
+	after, err = os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read Codex config after detach: %v", err)
+	}
+	if strings.Contains(string(after), "[mcp_servers.stewreads]") {
+		t.Fatalf("expected detached ring member removed from Codex config, got: %s", after)
+	}
+}
+
 func TestRunWithStoreRingAttachWarnsDisabledMember(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
@@ -2435,10 +2553,8 @@ func TestRunWithStoreRingRenderTOMLTargets(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
 
-	for _, target := range []string{"codex", "vibe"} {
-		if _, ok := syncAdapters[target]; ok {
-			t.Fatalf("%s must not be registered as a sync adapter", target)
-		}
+	if _, ok := syncAdapters["vibe"]; ok {
+		t.Fatal("vibe must not be registered as a sync adapter")
 	}
 
 	if result := runCmd(store, "add", "portable", "--command", commandPath,

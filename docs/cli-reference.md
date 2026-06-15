@@ -31,6 +31,8 @@ madari sync claude-code --scope user
 madari sync gemini --dry-run
 madari sync gemini
 madari sync gemini --scope user
+madari sync codex --dry-run
+madari sync codex
 ```
 
 `--scope` applies to clients with project and user configs: `claude-code`
@@ -40,6 +42,12 @@ managed entries independently. Servers carrying static values for
 `[secret_env]` keys are refused per entry at project scope (other servers
 keep syncing; a previously materialized secret entry is scrubbed) and must
 sync with `--scope user`.
+
+`codex` sync targets Codex's user config (`$CODEX_HOME/config.toml`, or
+`~/.codex/config.toml` when `CODEX_HOME` is unset). Static non-secret `[env]`
+values are written under `[mcp_servers.<name>.env]`; `[required_env]` and
+`[secret_env]` keys are forwarded through `env_vars`, and static secret
+values are not written into Codex config.
 
 ## Rings
 
@@ -51,8 +59,10 @@ madari ring attach research claude-code
 madari ring attach research claude-code --scope user
 madari ring attach research gemini
 madari ring attach research gemini --scope user
+madari ring attach research codex
 madari ring detach research claude-code
 madari ring detach research gemini
+madari ring detach research codex
 madari ring delete research
 madari ring render research --client claude-code
 madari ring render research --client gemini
@@ -181,12 +191,14 @@ summaries cover every sync target):
   "summary": {"total": 1, "ready": 1, "warning": 0, "error": 0, "skipped": 0},
   "client_configs": [
     {"target": "claude-code", "status": "skipped"},
+    {"target": "codex", "status": "skipped"},
     {"target": "claude-desktop", "status": "ready"},
     {"target": "gemini", "status": "skipped"}
   ],
   "managed": [
     {"target": "claude-code", "scope": "default", "entries": 0, "sources": []},
     {"target": "claude-code", "scope": "user", "entries": 0, "sources": []},
+    {"target": "codex", "scope": "default", "entries": 0, "sources": []},
     {"target": "claude-desktop", "scope": "default", "entries": 1, "sources": ["standalone"]},
     {"target": "gemini", "scope": "default", "entries": 0, "sources": []},
     {"target": "gemini", "scope": "user", "entries": 0, "sources": []}
@@ -369,4 +381,5 @@ madari version
 
 - `claude-desktop`
 - `claude-code`
+- `codex`
 - `gemini`
