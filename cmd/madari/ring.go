@@ -261,13 +261,6 @@ func printRingStatusHelp(out io.Writer) {
 	fmt.Fprintln(out, "  and members that are pending sync or missing from the registry.")
 }
 
-// renderedServer is the self-contained client config entry ring render emits.
-type renderedServer struct {
-	Command string            `json:"command"`
-	Args    []string          `json:"args,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
-}
-
 func (a cliApp) cmdRingRender(args []string) error {
 	if len(args) == 0 {
 		return commandUsageError("ring render", "madari ring render <name> --client <target>")
@@ -296,8 +289,9 @@ func (a cliApp) cmdRingRender(args []string) error {
 	if target == "" {
 		return commandInputError("ring render", "--client is required")
 	}
-	if _, ok := syncAdapters[target]; !ok {
-		return commandInputError("ring render", fmt.Sprintf("unsupported client %q (supported: %s)", target, strings.Join(supportedSyncTargets(), ", ")))
+	renderTarget, ok := ringRenderTargets[target]
+	if !ok {
+		return commandInputError("ring render", fmt.Sprintf("unsupported render target %q (supported: %s)", target, strings.Join(supportedRingRenderTargets(), ", ")))
 	}
 
 	ring, err := a.store.GetRing(name)
@@ -367,7 +361,7 @@ func (a cliApp) cmdRingRender(args []string) error {
 		servers[member] = entry
 	}
 
-	return writeJSON(a.stdout, map[string]map[string]renderedServer{"mcpServers": servers})
+	return renderTarget.render(a.stdout, servers)
 }
 
 func printRingRenderHelp(out io.Writer) {
