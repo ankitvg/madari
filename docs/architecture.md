@@ -60,9 +60,12 @@
   are recomputed against current ring membership, so edits (including
   snapshot imports) converge on the next operation. Unmanaged config
   collisions are never granted a ring source.
-- `ring render` materializes a self-contained config to stdout (secret
-  values omitted) without touching state or refcounts; `ring status` reports
-  attachments, per-server sources, and pending/stale reconciliation work.
+- `ring render` materializes a self-contained client-native config to stdout
+  (secret values omitted) without touching state or refcounts. Render targets
+  are registered independently from sync adapters, so a client can support
+  render-only output before persistent sync/attach support exists. `ring
+  status` reports attachments, per-server sources, and pending/stale
+  reconciliation work.
 - `ring delete` refuses while any target/scope still records the ring as an
   ownership source, and never edits client configs or managed state.
 

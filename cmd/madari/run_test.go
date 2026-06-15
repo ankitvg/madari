@@ -2242,6 +2242,10 @@ func TestRunWithStoreRingRender(t *testing.T) {
 	if result.code == 0 || !strings.Contains(result.stderr, "--client is required") {
 		t.Fatalf("expected required-client error, got code=%d stderr=%s", result.code, result.stderr)
 	}
+	result = runCmd(store, "ring", "render", "research", "--client", "unknown-client")
+	if result.code == 0 || !strings.Contains(result.stderr, `unsupported render target "unknown-client"`) || !strings.Contains(result.stderr, "codex") || !strings.Contains(result.stderr, "vibe") {
+		t.Fatalf("expected unsupported render-target error, got code=%d stderr=%s", result.code, result.stderr)
+	}
 }
 
 func TestRunWithStoreRingRenderJSONTargets(t *testing.T) {
