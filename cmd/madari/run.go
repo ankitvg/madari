@@ -35,6 +35,22 @@ func supportedSyncTargets() []string {
 	return targets
 }
 
+func supportedDoctorServerTargets() []string {
+	targetSet := map[string]bool{}
+	for _, target := range supportedSyncTargets() {
+		targetSet[target] = true
+	}
+	for _, target := range supportedRingRenderTargets() {
+		targetSet[target] = true
+	}
+	targets := make([]string, 0, len(targetSet))
+	for target := range targetSet {
+		targets = append(targets, target)
+	}
+	sort.Strings(targets)
+	return targets
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		printHelp(stdout)
@@ -795,6 +811,7 @@ func (a cliApp) cmdDoctor(args []string) error {
 	report, err := doctor.Run(a.store, doctor.Options{
 		Adapters:            adapters,
 		ConfigPathOverrides: configPathOverrides,
+		ServerTargets:       supportedDoctorServerTargets(),
 		DriftTargets:        a.driftTargets(adapters, configPathOverrides),
 		Rings:               rings,
 	})
@@ -985,6 +1002,7 @@ func (a cliApp) cmdStatus(args []string) error {
 	report, err := doctor.Run(a.store, doctor.Options{
 		Adapters:            adapters,
 		ConfigPathOverrides: configPathOverrides,
+		ServerTargets:       supportedDoctorServerTargets(),
 		DriftTargets:        a.driftTargets(adapters, configPathOverrides),
 		Rings:               rings,
 	})

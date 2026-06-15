@@ -1238,6 +1238,28 @@ func TestRunWithStoreDoctorReturnsErrorForInvalidClaudeCodeConfig(t *testing.T) 
 	}
 }
 
+func TestRunWithStoreDoctorChecksRenderOnlyTargets(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "portable", "--command", commandPath,
+		"--client", "codex",
+		"--required-env", "PORTABLE_TOKEN"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "doctor")
+	if result.code != 0 {
+		t.Fatalf("doctor with render-only warning should exit 0, got code=%d stderr=%s stdout=%s", result.code, result.stderr, result.stdout)
+	}
+	if !strings.Contains(result.stdout, "portable [warn]") || !strings.Contains(result.stdout, "missing required env key PORTABLE_TOKEN") {
+		t.Fatalf("expected render-only target to receive server diagnostics, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "summary: total=1 ready=0 warn=1 error=0 skipped=0") {
+		t.Fatalf("expected render-only target not to be skipped, got: %s", result.stdout)
+	}
+}
+
 func TestRunWithStoreStatusHealthy(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
