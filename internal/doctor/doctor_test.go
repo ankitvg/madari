@@ -376,6 +376,52 @@ func TestRunInspectsTOMLClientConfig(t *testing.T) {
 	if cc.Status != StatusError || !strings.Contains(cc.Message, "invalid TOML") {
 		t.Fatalf("expected invalid TOML status, got: %+v", cc)
 	}
+
+	if err := os.WriteFile(configPath, []byte("[[mcp_servers]]\nname = \"vibe-style\"\n"), 0o644); err != nil {
+		t.Fatalf("write array toml config: %v", err)
+	}
+	report, err = Run(store, Options{Adapters: []clients.ClientAdapter{adapter}})
+	if err != nil {
+		t.Fatalf("doctor run failed: %v", err)
+	}
+	cc, ok = findClientConfig(report, "codex")
+	if !ok {
+		t.Fatalf("expected codex client config report, got: %+v", report.ClientConfigs)
+	}
+	if cc.Status != StatusError || !strings.Contains(cc.Message, "expected table") {
+		t.Fatalf("expected Codex to reject array mcp_servers, got: %+v", cc)
+	}
+}
+
+func TestRunSelectsConfigParserByClientTarget(t *testing.T) {
+	tmp := t.TempDir()
+	store := registry.NewStore(filepath.Join(tmp, "servers"))
+	commandPath := writeTestExecutable(t, tmp, "claude-code-mcp")
+	if err := store.Save(registry.Manifest{
+		Name:    "claude-code-server",
+		Command: commandPath,
+		Enabled: true,
+		Clients: []string{"claude-code"},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+	configPath := filepath.Join(tmp, "claude-code.toml")
+	if err := os.WriteFile(configPath, []byte("[mcp_servers]\n"), 0o644); err != nil {
+		t.Fatalf("write toml config: %v", err)
+	}
+
+	adapter := testAdapter{target: "claude-code", configPath: configPath}
+	report, err := Run(store, Options{Adapters: []clients.ClientAdapter{adapter}})
+	if err != nil {
+		t.Fatalf("doctor run failed: %v", err)
+	}
+	cc, ok := findClientConfig(report, "claude-code")
+	if !ok {
+		t.Fatalf("expected claude-code client config report, got: %+v", report.ClientConfigs)
+	}
+	if cc.Status != StatusError || !strings.Contains(cc.Message, "invalid JSON") {
+		t.Fatalf("expected JSON parser for claude-code despite .toml suffix, got: %+v", cc)
+	}
 }
 
 func writeTestExecutable(t *testing.T, dir, name string) string {

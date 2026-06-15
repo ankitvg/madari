@@ -146,6 +146,12 @@ func MapKeys[K comparable, V any](m map[K]V) []K {
 }
 
 func BackupFile(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", err
+	}
+	mode := info.Mode().Perm()
+
 	source, err := os.Open(path)
 	if err != nil {
 		return "", err
@@ -157,8 +163,12 @@ func BackupFile(path string) (string, error) {
 		return "", fmt.Errorf("ensure backup directory: %w", err)
 	}
 
-	target, err := os.Create(backupPath)
+	target, err := os.OpenFile(backupPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 	if err != nil {
+		return "", err
+	}
+	if err := target.Chmod(mode); err != nil {
+		_ = target.Close()
 		return "", err
 	}
 	if _, err := io.Copy(target, source); err != nil {

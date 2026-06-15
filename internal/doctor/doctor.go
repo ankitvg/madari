@@ -417,6 +417,10 @@ func InspectConfigPath(path string) ClientConfigReport {
 	return inspectClientConfig("", path)
 }
 
+func InspectClientConfigPath(target, path string) ClientConfigReport {
+	return inspectClientConfig(target, path)
+}
+
 func inspectClientConfig(target, path string) ClientConfigReport {
 	report := ClientConfigReport{Path: path}
 	payload, err := os.ReadFile(path)
@@ -432,8 +436,13 @@ func inspectClientConfig(target, path string) ClientConfigReport {
 	}
 
 	report.Exists = true
-	if target == "codex" || filepath.Ext(path) == ".toml" {
-		return inspectTOMLClientConfig(payload, report)
+	switch target {
+	case "codex":
+		return inspectCodexTOMLClientConfig(payload, report)
+	case "":
+		if filepath.Ext(path) == ".toml" {
+			return inspectCodexTOMLClientConfig(payload, report)
+		}
 	}
 	return inspectJSONClientConfig(payload, report)
 }
@@ -460,7 +469,7 @@ func inspectJSONClientConfig(payload []byte, report ClientConfigReport) ClientCo
 	return report
 }
 
-func inspectTOMLClientConfig(payload []byte, report ClientConfigReport) ClientConfigReport {
+func inspectCodexTOMLClientConfig(payload []byte, report ClientConfigReport) ClientConfigReport {
 	root := map[string]any{}
 	if err := toml.Unmarshal(payload, &root); err != nil {
 		report.Status = StatusError
@@ -469,12 +478,9 @@ func inspectTOMLClientConfig(payload []byte, report ClientConfigReport) ClientCo
 	}
 
 	if raw, exists := root["mcp_servers"]; exists {
-		switch raw.(type) {
-		case map[string]any, []any:
-			// Codex uses a table; Vibe uses an array of tables.
-		default:
+		if _, ok := raw.(map[string]any); !ok {
 			report.Status = StatusError
-			report.Message = "invalid mcp_servers value: expected table or array"
+			report.Message = "invalid mcp_servers value: expected table"
 			return report
 		}
 	}

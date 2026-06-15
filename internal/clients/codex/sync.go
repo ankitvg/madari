@@ -15,7 +15,8 @@ import (
 )
 
 const (
-	Target = "codex"
+	Target            = "codex"
+	defaultConfigMode = 0o600
 )
 
 var ErrConflict = clients.ErrConflict
@@ -42,7 +43,7 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 		return SyncResult{}, err
 	}
 
-	root, rawServers, existingServers, configExists, err := loadCodexConfig(configPath)
+	root, rawServers, existingServers, configExists, configMode, err := loadCodexConfig(configPath)
 	if err != nil {
 		return SyncResult{}, err
 	}
@@ -62,7 +63,7 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 		return result, nil
 	}
 
-	if err := applyPlan(configPath, statePath, root, rawServers, configExists, result.Removed, writeSet, nextState); err != nil {
+	if err := applyPlan(configPath, statePath, root, rawServers, configExists, configMode, result.Removed, writeSet, nextState); err != nil {
 		return SyncResult{}, err
 	}
 	return result, nil
@@ -84,7 +85,7 @@ func AttachRing(ring registry.Ring, manifests []registry.Manifest, opts SyncOpti
 		return SyncResult{}, err
 	}
 
-	root, rawServers, existingServers, configExists, err := loadCodexConfig(configPath)
+	root, rawServers, existingServers, configExists, configMode, err := loadCodexConfig(configPath)
 	if err != nil {
 		return SyncResult{}, err
 	}
@@ -103,7 +104,7 @@ func AttachRing(ring registry.Ring, manifests []registry.Manifest, opts SyncOpti
 	if opts.DryRun {
 		return result, nil
 	}
-	if err := applyPlan(configPath, statePath, root, rawServers, configExists, result.Removed, writeSet, nextState); err != nil {
+	if err := applyPlan(configPath, statePath, root, rawServers, configExists, configMode, result.Removed, writeSet, nextState); err != nil {
 		return SyncResult{}, err
 	}
 	return result, nil
@@ -125,7 +126,7 @@ func DetachRing(ringName string, opts SyncOptions) (SyncResult, error) {
 		return SyncResult{}, err
 	}
 
-	root, rawServers, existingServers, configExists, err := loadCodexConfig(configPath)
+	root, rawServers, existingServers, configExists, configMode, err := loadCodexConfig(configPath)
 	if err != nil {
 		return SyncResult{}, err
 	}
@@ -141,7 +142,7 @@ func DetachRing(ringName string, opts SyncOptions) (SyncResult, error) {
 	if opts.DryRun {
 		return result, nil
 	}
-	if err := applyPlan(configPath, statePath, root, rawServers, configExists, result.Removed, nil, nextState); err != nil {
+	if err := applyPlan(configPath, statePath, root, rawServers, configExists, configMode, result.Removed, nil, nextState); err != nil {
 		return SyncResult{}, err
 	}
 	return result, nil
@@ -151,6 +152,7 @@ func applyPlan(
 	configPath, statePath string,
 	root, rawServers map[string]any,
 	configExists bool,
+	configMode os.FileMode,
 	removed []string,
 	writeSet map[string]serverConfig,
 	nextState map[string][]string,
@@ -182,7 +184,7 @@ func applyPlan(
 			return fmt.Errorf("backup Codex config: %w", err)
 		}
 	}
-	if err := syncshared.WriteFileAtomically(configPath, payload, 0o644); err != nil {
+	if err := syncshared.WriteFileAtomically(configPath, payload, configMode); err != nil {
 		return fmt.Errorf("write Codex config: %w", err)
 	}
 
@@ -299,6 +301,9 @@ func equalServer(a, b serverConfig) bool {
 	if a.Command != b.Command {
 		return false
 	}
+	if effectiveEnabled(a) != effectiveEnabled(b) {
+		return false
+	}
 	if !equalStringSlices(a.Args, b.Args) {
 		return false
 	}
@@ -313,6 +318,10 @@ func equalServer(a, b serverConfig) bool {
 	return equalStringSlices(a.EnvVars, b.EnvVars)
 }
 
+func effectiveEnabled(server serverConfig) bool {
+	return server.Enabled == nil || *server.Enabled
+}
+
 func equalStringSlices(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -325,18 +334,27 @@ func equalStringSlices(a, b []string) bool {
 	return true
 }
 
-func loadCodexConfig(path string) (map[string]any, map[string]any, map[string]serverConfig, bool, error) {
-	payload, err := os.ReadFile(path)
+func loadCodexConfig(path string) (map[string]any, map[string]any, map[string]serverConfig, bool, os.FileMode, error) {
+	info, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return map[string]any{}, map[string]any{}, map[string]serverConfig{}, false, nil
+			return map[string]any{}, map[string]any{}, map[string]serverConfig{}, false, defaultConfigMode, nil
 		}
-		return nil, nil, nil, false, fmt.Errorf("read Codex config %q: %w", path, err)
+		return nil, nil, nil, false, 0, fmt.Errorf("stat Codex config %q: %w", path, err)
+	}
+	configMode := info.Mode().Perm()
+	if configMode == 0 {
+		configMode = defaultConfigMode
+	}
+
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, nil, false, 0, fmt.Errorf("read Codex config %q: %w", path, err)
 	}
 
 	root := map[string]any{}
 	if err := toml.Unmarshal(payload, &root); err != nil {
-		return nil, nil, nil, true, fmt.Errorf("parse Codex config TOML: %w", err)
+		return nil, nil, nil, true, configMode, fmt.Errorf("parse Codex config TOML: %w", err)
 	}
 	if root == nil {
 		root = map[string]any{}
@@ -346,7 +364,7 @@ func loadCodexConfig(path string) (map[string]any, map[string]any, map[string]se
 	if raw, exists := root["mcp_servers"]; exists {
 		servers, ok := raw.(map[string]any)
 		if !ok {
-			return nil, nil, nil, true, fmt.Errorf("parse mcp_servers: expected table")
+			return nil, nil, nil, true, configMode, fmt.Errorf("parse mcp_servers: expected table")
 		}
 		for name, server := range servers {
 			rawServers[name] = server
@@ -355,74 +373,118 @@ func loadCodexConfig(path string) (map[string]any, map[string]any, map[string]se
 
 	servers := make(map[string]serverConfig, len(rawServers))
 	for name, raw := range rawServers {
-		servers[name] = parseServer(raw)
+		server, err := parseServer(name, raw)
+		if err != nil {
+			return nil, nil, nil, true, configMode, err
+		}
+		servers[name] = server
 	}
 
-	return root, rawServers, servers, true, nil
+	return root, rawServers, servers, true, configMode, nil
 }
 
-func parseServer(raw any) serverConfig {
+func parseServer(name string, raw any) (serverConfig, error) {
 	table, ok := raw.(map[string]any)
 	if !ok {
-		return serverConfig{}
+		return serverConfig{}, fmt.Errorf("parse mcp_servers.%s: expected table", name)
 	}
 
 	entry := serverConfig{}
-	if command, ok := table["command"].(string); ok {
+	if rawCommand, exists := table["command"]; exists {
+		command, ok := rawCommand.(string)
+		if !ok {
+			return serverConfig{}, fmt.Errorf("parse mcp_servers.%s.command: expected string", name)
+		}
 		entry.Command = command
 	}
-	if args, ok := stringSlice(table["args"]); ok {
+	if enabled, ok, err := optionalBool(table, "enabled"); err != nil {
+		return serverConfig{}, fmt.Errorf("parse mcp_servers.%s.enabled: %w", name, err)
+	} else if ok {
+		entry.Enabled = &enabled
+	}
+	if args, ok, err := optionalStringSlice(table, "args"); err != nil {
+		return serverConfig{}, fmt.Errorf("parse mcp_servers.%s.args: %w", name, err)
+	} else if ok {
 		entry.Args = args
 	}
-	if env, ok := stringMap(table["env"]); ok {
+	if env, ok, err := optionalStringMap(table, "env"); err != nil {
+		return serverConfig{}, fmt.Errorf("parse mcp_servers.%s.env: %w", name, err)
+	} else if ok {
 		entry.Env = env
 	}
-	if envVars, ok := stringSlice(table["env_vars"]); ok {
+	if envVars, ok, err := optionalStringSlice(table, "env_vars"); err != nil {
+		return serverConfig{}, fmt.Errorf("parse mcp_servers.%s.env_vars: %w", name, err)
+	} else if ok {
 		entry.EnvVars = envVars
 	}
-	return entry
+	return entry, nil
 }
 
-func stringSlice(raw any) ([]string, bool) {
-	if raw == nil {
-		return nil, false
+func optionalBool(table map[string]any, key string) (bool, bool, error) {
+	raw, exists := table[key]
+	if !exists {
+		return false, false, nil
+	}
+	value, ok := raw.(bool)
+	if !ok {
+		return false, true, fmt.Errorf("expected bool")
+	}
+	return value, true, nil
+}
+
+func optionalStringSlice(table map[string]any, key string) ([]string, bool, error) {
+	raw, exists := table[key]
+	if !exists {
+		return nil, false, nil
 	}
 	values, ok := raw.([]any)
 	if !ok {
-		return nil, false
+		if strings, ok := raw.([]string); ok {
+			return append([]string(nil), strings...), true, nil
+		}
+		return nil, true, fmt.Errorf("expected array of strings")
 	}
 	out := make([]string, 0, len(values))
 	for _, value := range values {
 		str, ok := value.(string)
 		if !ok {
-			return nil, false
+			return nil, true, fmt.Errorf("expected array of strings")
 		}
 		out = append(out, str)
 	}
-	return out, true
+	return out, true, nil
 }
 
-func stringMap(raw any) (map[string]string, bool) {
-	if raw == nil {
-		return nil, false
+func optionalStringMap(table map[string]any, key string) (map[string]string, bool, error) {
+	raw, exists := table[key]
+	if !exists {
+		return nil, false, nil
 	}
 	values, ok := raw.(map[string]any)
 	if !ok {
-		return nil, false
+		if strings, ok := raw.(map[string]string); ok {
+			out := make(map[string]string, len(strings))
+			for key, value := range strings {
+				out[key] = value
+			}
+			return out, true, nil
+		}
+		return nil, true, fmt.Errorf("expected table of strings")
 	}
 	out := make(map[string]string, len(values))
 	for key, value := range values {
 		str, ok := value.(string)
 		if !ok {
-			return nil, false
+			return nil, true, fmt.Errorf("expected table of strings")
 		}
 		out[key] = str
 	}
-	return out, true
+	return out, true, nil
 }
 
 type serverConfig struct {
 	Command string            `toml:"command"`
+	Enabled *bool             `toml:"enabled,omitempty"`
 	Args    []string          `toml:"args,omitempty"`
 	EnvVars []string          `toml:"env_vars,omitempty"`
 	Env     map[string]string `toml:"env,omitempty"`

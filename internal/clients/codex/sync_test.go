@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -210,6 +211,64 @@ STEWREADS_CONFIG_PATH = "~/.config/stewreads/config.toml"
 	}
 }
 
+func TestSyncConflictsOnDisabledUnmanagedEntry(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "config.toml")
+	statePath := filepath.Join(tmp, "state", "codex-managed.json")
+	config := []byte(`[mcp_servers.stewreads]
+command = "stewreads-mcp"
+enabled = false
+
+[mcp_servers.stewreads.env]
+STEWREADS_CONFIG_PATH = "~/.config/stewreads/config.toml"
+`)
+	if err := os.WriteFile(configPath, config, 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	_, err := Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+		DryRun:     true,
+	})
+	if !errors.Is(err, clients.ErrConflict) {
+		t.Fatalf("expected disabled unmanaged entry to conflict, got: %v", err)
+	}
+}
+
+func TestSyncUpdatesOwnedDisabledEntry(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "config.toml")
+	statePath := filepath.Join(tmp, "state", "codex-managed.json")
+	config := []byte(`[mcp_servers.stewreads]
+command = "stewreads-mcp"
+enabled = false
+
+[mcp_servers.stewreads.env]
+STEWREADS_CONFIG_PATH = "~/.config/stewreads/config.toml"
+`)
+	if err := os.WriteFile(configPath, config, 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+	if err := syncshared.SaveManagedState(statePath, map[string][]string{
+		"stewreads": {syncshared.SourceStandalone},
+	}); err != nil {
+		t.Fatalf("write managed state: %v", err)
+	}
+
+	result, err := Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+		DryRun:     true,
+	})
+	if err != nil {
+		t.Fatalf("sync dry-run failed: %v", err)
+	}
+	if !reflect.DeepEqual(result.Updated, []string{"stewreads"}) {
+		t.Fatalf("expected owned disabled entry to be reported updated, got: %+v", result)
+	}
+}
+
 func TestSyncApplyFailsClosedOnInvalidTOML(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "config.toml")
@@ -236,6 +295,40 @@ func TestSyncApplyFailsClosedOnInvalidTOML(t *testing.T) {
 	}
 	if string(after) != string(invalid) {
 		t.Fatalf("expected fail-closed behavior with unchanged config")
+	}
+	if _, statErr := os.Stat(statePath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected no state file write on failure, got err=%v", statErr)
+	}
+	backups, globErr := filepath.Glob(configPath + ".bak.*")
+	if globErr != nil {
+		t.Fatalf("glob backup files: %v", globErr)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("expected no backup files on parse failure, got: %#v", backups)
+	}
+}
+
+func TestSyncApplyFailsClosedOnMalformedArgs(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "config.toml")
+	statePath := filepath.Join(tmp, "state", "codex-managed.json")
+	invalid := []byte(`[mcp_servers.stewreads]
+command = "stewreads-mcp"
+args = [1]
+`)
+	if err := os.WriteFile(configPath, invalid, 0o644); err != nil {
+		t.Fatalf("write invalid config fixture: %v", err)
+	}
+
+	_, err := Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err == nil {
+		t.Fatalf("expected sync apply to fail on malformed args")
+	}
+	if !strings.Contains(err.Error(), "mcp_servers.stewreads.args") {
+		t.Fatalf("expected args parse error, got: %v", err)
 	}
 	if _, statErr := os.Stat(statePath); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("expected no state file write on failure, got err=%v", statErr)
@@ -280,6 +373,75 @@ command = "uv"
 	}
 	if string(backupPayload) != string(original) {
 		t.Fatalf("expected backup content to match original config")
+	}
+}
+
+func TestSyncPreservesPrivateConfigAndBackupModes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix mode bits are used in this test")
+	}
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "config.toml")
+	statePath := filepath.Join(tmp, "state", "codex-managed.json")
+	original := []byte(`[mcp_servers.weather]
+command = "uv"
+`)
+	if err := os.WriteFile(configPath, original, 0o600); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	if _, err := Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	}); err != nil {
+		t.Fatalf("sync apply failed: %v", err)
+	}
+
+	info, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("stat config: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("expected rewritten config mode 0600, got %04o", got)
+	}
+
+	backups, err := filepath.Glob(configPath + ".bak.*")
+	if err != nil {
+		t.Fatalf("glob backup files: %v", err)
+	}
+	if len(backups) == 0 {
+		t.Fatalf("expected backup file to be created")
+	}
+	backupInfo, err := os.Stat(backups[0])
+	if err != nil {
+		t.Fatalf("stat backup: %v", err)
+	}
+	if got := backupInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("expected backup mode 0600, got %04o", got)
+	}
+}
+
+func TestSyncCreatesNewConfigPrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix mode bits are used in this test")
+	}
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "config.toml")
+	statePath := filepath.Join(tmp, "state", "codex-managed.json")
+
+	if _, err := Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	}); err != nil {
+		t.Fatalf("sync apply failed: %v", err)
+	}
+
+	info, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("stat config: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("expected new config mode 0600, got %04o", got)
 	}
 }
 
@@ -445,7 +607,7 @@ func readRoot(t *testing.T, path string) map[string]any {
 
 func readServers(t *testing.T, path string) map[string]serverConfig {
 	t.Helper()
-	_, _, servers, _, err := loadCodexConfig(path)
+	_, _, servers, _, _, err := loadCodexConfig(path)
 	if err != nil {
 		t.Fatalf("load Codex config: %v", err)
 	}

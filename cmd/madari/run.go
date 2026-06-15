@@ -750,7 +750,7 @@ func (a cliApp) cmdClients(args []string) error {
 			})
 			continue
 		}
-		cr := doctor.InspectConfigPath(path)
+		cr := doctor.InspectClientConfigPath(adapter.Target(), path)
 		cr.Target = adapter.Target()
 		rows = append(rows, clientRow{target: adapter.Target(), path: path, cr: cr})
 	}
