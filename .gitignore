@@ -14,3 +14,4 @@
 
 # Local runtime state
 .tmp/
+.stew/
