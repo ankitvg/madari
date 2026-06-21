@@ -26,7 +26,7 @@ go install github.com/ankitvg/madari/cmd/madari@latest
 - `madari enable <name>`
 - `madari disable <name>`
 - `madari sync <client> [--dry-run] [--config-path <path>] [--json] [--scope project|user]`
-- `madari ring create <name> --member <server> [--member ...] [--description <text>]`
+- `madari ring create <name> [--member <server> ...] [--skill <skill> ...] [--description <text>]`
 - `madari ring list [--json]`
 - `madari ring show <name> [--json]`
 - `madari ring attach <ring> <client> [--scope project|user] [--dry-run] [--config-path <path>]`
@@ -60,11 +60,11 @@ Notes:
 - Manifests can mark secret env keys (`[secret_env]`, or `--secret-env` on `add`/`install`); sync refuses to write their static values into repo-scoped configs such as Claude Code `.mcp.json` and Gemini `.gemini/settings.json` — refused entries are reported with guidance (and scrubbed if previously materialized) while other servers sync normally. Use `madari sync <client> --scope user` for clients that support user scope.
 - `list` shows the managed sources owning each synced entry (`standalone` today; `-` when not synced), and `status` summarizes managed entries per client.
 - `list`, `status`, `doctor`, `sync --dry-run`, `ring list`, `ring show`, `ring status`, `skill list`, and `skill show` accept `--json` for machine-readable output with a versioned schema; schemas and exit codes are documented in `docs/cli-reference.md`.
-- Rings are named capability sets of servers (`madari ring …`). Members reference registry entries by name — the server manifest stays the single source of truth for command, args, and env.
-- `ring attach` records reference-counted ownership (`ring:<name>` sources) and materializes eligible members; `ring detach` releases it, and an entry only leaves the client config when nothing owns it anymore. Overlapping rings and standalone+ring combinations resolve by refcount, in any order. Attaching onto an entry madari does not manage is refused — even when values match.
+- Rings are named capability sets of servers and skills (`madari ring ...`). Server members reference registry entries by name, and skill members reference managed skill entries by name.
+- `ring attach` records reference-counted ownership (`ring:<name>` sources) and materializes eligible server members plus native skill files for supported skill targets; `ring detach` releases it, and an entry or skill file only leaves the client when nothing owns it anymore. Overlapping rings and standalone+ring combinations resolve by refcount, in any order. Attaching onto an entry or skill file madari does not manage is refused — even when values match. Rings containing skills cannot attach to `claude-desktop` because it is not a skill materialization target.
 - `ring delete` removes only unattached ring definitions. It refuses while any client scope still records `ring:<name>` ownership and prints scoped detach guidance; deletion never edits client configs or managed state.
-- `ring render` prints a self-contained MCP config to stdout for ephemeral use — `claude --mcp-config <(madari ring render research --client claude-code)` — mutating nothing; secret env values are never emitted. Render targets are independent from persistent sync support: Claude and Gemini emit JSON, while Codex and Vibe emit TOML. `ring status` shows attached rings and per-server ownership for every client and scope.
-- Skills are standalone Markdown instruction primitives (`madari skill …`). Madari stores skill metadata and a managed Markdown copy; plain `skill render` prints that Markdown exactly to stdout, while `skill render --client` and direct `skill attach` synthesize native `SKILL.md` frontmatter for supported skill clients. Skill attachment state is source-aware for future ring ownership, but skills are not ring members yet, are not written into MCP client configs, and are not consumed by `run`.
+- `ring render` prints a self-contained MCP config to stdout for ephemeral use — `claude --mcp-config <(madari ring render research --client claude-code)` — mutating nothing; secret env values are never emitted, and ring skill members are not embedded in MCP render output. Render targets are independent from persistent sync support: Claude and Gemini emit JSON, while Codex and Vibe emit TOML. `ring status` shows attached rings plus per-server and per-skill ownership for every client and scope.
+- Skills are standalone Markdown instruction primitives (`madari skill ...`). Madari stores skill metadata and a managed Markdown copy; plain `skill render` prints that Markdown exactly to stdout, while `skill render --client`, direct `skill attach`, and skill-bearing `ring attach` synthesize native `SKILL.md` frontmatter for supported skill clients. Skills can be ring members, but they are not written into MCP client configs and are not consumed by `run`.
 - Codex sync writes static non-secret `[env]` values under `[mcp_servers.<name>.env]` and forwards `[required_env]` plus `[secret_env]` keys through `env_vars`; static secret values are not written into Codex config.
 - Vibe sync writes static `[env]` values into user-scoped `[[mcp_servers]]` entries and preserves unmanaged HTTP/streamable/manual entries.
 - Supported sync clients: `claude-desktop`, `claude-code`, `gemini`, `codex`, and `vibe`.
@@ -153,11 +153,11 @@ madari help install
 madari version
 ```
 
-Rings — bundle servers into a capability set, attach it to a client, and
+Rings — bundle servers and skills into a capability set, attach it to a client, and
 spin it up ephemerally:
 
 ```bash
-madari ring create research --member stewreads --member arxiv
+madari ring create research --member stewreads --member arxiv --skill release
 madari ring attach research claude-code
 madari ring attach research gemini
 madari ring attach research codex

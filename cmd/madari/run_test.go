@@ -70,6 +70,22 @@ func writeSkillFile(t *testing.T, dir, name, content string) string {
 	return path
 }
 
+func chdirForTest(t *testing.T, dir string) {
+	t.Helper()
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(previous); err != nil {
+			t.Fatalf("restore cwd: %v", err)
+		}
+	})
+}
+
 func TestRunWithStoreLifecycleCommands(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
@@ -2435,7 +2451,11 @@ func TestRunWithStoreSyncDryRunJSON(t *testing.T) {
   "removed": [],
   "unchanged": [],
   "skipped": [],
-  "refused": []
+  "refused": [],
+  "skills_added": [],
+  "skills_updated": [],
+  "skills_removed": [],
+  "skills_unchanged": []
 }
 `, configPath)
 	if result.stdout != expected {
@@ -2850,7 +2870,7 @@ func TestRunWithStoreRingCreate(t *testing.T) {
 	if result.code != 0 {
 		t.Fatalf("ring create failed: %s", result.stderr)
 	}
-	if !strings.Contains(result.stdout, "created ring research with 2 member(s)") {
+	if !strings.Contains(result.stdout, "created ring research with 2 server member(s), 0 skill member(s)") {
 		t.Fatalf("expected creation confirmation, got: %s", result.stdout)
 	}
 
@@ -2868,7 +2888,7 @@ func TestRunWithStoreRingCreate(t *testing.T) {
 
 	// Member required.
 	result = runCmd(store, "ring", "create", "empty")
-	if result.code == 0 || !strings.Contains(result.stderr, "at least one member is required") {
+	if result.code == 0 || !strings.Contains(result.stderr, "at least one member or skill is required") {
 		t.Fatalf("expected member-required error, got code=%d stderr=%s", result.code, result.stderr)
 	}
 }
@@ -2914,10 +2934,10 @@ func TestRunWithStoreRingListAndShow(t *testing.T) {
 	if result.code != 0 {
 		t.Fatalf("ring list failed: %s", result.stderr)
 	}
-	if !strings.Contains(result.stdout, "NAME\tMEMBERS\tDESCRIPTION") {
+	if !strings.Contains(result.stdout, "NAME\tMEMBERS\tSKILLS\tDESCRIPTION") {
 		t.Fatalf("expected ring list header, got: %s", result.stdout)
 	}
-	if !strings.Contains(result.stdout, "research\tarxiv,stewreads\tResearch helpers") {
+	if !strings.Contains(result.stdout, "research\tarxiv,stewreads\t\tResearch helpers") {
 		t.Fatalf("expected ring row with sorted members, got: %s", result.stdout)
 	}
 
@@ -3057,6 +3077,7 @@ func TestRunWithStoreRingListJSON(t *testing.T) {
       "members": [
         "stewreads"
       ],
+      "skills": [],
       "description": ""
     }
   ]
@@ -3076,7 +3097,7 @@ func TestRunWithStoreRingListJSON(t *testing.T) {
 		t.Fatalf("unexpected command field: %v", payload["command"])
 	}
 	ring := payload["ring"].(map[string]any)
-	assertJSONKeys(t, ring, "name", "members", "description")
+	assertJSONKeys(t, ring, "name", "members", "skills", "description")
 	if ring["name"] != "research" {
 		t.Fatalf("unexpected ring payload: %v", ring)
 	}
@@ -3150,6 +3171,153 @@ func TestRunWithStoreRingAttachDetachFlow(t *testing.T) {
 	result = runCmd(store, "ring", "detach", "r2", "claude-code", "--config-path", configPath)
 	if result.code != 0 || !strings.Contains(result.stdout, "not attached") {
 		t.Fatalf("expected no-op notice, got code=%d stdout=%s", result.code, result.stdout)
+	}
+}
+
+func TestRunWithStoreRingAttachDetachWithSkills(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+	projectDir := t.TempDir()
+	chdirForTest(t, projectDir)
+	projectRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get project cwd: %v", err)
+	}
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "gemini"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	skillSource := writeSkillFile(t, t.TempDir(), "release.md", "# Release\n\nCut a patch release.\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", skillSource, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "research", "--member", "stewreads", "--skill", "release"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "settings.json")
+	result := runCmd(store, "ring", "attach", "research", "gemini", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("ring attach failed: %s", result.stderr)
+	}
+	for _, want := range []string{
+		"added: stewreads",
+		"skills added: release",
+		"skills dir: " + filepath.Join(projectRoot, ".gemini", "skills"),
+	} {
+		if !strings.Contains(result.stdout, want) {
+			t.Fatalf("expected %q in attach output, got: %s", want, result.stdout)
+		}
+	}
+	skillPath := filepath.Join(projectRoot, ".gemini", "skills", "release", "SKILL.md")
+	materialized, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read materialized skill: %v", err)
+	}
+	if !strings.Contains(string(materialized), `name: "release"`) || !strings.Contains(string(materialized), "# Release") {
+		t.Fatalf("expected native skill file, got:\n%s", materialized)
+	}
+	app := cliApp{store: store}
+	state, err := loadSkillAttachmentState(app.skillAttachmentStatePath("gemini", ""))
+	if err != nil {
+		t.Fatalf("load skill attachment state: %v", err)
+	}
+	entry := state[skillAttachmentKey("release", skillPath)]
+	if !reflect.DeepEqual(entry.Sources, []string{syncshared.RingSource("research")}) {
+		t.Fatalf("expected ring source in skill state, got: %+v", entry)
+	}
+
+	result = runCmd(store, "skill", "remove", "release")
+	if result.code == 0 || !strings.Contains(result.stderr, "madari ring detach research gemini") {
+		t.Fatalf("expected skill remove to refuse ring-owned skill, got code=%d stderr=%s", result.code, result.stderr)
+	}
+
+	result = runCmd(store, "ring", "detach", "research", "gemini", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("ring detach failed: %s", result.stderr)
+	}
+	for _, want := range []string{"removed: stewreads", "skills removed: release"} {
+		if !strings.Contains(result.stdout, want) {
+			t.Fatalf("expected %q in detach output, got: %s", want, result.stdout)
+		}
+	}
+	if _, err := os.Stat(skillPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected ring-owned skill file removed, got: %v", err)
+	}
+}
+
+func TestRunWithStoreRingAttachSkillUnsupportedTargetFailsBeforeSync(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "desktop", "--command", commandPath, "--client", "claude-desktop"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	skillSource := writeSkillFile(t, t.TempDir(), "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", skillSource, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "mixed", "--member", "desktop", "--skill", "release"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "claude_desktop_config.json")
+	result := runCmd(store, "ring", "attach", "mixed", "claude-desktop", "--config-path", configPath)
+	if result.code == 0 || !strings.Contains(result.stderr, "does not support skill materialization") {
+		t.Fatalf("expected unsupported skill target error, got code=%d stderr=%s", result.code, result.stderr)
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected server sync not to run after skill target refusal, got: %v", err)
+	}
+}
+
+func TestRunWithStoreSyncReconcilesRingSkillMembership(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+	projectDir := t.TempDir()
+	chdirForTest(t, projectDir)
+	projectRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get project cwd: %v", err)
+	}
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "gemini"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	for _, skill := range []string{"release", "review"} {
+		source := writeSkillFile(t, t.TempDir(), skill+".md", "# "+skill+"\n")
+		if result := runCmd(store, "skill", "add", skill, "--file", source, "--description", skill+" workflow"); result.code != 0 {
+			t.Fatalf("skill add %s failed: %s", skill, result.stderr)
+		}
+	}
+	if result := runCmd(store, "ring", "create", "research", "--member", "stewreads", "--skill", "release"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "settings.json")
+	if result := runCmd(store, "ring", "attach", "research", "gemini", "--config-path", configPath); result.code != 0 {
+		t.Fatalf("ring attach failed: %s", result.stderr)
+	}
+	if err := store.SaveRing(registry.Ring{Name: "research", Members: []string{"stewreads"}, Skills: []string{"review"}}); err != nil {
+		t.Fatalf("edit ring: %v", err)
+	}
+
+	result := runCmd(store, "sync", "gemini", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("sync failed: %s", result.stderr)
+	}
+	for _, want := range []string{"skills added: review", "skills removed: release"} {
+		if !strings.Contains(result.stdout, want) {
+			t.Fatalf("expected %q in sync output, got: %s", want, result.stdout)
+		}
+	}
+	releasePath := filepath.Join(projectRoot, ".gemini", "skills", "release", "SKILL.md")
+	reviewPath := filepath.Join(projectRoot, ".gemini", "skills", "review", "SKILL.md")
+	if _, err := os.Stat(releasePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected stale ring skill removed, got: %v", err)
+	}
+	if _, err := os.Stat(reviewPath); err != nil {
+		t.Fatalf("expected new ring skill materialized, got: %v", err)
 	}
 }
 
@@ -3574,7 +3742,7 @@ func TestRunWithStoreRingStatus(t *testing.T) {
 	var ccode map[string]any
 	for _, item := range targets {
 		entry := item.(map[string]any)
-		assertJSONKeys(t, entry, "target", "scope", "rings", "servers")
+		assertJSONKeys(t, entry, "target", "scope", "rings", "servers", "skills")
 		if entry["target"] == "claude-code" && entry["scope"] == "default" {
 			ccode = entry
 		}
@@ -3587,7 +3755,7 @@ func TestRunWithStoreRingStatus(t *testing.T) {
 		t.Fatalf("expected one attached ring, got: %v", rings)
 	}
 	ring := rings[0].(map[string]any)
-	assertJSONKeys(t, ring, "name", "exists", "members", "owned", "pending", "stale", "missing_members")
+	assertJSONKeys(t, ring, "name", "exists", "members", "skills", "owned", "skills_owned", "pending", "skills_pending", "stale", "skills_stale", "missing_members", "missing_skills")
 	if ring["name"] != "research" || ring["exists"] != true {
 		t.Fatalf("unexpected ring attachment: %v", ring)
 	}

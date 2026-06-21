@@ -137,17 +137,21 @@ type doctorConfigJSON struct {
 }
 
 type syncJSON struct {
-	SchemaVersion int      `json:"schema_version"`
-	Command       string   `json:"command"`
-	Target        string   `json:"target"`
-	ConfigPath    string   `json:"config_path"`
-	DryRun        bool     `json:"dry_run"`
-	Added         []string `json:"added"`
-	Updated       []string `json:"updated"`
-	Removed       []string `json:"removed"`
-	Unchanged     []string `json:"unchanged"`
-	Skipped       []string `json:"skipped"`
-	Refused       []string `json:"refused"`
+	SchemaVersion   int      `json:"schema_version"`
+	Command         string   `json:"command"`
+	Target          string   `json:"target"`
+	ConfigPath      string   `json:"config_path"`
+	DryRun          bool     `json:"dry_run"`
+	Added           []string `json:"added"`
+	Updated         []string `json:"updated"`
+	Removed         []string `json:"removed"`
+	Unchanged       []string `json:"unchanged"`
+	Skipped         []string `json:"skipped"`
+	Refused         []string `json:"refused"`
+	SkillsAdded     []string `json:"skills_added"`
+	SkillsUpdated   []string `json:"skills_updated"`
+	SkillsRemoved   []string `json:"skills_removed"`
+	SkillsUnchanged []string `json:"skills_unchanged"`
 }
 
 type ringListJSON struct {
@@ -165,15 +169,19 @@ type ringShowJSON struct {
 type ringJSON struct {
 	Name        string   `json:"name"`
 	Members     []string `json:"members"`
+	Skills      []string `json:"skills"`
 	Description string   `json:"description"`
 }
 
 func ringToJSON(ring registry.Ring) ringJSON {
 	members := append([]string(nil), ring.Members...)
 	sort.Strings(members)
+	skills := append([]string(nil), ring.Skills...)
+	sort.Strings(skills)
 	return ringJSON{
 		Name:        ring.Name,
 		Members:     nonNilStrings(members),
+		Skills:      nonNilStrings(skills),
 		Description: ring.Description,
 	}
 }
@@ -189,19 +197,30 @@ type ringStatusTargetJSON struct {
 	Scope   string               `json:"scope"`
 	Rings   []ringAttachmentJSON `json:"rings"`
 	Servers []ringServerJSON     `json:"servers"`
+	Skills  []ringSkillJSON      `json:"skills"`
 }
 
 type ringAttachmentJSON struct {
 	Name           string   `json:"name"`
 	Exists         bool     `json:"exists"`
 	Members        []string `json:"members"`
+	Skills         []string `json:"skills"`
 	Owned          []string `json:"owned"`
+	SkillsOwned    []string `json:"skills_owned"`
 	Pending        []string `json:"pending"`
+	SkillsPending  []string `json:"skills_pending"`
 	Stale          []string `json:"stale"`
+	SkillsStale    []string `json:"skills_stale"`
 	MissingMembers []string `json:"missing_members"`
+	MissingSkills  []string `json:"missing_skills"`
 }
 
 type ringServerJSON struct {
+	Name    string   `json:"name"`
+	Sources []string `json:"sources"`
+}
+
+type ringSkillJSON struct {
 	Name    string   `json:"name"`
 	Sources []string `json:"sources"`
 }

@@ -382,6 +382,29 @@ func (a cliApp) detachSkillSource(name, target, scope, skillsDir, source string,
 }
 
 func (a cliApp) detachSkillSourceAll(target, scope, source string, dryRun bool) (skillAttachResult, error) {
+	return a.detachSkillSourceWhere(target, scope, source, dryRun, func(skillAttachmentEntry) bool {
+		return true
+	})
+}
+
+func (a cliApp) detachSkillSourceNames(target, scope, source string, names []string, dryRun bool) (skillAttachResult, error) {
+	allowed := map[string]struct{}{}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			allowed[name] = struct{}{}
+		}
+	}
+	if len(allowed) == 0 {
+		return skillAttachResult{DryRun: dryRun}, nil
+	}
+	return a.detachSkillSourceWhere(target, scope, source, dryRun, func(entry skillAttachmentEntry) bool {
+		_, ok := allowed[entry.Name]
+		return ok
+	})
+}
+
+func (a cliApp) detachSkillSourceWhere(target, scope, source string, dryRun bool, include func(skillAttachmentEntry) bool) (skillAttachResult, error) {
 	if _, err := skillTargetByName(target); err != nil {
 		return skillAttachResult{}, err
 	}
@@ -406,7 +429,7 @@ func (a cliApp) detachSkillSourceAll(target, scope, source string, dryRun bool) 
 	changed := false
 	for _, key := range keys {
 		entry := state[key]
-		if !skillAttachmentHasSource(entry, source) {
+		if !skillAttachmentHasSource(entry, source) || (include != nil && !include(entry)) {
 			continue
 		}
 		skillPath := filepath.Clean(entry.Path)
