@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -248,5 +249,90 @@ func TestSkillAttachmentStateRejectsUnknownVersion(t *testing.T) {
 	}
 	if _, err := loadSkillAttachmentState(path); err == nil || !strings.Contains(err.Error(), "unsupported skill attachment state version 99") {
 		t.Fatalf("expected unknown version error, got: %v", err)
+	}
+}
+
+func TestDetachSkillSourceAllRemovesRingOwnedFile(t *testing.T) {
+	store := registry.NewStore(filepath.Join(t.TempDir(), "servers"))
+	app := cliApp{store: store}
+	skillPath := filepath.Join(t.TempDir(), ".agents", "skills", "release", "SKILL.md")
+	content := []byte("---\nname: \"release\"\ndescription: \"Release workflow\"\n---\n\n# Release\n")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(skillPath, content, 0o644); err != nil {
+		t.Fatalf("write skill file: %v", err)
+	}
+	state := map[string]skillAttachmentEntry{
+		skillAttachmentKey("release", skillPath): {
+			Name:    "release",
+			Path:    skillPath,
+			Hash:    skillContentHash(content),
+			Sources: []string{syncshared.RingSource("research")},
+		},
+	}
+	if err := saveSkillAttachmentState(app.skillAttachmentStatePath("codex", ""), state); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	result, err := app.detachSkillSourceAll("codex", "", syncshared.RingSource("research"), false)
+	if err != nil {
+		t.Fatalf("detach ring source: %v", err)
+	}
+	if !reflect.DeepEqual(result.Removed, []string{"release"}) {
+		t.Fatalf("expected release removed, got: %+v", result)
+	}
+	if _, err := os.Stat(skillPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected skill file removed, got: %v", err)
+	}
+	got, err := loadSkillAttachmentState(app.skillAttachmentStatePath("codex", ""))
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected state entry removed, got: %+v", got)
+	}
+}
+
+func TestDetachSkillSourceAllPreservesOtherSources(t *testing.T) {
+	store := registry.NewStore(filepath.Join(t.TempDir(), "servers"))
+	app := cliApp{store: store}
+	skillPath := filepath.Join(t.TempDir(), ".agents", "skills", "release", "SKILL.md")
+	content := []byte("---\nname: \"release\"\ndescription: \"Release workflow\"\n---\n\n# Release\n")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(skillPath, content, 0o644); err != nil {
+		t.Fatalf("write skill file: %v", err)
+	}
+	state := map[string]skillAttachmentEntry{
+		skillAttachmentKey("release", skillPath): {
+			Name:    "release",
+			Path:    skillPath,
+			Hash:    skillContentHash(content),
+			Sources: []string{syncshared.SourceStandalone, syncshared.RingSource("research")},
+		},
+	}
+	if err := saveSkillAttachmentState(app.skillAttachmentStatePath("codex", ""), state); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	result, err := app.detachSkillSourceAll("codex", "", syncshared.RingSource("research"), false)
+	if err != nil {
+		t.Fatalf("detach ring source: %v", err)
+	}
+	if !reflect.DeepEqual(result.Removed, []string{"release"}) {
+		t.Fatalf("expected release source removed, got: %+v", result)
+	}
+	if _, err := os.Stat(skillPath); err != nil {
+		t.Fatalf("expected skill file preserved, got: %v", err)
+	}
+	got, err := loadSkillAttachmentState(app.skillAttachmentStatePath("codex", ""))
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	entry := got[skillAttachmentKey("release", skillPath)]
+	if !reflect.DeepEqual(entry.Sources, []string{syncshared.SourceStandalone}) {
+		t.Fatalf("expected standalone source preserved, got: %+v", entry)
 	}
 }

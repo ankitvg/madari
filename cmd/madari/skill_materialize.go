@@ -176,9 +176,17 @@ func (a cliApp) ensureSkillNotAttached(name string) error {
 }
 
 func (a cliApp) attachSkill(name, target, scope, skillsDir string, dryRun bool) (skillAttachResult, error) {
+	return a.attachSkillSource(name, target, scope, skillsDir, syncshared.SourceStandalone, dryRun)
+}
+
+func (a cliApp) attachSkillSource(name, target, scope, skillsDir, source string, dryRun bool) (skillAttachResult, error) {
 	ct, err := skillTargetByName(target)
 	if err != nil {
 		return skillAttachResult{}, err
+	}
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return skillAttachResult{}, fmt.Errorf("skill attachment source is required")
 	}
 	skill, err := a.store.GetSkill(name)
 	if err != nil {
@@ -227,9 +235,9 @@ func (a cliApp) attachSkill(name, target, scope, skillsDir string, dryRun bool) 
 			if skillContentHash(current) != entry.Hash {
 				return skillAttachResult{}, fmt.Errorf("refusing to update modified skill file %s; detach or restore it manually", skillPath)
 			}
-			hasStandalone := skillAttachmentHasSource(entry, syncshared.SourceStandalone)
+			hasSource := skillAttachmentHasSource(entry, source)
 			switch {
-			case desiredHash == entry.Hash && hasStandalone:
+			case desiredHash == entry.Hash && hasSource:
 				result.Unchanged = []string{name}
 			case desiredHash == entry.Hash:
 				result.Updated = []string{name}
@@ -264,7 +272,7 @@ func (a cliApp) attachSkill(name, target, scope, skillsDir string, dryRun bool) 
 	entry.Name = name
 	entry.Path = skillPath
 	entry.Hash = desiredHash
-	entry.Sources = skillAttachmentSourcesWith(entry.Sources, syncshared.SourceStandalone)
+	entry.Sources = skillAttachmentSourcesWith(entry.Sources, source)
 	state[stateKey] = entry
 	if err := saveSkillAttachmentStateFunc(statePath, state); err != nil {
 		if needsFileWrite {
@@ -278,9 +286,17 @@ func (a cliApp) attachSkill(name, target, scope, skillsDir string, dryRun bool) 
 }
 
 func (a cliApp) detachSkill(name, target, scope, skillsDir string, dryRun bool) (skillAttachResult, error) {
+	return a.detachSkillSource(name, target, scope, skillsDir, syncshared.SourceStandalone, dryRun)
+}
+
+func (a cliApp) detachSkillSource(name, target, scope, skillsDir, source string, dryRun bool) (skillAttachResult, error) {
 	ct, err := skillTargetByName(target)
 	if err != nil {
 		return skillAttachResult{}, err
+	}
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return skillAttachResult{}, fmt.Errorf("skill attachment source is required")
 	}
 	statePath := a.skillAttachmentStatePath(target, scope)
 	state, err := loadSkillAttachmentState(statePath)
@@ -311,7 +327,7 @@ func (a cliApp) detachSkill(name, target, scope, skillsDir string, dryRun bool) 
 			Unchanged: []string{name},
 		}, nil
 	}
-	if !skillAttachmentHasSource(entry, syncshared.SourceStandalone) {
+	if !skillAttachmentHasSource(entry, source) {
 		return skillAttachResult{
 			SkillPath: expectedSkillPath,
 			SkillsDir: root,
@@ -322,7 +338,7 @@ func (a cliApp) detachSkill(name, target, scope, skillsDir string, dryRun bool) 
 
 	skillPath := filepath.Clean(entry.Path)
 	root = filepath.Dir(filepath.Dir(skillPath))
-	remainingSources := skillAttachmentSourcesWithout(entry.Sources, syncshared.SourceStandalone)
+	remainingSources := skillAttachmentSourcesWithout(entry.Sources, source)
 	result := skillAttachResult{
 		SkillPath: skillPath,
 		SkillsDir: root,
@@ -358,6 +374,80 @@ func (a cliApp) detachSkill(name, target, scope, skillsDir string, dryRun bool) 
 	} else {
 		entry.Sources = remainingSources
 		state[stateKey] = entry
+	}
+	if err := saveSkillAttachmentStateFunc(statePath, state); err != nil {
+		return skillAttachResult{}, err
+	}
+	return result, nil
+}
+
+func (a cliApp) detachSkillSourceAll(target, scope, source string, dryRun bool) (skillAttachResult, error) {
+	if _, err := skillTargetByName(target); err != nil {
+		return skillAttachResult{}, err
+	}
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return skillAttachResult{}, fmt.Errorf("skill attachment source is required")
+	}
+
+	statePath := a.skillAttachmentStatePath(target, scope)
+	state, err := loadSkillAttachmentState(statePath)
+	if err != nil {
+		return skillAttachResult{}, err
+	}
+
+	result := skillAttachResult{DryRun: dryRun}
+	keys := make([]string, 0, len(state))
+	for key := range state {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	changed := false
+	for _, key := range keys {
+		entry := state[key]
+		if !skillAttachmentHasSource(entry, source) {
+			continue
+		}
+		skillPath := filepath.Clean(entry.Path)
+		current, readErr := os.ReadFile(skillPath)
+		switch {
+		case readErr == nil:
+			if skillContentHash(current) != entry.Hash {
+				return skillAttachResult{}, fmt.Errorf("refusing to remove modified skill file %s; remove it manually if desired", skillPath)
+			}
+		case errors.Is(readErr, os.ErrNotExist):
+			// Clear stale ownership state below.
+		default:
+			return skillAttachResult{}, fmt.Errorf("read skill file %s: %w", skillPath, readErr)
+		}
+
+		result.SkillsDir = filepath.Dir(filepath.Dir(skillPath))
+		result.Removed = appendUniqueName(result.Removed, entry.Name)
+		changed = true
+		if dryRun {
+			continue
+		}
+
+		remainingSources := skillAttachmentSourcesWithout(entry.Sources, source)
+		if len(remainingSources) == 0 && readErr == nil {
+			if err := os.Remove(skillPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return skillAttachResult{}, fmt.Errorf("remove skill file %s: %w", skillPath, err)
+			}
+			if err := os.Remove(filepath.Dir(skillPath)); err != nil && !errors.Is(err, os.ErrNotExist) && !isDirectoryNotEmpty(err) {
+				return skillAttachResult{}, fmt.Errorf("remove empty skill directory %s: %w", filepath.Dir(skillPath), err)
+			}
+		}
+		if len(remainingSources) == 0 {
+			delete(state, key)
+		} else {
+			entry.Sources = remainingSources
+			state[key] = entry
+		}
+	}
+
+	if dryRun || !changed {
+		return result, nil
 	}
 	if err := saveSkillAttachmentStateFunc(statePath, state); err != nil {
 		return skillAttachResult{}, err
@@ -864,4 +954,41 @@ func sortedAttachedSkillNames(state map[string]skillAttachmentEntry) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func appendUniqueName(names []string, name string) []string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return names
+	}
+	for _, existing := range names {
+		if existing == name {
+			return names
+		}
+	}
+	names = append(names, name)
+	sort.Strings(names)
+	return names
+}
+
+func mergeSkillAttachResult(dst *skillAttachResult, src skillAttachResult) {
+	if dst.SkillsDir == "" {
+		dst.SkillsDir = src.SkillsDir
+	}
+	if dst.SkillPath == "" {
+		dst.SkillPath = src.SkillPath
+	}
+	dst.DryRun = dst.DryRun || src.DryRun
+	for _, name := range src.Added {
+		dst.Added = appendUniqueName(dst.Added, name)
+	}
+	for _, name := range src.Updated {
+		dst.Updated = appendUniqueName(dst.Updated, name)
+	}
+	for _, name := range src.Removed {
+		dst.Removed = appendUniqueName(dst.Removed, name)
+	}
+	for _, name := range src.Unchanged {
+		dst.Unchanged = appendUniqueName(dst.Unchanged, name)
+	}
 }
