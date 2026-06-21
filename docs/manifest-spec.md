@@ -106,9 +106,11 @@ at `<config-root>/skills/<name>.md`.
 - `description` (string, optional): friendly description.
 
 Skill manifests have no sections; unknown keys are rejected. The Markdown
-body is arbitrary text, but it must be non-empty. V1 skills are managed and
-rendered independently: they are not ring members, are not synced into client
-configs, and are not consumed by `run`.
+body is arbitrary text, but it must be non-empty. Plain `skill render` emits
+that managed body exactly. Client-native render/attach synthesize a `SKILL.md`
+frontmatter block from the manifest metadata and the managed body. Skills are
+not ring members, are not written into MCP client configs, and are not consumed
+by `run`.
 
 ### Example
 

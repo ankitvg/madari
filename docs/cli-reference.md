@@ -133,6 +133,10 @@ madari skill update release --file ./SKILL.md --description "Updated workflow"
 madari skill list
 madari skill show release
 madari skill render release
+madari skill render release --client codex
+madari skill attach release codex
+madari skill attach release codex --scope user
+madari skill detach release codex
 madari skill remove release
 ```
 
@@ -142,9 +146,18 @@ metadata lives at `<config-root>/skills/<name>.toml`, and content lives at
 `skill update` fails if it does not. Updating preserves the existing
 description unless `--description` is passed.
 
-`skill render` prints the managed Markdown bytes exactly to stdout and
-mutates nothing. V1 skills are not ring members, are not synced into client
-configs, and are not consumed by `run`.
+Plain `skill render` prints the managed Markdown bytes exactly to stdout and
+mutates nothing. `skill render --client <target>` synthesizes a native
+`SKILL.md` with YAML frontmatter for `claude-code`, `codex`, `gemini`, or
+`vibe`; it still writes no files.
+
+`skill attach` writes `<skills-dir>/<name>/SKILL.md` and records ownership in
+Madari state. Project scope is the default; user scope writes to the target's
+user skill root. `--skills-dir` overrides the root. Attach refuses to overwrite
+unmanaged files. `skill detach` removes only Madari-owned `SKILL.md` files and
+refuses to delete files modified since Madari last wrote them. Skills are not
+ring members, are not written into MCP client configs, and are not consumed by
+`run`.
 
 ## Diagnostics
 
@@ -450,3 +463,8 @@ madari version
 - `claude-code`
 - `codex`
 - `gemini`
+- `vibe`
+
+Skill attach/render targets are `claude-code`, `codex`, `gemini`, and `vibe`.
+`claude-desktop` is not a skill target until it has a stable local skill
+directory contract.

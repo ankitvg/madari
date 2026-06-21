@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -70,8 +71,260 @@ func defaultHomeSkillRoot(parts ...string) skillRootResolver {
 }
 
 type renderedSkill struct {
-	Content    []byte
-	SourceDesc string
+	Content []byte
+}
+
+type skillAttachResult struct {
+	SkillPath string
+	SkillsDir string
+	DryRun    bool
+	Added     []string
+	Updated   []string
+	Removed   []string
+	Unchanged []string
+}
+
+type skillAttachmentRef struct {
+	target string
+	scope  string
+	path   string
+}
+
+func skillTargetByName(target string) (clientTarget, error) {
+	ct, ok := clientTargetByName(target)
+	if !ok || !ct.skillRoots.supported() {
+		return clientTarget{}, commandInputError("skill", fmt.Sprintf("unsupported skill target %q (supported: %s)", target, strings.Join(supportedSkillTargets(), ", ")))
+	}
+	return ct, nil
+}
+
+func (a cliApp) skillAttachmentStatePath(target, scope string) string {
+	suffix := "-skills-managed.json"
+	if scope == clients.ScopeUser {
+		suffix = "-skills-user-managed.json"
+	}
+	return filepath.Join(filepath.Dir(a.store.ServersDir()), "state", target+suffix)
+}
+
+func (a cliApp) skillAttachmentRefs() []skillAttachmentRef {
+	refs := []skillAttachmentRef{}
+	for _, target := range supportedSkillTargets() {
+		refs = append(refs, skillAttachmentRef{
+			target: target,
+			path:   a.skillAttachmentStatePath(target, ""),
+		})
+		refs = append(refs, skillAttachmentRef{
+			target: target,
+			scope:  clients.ScopeUser,
+			path:   a.skillAttachmentStatePath(target, clients.ScopeUser),
+		})
+	}
+	return refs
+}
+
+func (a cliApp) ensureSkillNotAttached(name string) error {
+	holders := []skillAttachmentRef{}
+	for _, ref := range a.skillAttachmentRefs() {
+		state, err := loadSkillAttachmentState(ref.path)
+		if err != nil {
+			return err
+		}
+		if _, exists := state[name]; exists {
+			holders = append(holders, ref)
+		}
+	}
+	if len(holders) == 0 {
+		return nil
+	}
+
+	guidance := make([]string, 0, len(holders))
+	for _, holder := range holders {
+		command := fmt.Sprintf("madari skill detach %s %s", name, holder.target)
+		if holder.scope == clients.ScopeUser {
+			command += " --scope user"
+		}
+		guidance = append(guidance, command)
+	}
+	return fmt.Errorf("skill %q is still attached; detach first: %s", name, strings.Join(guidance, "; "))
+}
+
+func (a cliApp) attachSkill(name, target, scope, skillsDir string, dryRun bool) (skillAttachResult, error) {
+	ct, err := skillTargetByName(target)
+	if err != nil {
+		return skillAttachResult{}, err
+	}
+	skill, err := a.store.GetSkill(name)
+	if err != nil {
+		if errors.Is(err, registry.ErrSkillNotFound) {
+			return skillAttachResult{}, fmt.Errorf("skill %q not found", name)
+		}
+		return skillAttachResult{}, err
+	}
+	content, err := a.store.GetSkillContent(name)
+	if err != nil {
+		return skillAttachResult{}, err
+	}
+	rendered, err := renderClientSkill(skill, content)
+	if err != nil {
+		return skillAttachResult{}, err
+	}
+	root, err := ct.skillRoots.resolve(scope, skillsDir)
+	if err != nil {
+		return skillAttachResult{}, err
+	}
+	root = filepath.Clean(root)
+	skillPath := filepath.Join(root, name, "SKILL.md")
+	statePath := a.skillAttachmentStatePath(target, scope)
+	state, err := loadSkillAttachmentState(statePath)
+	if err != nil {
+		return skillAttachResult{}, err
+	}
+
+	desiredHash := skillContentHash(rendered.Content)
+	result := skillAttachResult{
+		SkillPath: skillPath,
+		SkillsDir: root,
+		DryRun:    dryRun,
+	}
+
+	entry, owned := state[name]
+	if owned {
+		if filepath.Clean(entry.Path) != skillPath {
+			return skillAttachResult{}, fmt.Errorf("skill %q is already attached to %s at %s; detach it before attaching to %s", name, target, entry.Path, skillPath)
+		}
+		current, readErr := os.ReadFile(skillPath)
+		switch {
+		case readErr == nil:
+			if skillContentHash(current) != entry.Hash {
+				return skillAttachResult{}, fmt.Errorf("refusing to update modified skill file %s; detach or restore it manually", skillPath)
+			}
+			if desiredHash == entry.Hash {
+				result.Unchanged = []string{name}
+			} else {
+				result.Updated = []string{name}
+			}
+		case errors.Is(readErr, os.ErrNotExist):
+			result.Added = []string{name}
+		default:
+			return skillAttachResult{}, fmt.Errorf("read skill file %s: %w", skillPath, readErr)
+		}
+	} else {
+		if _, statErr := os.Stat(skillPath); statErr == nil {
+			return skillAttachResult{}, fmt.Errorf("refusing to overwrite unmanaged skill file %s", skillPath)
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return skillAttachResult{}, fmt.Errorf("inspect skill file %s: %w", skillPath, statErr)
+		}
+		result.Added = []string{name}
+	}
+
+	if dryRun || len(result.Unchanged) > 0 {
+		return result, nil
+	}
+	if err := syncshared.WriteFileAtomically(skillPath, rendered.Content, 0o644); err != nil {
+		return skillAttachResult{}, fmt.Errorf("write skill file %s: %w", skillPath, err)
+	}
+	state[name] = skillAttachmentEntry{Path: skillPath, Hash: desiredHash}
+	if err := saveSkillAttachmentState(statePath, state); err != nil {
+		return skillAttachResult{}, err
+	}
+	return result, nil
+}
+
+func (a cliApp) detachSkill(name, target, scope, skillsDir string, dryRun bool) (skillAttachResult, error) {
+	ct, err := skillTargetByName(target)
+	if err != nil {
+		return skillAttachResult{}, err
+	}
+	statePath := a.skillAttachmentStatePath(target, scope)
+	state, err := loadSkillAttachmentState(statePath)
+	if err != nil {
+		return skillAttachResult{}, err
+	}
+
+	entry, owned := state[name]
+	if !owned {
+		root, rootErr := ct.skillRoots.resolve(scope, skillsDir)
+		if rootErr != nil {
+			return skillAttachResult{}, rootErr
+		}
+		root = filepath.Clean(root)
+		return skillAttachResult{
+			SkillPath: filepath.Join(root, name, "SKILL.md"),
+			SkillsDir: root,
+			DryRun:    dryRun,
+			Unchanged: []string{name},
+		}, nil
+	}
+
+	skillPath := filepath.Clean(entry.Path)
+	if strings.TrimSpace(skillsDir) != "" {
+		root, err := ct.skillRoots.resolve(scope, skillsDir)
+		if err != nil {
+			return skillAttachResult{}, err
+		}
+		expected := filepath.Join(filepath.Clean(root), name, "SKILL.md")
+		if expected != skillPath {
+			return skillAttachResult{}, fmt.Errorf("skill %q is attached at %s, not %s", name, skillPath, expected)
+		}
+	}
+
+	root := filepath.Dir(filepath.Dir(skillPath))
+	result := skillAttachResult{
+		SkillPath: skillPath,
+		SkillsDir: root,
+		DryRun:    dryRun,
+		Removed:   []string{name},
+	}
+
+	current, readErr := os.ReadFile(skillPath)
+	switch {
+	case readErr == nil:
+		if skillContentHash(current) != entry.Hash {
+			return skillAttachResult{}, fmt.Errorf("refusing to remove modified skill file %s; remove it manually if desired", skillPath)
+		}
+	case errors.Is(readErr, os.ErrNotExist):
+		// Clear stale ownership state below.
+	default:
+		return skillAttachResult{}, fmt.Errorf("read skill file %s: %w", skillPath, readErr)
+	}
+
+	if dryRun {
+		return result, nil
+	}
+	if readErr == nil {
+		if err := os.Remove(skillPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return skillAttachResult{}, fmt.Errorf("remove skill file %s: %w", skillPath, err)
+		}
+		if err := os.Remove(filepath.Dir(skillPath)); err != nil && !errors.Is(err, os.ErrNotExist) && !isDirectoryNotEmpty(err) {
+			return skillAttachResult{}, fmt.Errorf("remove empty skill directory %s: %w", filepath.Dir(skillPath), err)
+		}
+	}
+	delete(state, name)
+	if err := saveSkillAttachmentState(statePath, state); err != nil {
+		return skillAttachResult{}, err
+	}
+	return result, nil
+}
+
+func isDirectoryNotEmpty(err error) bool {
+	return strings.Contains(err.Error(), "directory not empty") || strings.Contains(err.Error(), "not empty")
+}
+
+func printSkillAttachSummary(out io.Writer, target, scope string, result skillAttachResult) {
+	if scope == "" {
+		scope = clients.ScopeProject
+	}
+	fmt.Fprintf(out, "target: %s\n", target)
+	fmt.Fprintf(out, "scope: %s\n", scope)
+	fmt.Fprintf(out, "skills_dir: %s\n", result.SkillsDir)
+	fmt.Fprintf(out, "skill_file: %s\n", result.SkillPath)
+	if result.DryRun {
+		fmt.Fprintln(out, "dry-run: true")
+	}
+	fmt.Fprintf(out, "added: %s\n", formatNameList(result.Added))
+	fmt.Fprintf(out, "updated: %s\n", formatNameList(result.Updated))
+	fmt.Fprintf(out, "removed: %s\n", formatNameList(result.Removed))
+	fmt.Fprintf(out, "unchanged: %s\n", formatNameList(result.Unchanged))
 }
 
 func renderClientSkill(skill registry.Skill, content []byte) (renderedSkill, error) {
@@ -105,7 +358,7 @@ func renderClientSkill(skill registry.Skill, content []byte) (renderedSkill, err
 	}
 	out.WriteString("---\n\n")
 	out.Write(body)
-	return renderedSkill{Content: out.Bytes(), SourceDesc: sourceDescription}, nil
+	return renderedSkill{Content: out.Bytes()}, nil
 }
 
 func splitSkillFrontmatter(content []byte) ([]string, []byte) {
