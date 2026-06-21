@@ -674,8 +674,16 @@ func (a cliApp) cmdSync(args []string) error {
 	if scope == clients.ScopeUser {
 		statePath = a.managedUserStatePath(target)
 	}
+	attachedRingsBeforeSync := []string{}
+	if supportsSkillMaterialization(target) {
+		state, err := syncshared.LoadManagedState(statePath)
+		if err != nil {
+			return err
+		}
+		attachedRingsBeforeSync = syncshared.AttachedRings(state)
+	}
 	if !dryRun {
-		if _, err := a.syncRingSkills(target, scope, rings, true); err != nil {
+		if _, err := a.syncRingSkills(target, scope, rings, true, attachedRingsBeforeSync); err != nil {
 			return err
 		}
 	}
@@ -689,7 +697,7 @@ func (a cliApp) cmdSync(args []string) error {
 	if err != nil {
 		return err
 	}
-	skillResult, err := a.syncRingSkills(target, scope, rings, dryRun)
+	skillResult, err := a.syncRingSkills(target, scope, rings, dryRun, attachedRingsBeforeSync)
 	if err != nil {
 		return err
 	}

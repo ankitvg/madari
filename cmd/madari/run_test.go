@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -3318,6 +3319,217 @@ func TestRunWithStoreSyncReconcilesRingSkillMembership(t *testing.T) {
 	}
 	if _, err := os.Stat(reviewPath); err != nil {
 		t.Fatalf("expected new ring skill materialized, got: %v", err)
+	}
+}
+
+func TestRunWithStoreSyncMaterializesSkillOnlyRingAfterServerMembershipRemoved(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+	projectDir := t.TempDir()
+	chdirForTest(t, projectDir)
+	projectRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get project cwd: %v", err)
+	}
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "gemini"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	source := writeSkillFile(t, t.TempDir(), "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", source, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "research", "--member", "stewreads"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "settings.json")
+	if result := runCmd(store, "ring", "attach", "research", "gemini", "--config-path", configPath); result.code != 0 {
+		t.Fatalf("ring attach failed: %s", result.stderr)
+	}
+	if err := store.SaveRing(registry.Ring{Name: "research", Skills: []string{"release"}}); err != nil {
+		t.Fatalf("edit ring to skill-only: %v", err)
+	}
+
+	result := runCmd(store, "sync", "gemini", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("sync failed: %s", result.stderr)
+	}
+	for _, want := range []string{"removed: stewreads", "skills added: release"} {
+		if !strings.Contains(result.stdout, want) {
+			t.Fatalf("expected %q in sync output, got: %s", want, result.stdout)
+		}
+	}
+	skillPath := filepath.Join(projectRoot, ".gemini", "skills", "release", "SKILL.md")
+	if _, err := os.Stat(skillPath); err != nil {
+		t.Fatalf("expected skill-only ring to materialize after sync, got: %v", err)
+	}
+}
+
+func TestRunWithStoreSyncUnsupportedSkillTargetIgnoresRingSkills(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "desktop", "--command", commandPath, "--client", "claude-desktop"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	source := writeSkillFile(t, t.TempDir(), "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", source, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "mixed", "--member", "desktop"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "claude_desktop_config.json")
+	if result := runCmd(store, "ring", "attach", "mixed", "claude-desktop", "--config-path", configPath); result.code != 0 {
+		t.Fatalf("ring attach failed: %s", result.stderr)
+	}
+	if err := store.SaveRing(registry.Ring{Name: "mixed", Members: []string{"desktop"}, Skills: []string{"release"}}); err != nil {
+		t.Fatalf("edit ring to add skill: %v", err)
+	}
+
+	result := runCmd(store, "sync", "claude-desktop", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("unsupported skill target sync should remain usable, got stderr=%s stdout=%s", result.stderr, result.stdout)
+	}
+	if strings.Contains(result.stderr, "does not support skill materialization") {
+		t.Fatalf("sync should not fail target-wide on unsupported skill materialization, got: %s", result.stderr)
+	}
+}
+
+func TestRunWithStoreRingDetachPreflightsModifiedSkillsBeforeServerDetach(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+	projectDir := t.TempDir()
+	chdirForTest(t, projectDir)
+	projectRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get project cwd: %v", err)
+	}
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "gemini"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	for _, skill := range []string{"release", "review"} {
+		source := writeSkillFile(t, t.TempDir(), skill+".md", "# "+skill+"\n")
+		if result := runCmd(store, "skill", "add", skill, "--file", source, "--description", skill+" workflow"); result.code != 0 {
+			t.Fatalf("skill add %s failed: %s", skill, result.stderr)
+		}
+	}
+	if result := runCmd(store, "ring", "create", "research", "--member", "stewreads", "--skill", "release", "--skill", "review"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "settings.json")
+	if result := runCmd(store, "ring", "attach", "research", "gemini", "--config-path", configPath); result.code != 0 {
+		t.Fatalf("ring attach failed: %s", result.stderr)
+	}
+	releasePath := filepath.Join(projectRoot, ".gemini", "skills", "release", "SKILL.md")
+	reviewPath := filepath.Join(projectRoot, ".gemini", "skills", "review", "SKILL.md")
+	if err := os.WriteFile(reviewPath, []byte("user modified\n"), 0o644); err != nil {
+		t.Fatalf("modify review skill: %v", err)
+	}
+
+	result := runCmd(store, "ring", "detach", "research", "gemini", "--config-path", configPath)
+	if result.code == 0 || !strings.Contains(result.stderr, "refusing to remove modified skill file") {
+		t.Fatalf("expected modified-skill refusal, got code=%d stderr=%s", result.code, result.stderr)
+	}
+	if _, err := os.Stat(releasePath); err != nil {
+		t.Fatalf("unmodified earlier skill should remain after failed detach preflight, got: %v", err)
+	}
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after failed detach: %v", err)
+	}
+	if !strings.Contains(string(config), "stewreads") {
+		t.Fatalf("server config should remain attached after failed skill preflight, got: %s", config)
+	}
+	state, err := syncshared.LoadManagedState(cliApp{store: store}.ringOpStatePath("gemini", ""))
+	if err != nil {
+		t.Fatalf("load managed state: %v", err)
+	}
+	if !slices.Contains(state["stewreads"], syncshared.RingSource("research")) {
+		t.Fatalf("server ring source should remain after failed detach, got: %+v", state)
+	}
+}
+
+func TestRunWithStoreSkillOnlyRingOmitsEmptyServerSummary(t *testing.T) {
+	store := newTestStore(t)
+	projectDir := t.TempDir()
+	chdirForTest(t, projectDir)
+
+	source := writeSkillFile(t, t.TempDir(), "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", source, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "workflow", "--skill", "release"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "ring", "attach", "workflow", "gemini")
+	if result.code != 0 {
+		t.Fatalf("ring attach failed: %s", result.stderr)
+	}
+	if strings.Contains(result.stdout, "sync target:") || strings.Contains(result.stdout, "config path: -") {
+		t.Fatalf("skill-only attach should not print empty server sync summary, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "skills added: release") {
+		t.Fatalf("expected skill attach summary, got: %s", result.stdout)
+	}
+
+	result = runCmd(store, "ring", "detach", "workflow", "gemini")
+	if result.code != 0 {
+		t.Fatalf("ring detach failed: %s", result.stderr)
+	}
+	if strings.Contains(result.stdout, "sync target:") || strings.Contains(result.stdout, "config path: -") {
+		t.Fatalf("skill-only detach should not print empty server sync summary, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "skills removed: release") {
+		t.Fatalf("expected skill detach summary, got: %s", result.stdout)
+	}
+}
+
+func TestRunWithStoreSyncDoesNotReportRemovedAndUnchangedForSameSkill(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+	projectDir := t.TempDir()
+	chdirForTest(t, projectDir)
+
+	if result := runCmd(store, "add", "stewreads", "--command", commandPath, "--client", "gemini"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	source := writeSkillFile(t, t.TempDir(), "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", source, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "server-ring", "--member", "stewreads", "--skill", "release"); result.code != 0 {
+		t.Fatalf("ring create server-ring failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "skill-ring", "--skill", "release"); result.code != 0 {
+		t.Fatalf("ring create skill-ring failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "settings.json")
+	if result := runCmd(store, "ring", "attach", "server-ring", "gemini", "--config-path", configPath); result.code != 0 {
+		t.Fatalf("attach server-ring failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "attach", "skill-ring", "gemini", "--config-path", configPath); result.code != 0 {
+		t.Fatalf("attach skill-ring failed: %s", result.stderr)
+	}
+	if err := store.SaveRing(registry.Ring{Name: "server-ring", Members: []string{"stewreads"}}); err != nil {
+		t.Fatalf("edit server-ring: %v", err)
+	}
+
+	result := runCmd(store, "sync", "gemini", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("sync failed: %s", result.stderr)
+	}
+	if strings.Contains(result.stdout, "skills removed: release") {
+		t.Fatalf("skill still owned by overlapping ring should not be reported as removed, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stdout, "skills unchanged: release") {
+		t.Fatalf("expected overlapping skill to be reported as unchanged, got: %s", result.stdout)
 	}
 }
 

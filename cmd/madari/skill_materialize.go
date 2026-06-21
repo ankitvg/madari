@@ -426,7 +426,14 @@ func (a cliApp) detachSkillSourceWhere(target, scope, source string, dryRun bool
 	}
 	sort.Strings(keys)
 
-	changed := false
+	type detachCandidate struct {
+		key              string
+		entry            skillAttachmentEntry
+		skillPath        string
+		readErr          error
+		remainingSources []string
+	}
+	candidates := []detachCandidate{}
 	for _, key := range keys {
 		entry := state[key]
 		if !skillAttachmentHasSource(entry, source) || (include != nil && !include(entry)) {
@@ -447,31 +454,36 @@ func (a cliApp) detachSkillSourceWhere(target, scope, source string, dryRun bool
 
 		result.SkillsDir = filepath.Dir(filepath.Dir(skillPath))
 		result.Removed = appendUniqueName(result.Removed, entry.Name)
-		changed = true
-		if dryRun {
-			continue
-		}
-
 		remainingSources := skillAttachmentSourcesWithout(entry.Sources, source)
-		if len(remainingSources) == 0 && readErr == nil {
-			if err := os.Remove(skillPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return skillAttachResult{}, fmt.Errorf("remove skill file %s: %w", skillPath, err)
-			}
-			if err := os.Remove(filepath.Dir(skillPath)); err != nil && !errors.Is(err, os.ErrNotExist) && !isDirectoryNotEmpty(err) {
-				return skillAttachResult{}, fmt.Errorf("remove empty skill directory %s: %w", filepath.Dir(skillPath), err)
-			}
-		}
-		if len(remainingSources) == 0 {
-			delete(state, key)
-		} else {
-			entry.Sources = remainingSources
-			state[key] = entry
-		}
+		candidates = append(candidates, detachCandidate{
+			key:              key,
+			entry:            entry,
+			skillPath:        skillPath,
+			readErr:          readErr,
+			remainingSources: remainingSources,
+		})
 	}
 
-	if dryRun || !changed {
+	if dryRun || len(candidates) == 0 {
 		return result, nil
 	}
+	for _, candidate := range candidates {
+		if len(candidate.remainingSources) == 0 && candidate.readErr == nil {
+			if err := os.Remove(candidate.skillPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return skillAttachResult{}, fmt.Errorf("remove skill file %s: %w", candidate.skillPath, err)
+			}
+			if err := os.Remove(filepath.Dir(candidate.skillPath)); err != nil && !errors.Is(err, os.ErrNotExist) && !isDirectoryNotEmpty(err) {
+				return skillAttachResult{}, fmt.Errorf("remove empty skill directory %s: %w", filepath.Dir(candidate.skillPath), err)
+			}
+		}
+		if len(candidate.remainingSources) == 0 {
+			delete(state, candidate.key)
+		} else {
+			candidate.entry.Sources = candidate.remainingSources
+			state[candidate.key] = candidate.entry
+		}
+	}
+
 	if err := saveSkillAttachmentStateFunc(statePath, state); err != nil {
 		return skillAttachResult{}, err
 	}
@@ -1003,15 +1015,35 @@ func mergeSkillAttachResult(dst *skillAttachResult, src skillAttachResult) {
 	}
 	dst.DryRun = dst.DryRun || src.DryRun
 	for _, name := range src.Added {
+		dst.Removed = removeName(dst.Removed, name)
 		dst.Added = appendUniqueName(dst.Added, name)
 	}
 	for _, name := range src.Updated {
+		dst.Removed = removeName(dst.Removed, name)
 		dst.Updated = appendUniqueName(dst.Updated, name)
 	}
 	for _, name := range src.Removed {
+		dst.Added = removeName(dst.Added, name)
+		dst.Updated = removeName(dst.Updated, name)
+		dst.Unchanged = removeName(dst.Unchanged, name)
 		dst.Removed = appendUniqueName(dst.Removed, name)
 	}
 	for _, name := range src.Unchanged {
+		dst.Removed = removeName(dst.Removed, name)
 		dst.Unchanged = appendUniqueName(dst.Unchanged, name)
 	}
+}
+
+func removeName(names []string, name string) []string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return names
+	}
+	out := names[:0]
+	for _, existing := range names {
+		if existing != name {
+			out = append(out, existing)
+		}
+	}
+	return out
 }

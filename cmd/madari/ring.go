@@ -561,7 +561,7 @@ func (a cliApp) cmdRingAttach(args []string) error {
 		Rings:      rings,
 		Scope:      scope,
 	}
-	if len(ring.Skills) > 0 {
+	if len(ring.Skills) > 0 && !dryRun {
 		if _, err := a.attachRingSkills(ring, target, scope, true); err != nil {
 			return err
 		}
@@ -584,17 +584,15 @@ func (a cliApp) cmdRingAttach(args []string) error {
 
 	skillResult := skillAttachResult{DryRun: dryRun}
 	if len(ring.Skills) > 0 {
-		if dryRun {
-			skillResult, err = a.attachRingSkills(ring, target, scope, true)
-		} else {
-			skillResult, err = a.attachRingSkills(ring, target, scope, false)
-		}
+		skillResult, err = a.attachRingSkills(ring, target, scope, dryRun)
 		if err != nil {
 			return err
 		}
 	}
 	fmt.Fprintf(a.stdout, "ring: %s\n", ringName)
-	printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, skipped, result.Refused)
+	if len(ring.Members) > 0 {
+		printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, skipped, result.Refused)
+	}
 	printRingSkillSummary(a.stdout, skillResult)
 	return nil
 }
@@ -634,6 +632,11 @@ func (a cliApp) cmdRingDetach(args []string) error {
 
 	adapter := syncAdapters[target]
 	result := clients.SyncResult{ConfigPath: "-", DryRun: dryRun}
+	if skillAttached && !dryRun {
+		if _, err := a.detachSkillSourceAll(target, scope, syncshared.RingSource(ringName), true); err != nil {
+			return err
+		}
+	}
 	if serverAttached {
 		result, err = adapter.DetachRing(ringName, clients.SyncOptions{
 			ConfigPath: configPath,
@@ -654,7 +657,9 @@ func (a cliApp) cmdRingDetach(args []string) error {
 		}
 	}
 	fmt.Fprintf(a.stdout, "ring: %s\n", ringName)
-	printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, nil, result.Refused)
+	if serverAttached {
+		printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, nil, result.Refused)
+	}
 	printRingSkillSummary(a.stdout, skillResult)
 	return nil
 }
@@ -832,25 +837,25 @@ func (a cliApp) ringSkillAttached(ringName, target, scope string) (bool, error) 
 	return false, nil
 }
 
-func (a cliApp) syncRingSkills(target, scope string, rings []registry.Ring, dryRun bool) (skillAttachResult, error) {
+func (a cliApp) syncRingSkills(target, scope string, rings []registry.Ring, dryRun bool, attachedRingsBeforeSync []string) (skillAttachResult, error) {
 	result := skillAttachResult{DryRun: dryRun}
+	if !supportsSkillMaterialization(target) {
+		return result, nil
+	}
 	serverState, err := syncshared.LoadManagedState(a.ringOpStatePath(target, scope))
 	if err != nil {
 		return skillAttachResult{}, err
 	}
-	skillState := map[string]skillAttachmentEntry{}
-	if supportsSkillMaterialization(target) {
-		skillState, err = loadSkillAttachmentState(a.skillAttachmentStatePath(target, scope))
-		if err != nil {
-			return skillAttachResult{}, err
-		}
+	skillState, err := loadSkillAttachmentState(a.skillAttachmentStatePath(target, scope))
+	if err != nil {
+		return skillAttachResult{}, err
 	}
 
 	byName := make(map[string]registry.Ring, len(rings))
 	for _, ring := range rings {
 		byName[ring.Name] = ring
 	}
-	for _, ringName := range unionStrings(syncshared.AttachedRings(serverState), attachedSkillRings(skillState)) {
+	for _, ringName := range unionStrings(attachedRingsBeforeSync, syncshared.AttachedRings(serverState), attachedSkillRings(skillState)) {
 		ring, exists := byName[ringName]
 		if !exists {
 			continue
