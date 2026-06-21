@@ -1263,6 +1263,25 @@ func TestRunWithStoreClientsListsAllAdapters(t *testing.T) {
 	}
 }
 
+func TestClientTargetRegistryDefinesCurrentCapabilities(t *testing.T) {
+	wantTargets := []string{"claude-code", "claude-desktop", "codex", "gemini", "vibe"}
+	if got := sortedClientTargetNames(); !reflect.DeepEqual(got, wantTargets) {
+		t.Fatalf("unexpected client targets: got %#v want %#v", got, wantTargets)
+	}
+	if got := supportedSyncTargets(); !reflect.DeepEqual(got, wantTargets) {
+		t.Fatalf("unexpected sync targets: got %#v want %#v", got, wantTargets)
+	}
+	if got := supportedRingRenderTargets(); !reflect.DeepEqual(got, wantTargets) {
+		t.Fatalf("unexpected ring render targets: got %#v want %#v", got, wantTargets)
+	}
+	if got := userScopedSyncTargets(); !reflect.DeepEqual(got, []string{"claude-code", "gemini"}) {
+		t.Fatalf("unexpected user-scoped targets: got %#v", got)
+	}
+	if got := defaultInstallClientTarget(); got != "claude-desktop" {
+		t.Fatalf("unexpected default install client target: %q", got)
+	}
+}
+
 func TestRunWithStoreClientsShowsHeaderAndStatus(t *testing.T) {
 	store := newTestStore(t)
 

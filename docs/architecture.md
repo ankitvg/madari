@@ -6,6 +6,27 @@
 - Materialize valid client config files without clobbering user-managed entries.
 - Provide deterministic lifecycle operations and diagnostics.
 
+## Primitive Boundary
+
+Madari keeps four concepts separate:
+
+- Server: an executable MCP capability with command, args, env, and target
+  client metadata.
+- Ring: a named capability grouping. Today persisted rings contain server
+  members only; the grouping surface is intentionally the place where future
+  capability types such as skills can compose with MCP servers.
+- Skill: procedural or domain instructions for how an agent should use
+  capabilities. Skills are not implemented yet, and should get their own
+  registry/render surface rather than being hidden inside server sync.
+- Run: ephemeral execution that combines a task, selected capabilities, client
+  target, optional skills/context, and result capture. Run is not implemented
+  yet and should not be modeled as persistent client sync.
+
+Current behavior follows this boundary: `sync` and `ring attach` persist MCP
+server config, while `ring render` emits MCP config only. Future skill work
+should add an explicit skill render path before combining rings and skills in
+execution flows.
+
 ## Components
 
 1. Registry
@@ -16,7 +37,11 @@
   export refuses rings that would not round-trip, import validates everything
   before writing anything and never attaches or syncs.
 
-2. Client Adapters
+2. Client Targets and Adapters
+- The command layer keeps a single client target registry for target-level
+  capabilities: sync adapter, ring config renderer, and scope support.
+  Future skill render support should extend that registry instead of adding
+  another target-specific switch.
 - Translate registry entries into client-specific config.
 - Current adapters: Claude Desktop, Claude Code, Gemini, Codex, and Vibe.
 - Adapters own read/merge/write behavior for their client format.
@@ -48,9 +73,10 @@
   released only by detach or membership reconciliation.
 
 5. Rings
-- Named capability sets of servers (`rings/<name>.toml`); members reference
-  registry entries by name only — the server manifest stays the single
-  source of truth for command, args, and env.
+- Named capability sets (`rings/<name>.toml`). In the current schema, members
+  are server references by name only — the server manifest stays the single
+  source of truth for command, args, and env. Future skill support should grow
+  the capability model deliberately rather than overloading server manifests.
 - Attachment is derived state: ring `R` is attached to a target+scope iff
   `ring:R` appears among ownership sources there. Attach records the source
   on every member and materializes the eligible ones; detach releases it by

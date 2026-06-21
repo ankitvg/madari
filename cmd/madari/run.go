@@ -12,25 +12,14 @@ import (
 	"strings"
 
 	"github.com/ankitvg/madari/internal/clients"
-	claudedesktop "github.com/ankitvg/madari/internal/clients/claude-desktop"
-	"github.com/ankitvg/madari/internal/clients/claudecode"
-	"github.com/ankitvg/madari/internal/clients/codex"
-	"github.com/ankitvg/madari/internal/clients/gemini"
 	"github.com/ankitvg/madari/internal/clients/syncshared"
-	"github.com/ankitvg/madari/internal/clients/vibe"
 	"github.com/ankitvg/madari/internal/doctor"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
 var version = "0.0.0-dev"
 
-var syncAdapters = map[string]clients.ClientAdapter{
-	claudedesktop.Target: claudedesktop.Adapter{},
-	claudecode.Target:    claudecode.Adapter{},
-	codex.Target:         codex.Adapter{},
-	gemini.Target:        gemini.Adapter{},
-	vibe.Target:          vibe.Adapter{},
-}
+var syncAdapters = syncAdaptersFromClientTargets()
 
 func supportedSyncTargets() []string {
 	targets := make([]string, 0, len(syncAdapters))
@@ -246,7 +235,7 @@ func (a cliApp) cmdInstall(args []string) error {
 	}
 
 	if len(clients) == 0 {
-		clients = append(clients, claudedesktop.Target)
+		clients = append(clients, defaultInstallClientTarget())
 	}
 
 	if !skipInstall {
@@ -1278,12 +1267,8 @@ func userScopedSyncTargets() []string {
 }
 
 func targetSupportsUserScope(target string) bool {
-	switch target {
-	case claudecode.Target, gemini.Target:
-		return true
-	default:
-		return false
-	}
+	ct, ok := clientTargetByName(target)
+	return ok && ct.userScope
 }
 
 func parseClientConfigOverrides(pairs []string) (map[string]string, error) {

@@ -1,0 +1,98 @@
+package main
+
+import (
+	"io"
+	"sort"
+
+	"github.com/ankitvg/madari/internal/clients"
+	claudedesktop "github.com/ankitvg/madari/internal/clients/claude-desktop"
+	"github.com/ankitvg/madari/internal/clients/claudecode"
+	"github.com/ankitvg/madari/internal/clients/codex"
+	"github.com/ankitvg/madari/internal/clients/gemini"
+	"github.com/ankitvg/madari/internal/clients/vibe"
+)
+
+// clientTarget records the command-layer capabilities Madari knows for one
+// AI client. Sync, render, and future skill support should extend this table
+// instead of scattering target-specific switches.
+type clientTarget struct {
+	target             string
+	syncAdapter        clients.ClientAdapter
+	ringConfigRenderer func(io.Writer, map[string]renderedServer) error
+	userScope          bool
+}
+
+var clientTargets = []clientTarget{
+	{
+		target:             claudedesktop.Target,
+		syncAdapter:        claudedesktop.Adapter{},
+		ringConfigRenderer: renderMCPServersJSON,
+	},
+	{
+		target:             claudecode.Target,
+		syncAdapter:        claudecode.Adapter{},
+		ringConfigRenderer: renderMCPServersJSON,
+		userScope:          true,
+	},
+	{
+		target:             codex.Target,
+		syncAdapter:        codex.Adapter{},
+		ringConfigRenderer: renderCodexTOML,
+	},
+	{
+		target:             gemini.Target,
+		syncAdapter:        gemini.Adapter{},
+		ringConfigRenderer: renderMCPServersJSON,
+		userScope:          true,
+	},
+	{
+		target:             vibe.Target,
+		syncAdapter:        vibe.Adapter{},
+		ringConfigRenderer: renderVibeTOML,
+	},
+}
+
+func defaultInstallClientTarget() string {
+	return claudedesktop.Target
+}
+
+func clientTargetByName(target string) (clientTarget, bool) {
+	for _, ct := range clientTargets {
+		if ct.target == target {
+			return ct, true
+		}
+	}
+	return clientTarget{}, false
+}
+
+func syncAdaptersFromClientTargets() map[string]clients.ClientAdapter {
+	adapters := map[string]clients.ClientAdapter{}
+	for _, ct := range clientTargets {
+		if ct.syncAdapter != nil {
+			adapters[ct.target] = ct.syncAdapter
+		}
+	}
+	return adapters
+}
+
+func ringRenderTargetsFromClientTargets() map[string]ringRenderTarget {
+	targets := map[string]ringRenderTarget{}
+	for _, ct := range clientTargets {
+		if ct.ringConfigRenderer != nil {
+			targets[ct.target] = ringRenderTarget{
+				target: ct.target,
+				render: ct.ringConfigRenderer,
+			}
+		}
+	}
+	return targets
+}
+
+func sortedClientTargetNames() []string {
+	names := make([]string, 0, len(clientTargets))
+	for _, ct := range clientTargets {
+		names = append(names, ct.target)
+	}
+	sort.Strings(names)
+	return names
+}

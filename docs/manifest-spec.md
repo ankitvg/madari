@@ -71,8 +71,9 @@ keys = ["STEWREADS_GMAIL_APP_PASSWORD"]
 
 ## Ring Files
 
-Rings are named capability sets of servers, stored one TOML document per
-ring at `<config-root>/rings/<name>.toml` (sibling of `servers/`).
+Rings are named capability sets. The current schema supports server members
+only and stores one TOML document per ring at
+`<config-root>/rings/<name>.toml` (sibling of `servers/`).
 
 - `name` (string, required): stable ring ID; same pattern as server names.
 - `members` (array of strings, required, non-empty, unique): server names.
@@ -83,7 +84,9 @@ ring at `<config-root>/rings/<name>.toml` (sibling of `servers/`).
 - `description` (string, optional): friendly description.
 
 Ring manifests have no sections; unknown keys are rejected. Files are
-written deterministically with sorted members.
+written deterministically with sorted members. Future capability types such as
+skills should extend this schema explicitly instead of embedding procedural
+instructions in server manifests.
 
 ### Example
 
