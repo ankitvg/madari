@@ -556,6 +556,133 @@ func TestRunWithStoreSkillAttachLifecycle(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreSkillAttachAllowsSameSkillAcrossRoots(t *testing.T) {
+	store := newTestStore(t)
+	tmp := t.TempDir()
+	path := writeSkillFile(t, tmp, "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+
+	rootA := filepath.Join(tmp, "project-a", "skills")
+	rootB := filepath.Join(tmp, "project-b", "skills")
+	if result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", rootA); result.code != 0 {
+		t.Fatalf("first skill attach failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", rootB); result.code != 0 {
+		t.Fatalf("second root skill attach failed: %s", result.stderr)
+	}
+
+	statePath := filepath.Join(filepath.Dir(store.ServersDir()), "state", "codex-skills-managed.json")
+	state, err := loadSkillAttachmentState(statePath)
+	if err != nil {
+		t.Fatalf("load skill attachment state: %v", err)
+	}
+	if got := len(skillAttachmentsByName(state, "release")); got != 2 {
+		t.Fatalf("expected two release attachments, got %d: %+v", got, state)
+	}
+
+	result := runCmd(store, "skill", "detach", "release", "codex", "--skills-dir", rootA)
+	if result.code != 0 {
+		t.Fatalf("detach first root failed: %s", result.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(rootA, "release", "SKILL.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected first root skill removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootB, "release", "SKILL.md")); err != nil {
+		t.Fatalf("expected second root skill to remain: %v", err)
+	}
+}
+
+func TestRunWithStoreSkillAttachVibeUserHonorsVibeHome(t *testing.T) {
+	store := newTestStore(t)
+	tmp := t.TempDir()
+	vibeHome := filepath.Join(tmp, "vibe-home")
+	t.Setenv("VIBE_HOME", vibeHome)
+
+	path := writeSkillFile(t, tmp, "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "skill", "attach", "release", "vibe", "--scope", "user", "--dry-run")
+	if result.code != 0 {
+		t.Fatalf("skill attach dry-run failed: %s", result.stderr)
+	}
+	want := "skills_dir: " + filepath.Join(vibeHome, "skills")
+	if !strings.Contains(result.stdout, want) {
+		t.Fatalf("expected VIBE_HOME skill root %q, got:\n%s", want, result.stdout)
+	}
+}
+
+func TestRunWithStoreSkillAttachRollsBackAddedFileWhenStateWriteFails(t *testing.T) {
+	store := newTestStore(t)
+	tmp := t.TempDir()
+	path := writeSkillFile(t, tmp, "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+
+	original := saveSkillAttachmentStateFunc
+	saveSkillAttachmentStateFunc = func(string, map[string]skillAttachmentEntry) error {
+		return errors.New("state save failed")
+	}
+	t.Cleanup(func() {
+		saveSkillAttachmentStateFunc = original
+	})
+
+	skillsDir := filepath.Join(tmp, "skills")
+	result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", skillsDir)
+	if result.code == 0 || !strings.Contains(result.stderr, "state save failed") {
+		t.Fatalf("expected state save failure, code=%d stderr=%s", result.code, result.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(skillsDir, "release", "SKILL.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected added skill file rolled back, stat err=%v", err)
+	}
+}
+
+func TestRunWithStoreSkillAttachRestoresUpdatedFileWhenStateWriteFails(t *testing.T) {
+	store := newTestStore(t)
+	tmp := t.TempDir()
+	path := writeSkillFile(t, tmp, "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+	skillsDir := filepath.Join(tmp, "skills")
+	if result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", skillsDir); result.code != 0 {
+		t.Fatalf("initial skill attach failed: %s", result.stderr)
+	}
+	skillPath := filepath.Join(skillsDir, "release", "SKILL.md")
+	originalContent, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read initial skill file: %v", err)
+	}
+
+	updatedPath := writeSkillFile(t, tmp, "release-updated.md", "# Release\n\nUpdated.\n")
+	if result := runCmd(store, "skill", "update", "release", "--file", updatedPath); result.code != 0 {
+		t.Fatalf("skill update failed: %s", result.stderr)
+	}
+	original := saveSkillAttachmentStateFunc
+	saveSkillAttachmentStateFunc = func(string, map[string]skillAttachmentEntry) error {
+		return errors.New("state save failed")
+	}
+	t.Cleanup(func() {
+		saveSkillAttachmentStateFunc = original
+	})
+
+	result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", skillsDir)
+	if result.code == 0 || !strings.Contains(result.stderr, "state save failed") {
+		t.Fatalf("expected state save failure, code=%d stderr=%s", result.code, result.stderr)
+	}
+	restored, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read restored skill file: %v", err)
+	}
+	if string(restored) != string(originalContent) {
+		t.Fatalf("expected original skill file restored:\nwant:\n%s\ngot:\n%s", originalContent, restored)
+	}
+}
+
 func TestRunWithStoreSkillAttachRefusesUnmanagedFile(t *testing.T) {
 	store := newTestStore(t)
 	path := writeSkillFile(t, t.TempDir(), "release.md", "# Release\n")

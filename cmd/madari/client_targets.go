@@ -64,7 +64,7 @@ var clientTargets = []clientTarget{
 		ringConfigRenderer: renderVibeTOML,
 		skillRoots: skillTargetRoots{
 			project: defaultProjectSkillRoot(".vibe", "skills"),
-			user:    defaultHomeSkillRoot(".vibe", "skills"),
+			user:    defaultVibeUserSkillRoot(),
 		},
 	},
 }

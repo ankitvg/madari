@@ -70,6 +70,19 @@ func defaultHomeSkillRoot(parts ...string) skillRootResolver {
 	}
 }
 
+func defaultVibeUserSkillRoot() skillRootResolver {
+	return func() (string, error) {
+		if vibeHome := strings.TrimSpace(os.Getenv("VIBE_HOME")); vibeHome != "" {
+			resolved, err := syncshared.ExpandHome(vibeHome)
+			if err != nil {
+				return "", err
+			}
+			return filepath.Join(filepath.Clean(resolved), "skills"), nil
+		}
+		return defaultHomeSkillRoot(".vibe", "skills")()
+	}
+}
+
 type renderedSkill struct {
 	Content []byte
 }
@@ -129,8 +142,12 @@ func (a cliApp) ensureSkillNotAttached(name string) error {
 		if err != nil {
 			return err
 		}
-		if _, exists := state[name]; exists {
-			holders = append(holders, ref)
+		for _, entry := range skillAttachmentsByName(state, name) {
+			holders = append(holders, skillAttachmentRef{
+				target: ref.target,
+				scope:  ref.scope,
+				path:   entry.Path,
+			})
 		}
 	}
 	if len(holders) == 0 {
@@ -142,6 +159,9 @@ func (a cliApp) ensureSkillNotAttached(name string) error {
 		command := fmt.Sprintf("madari skill detach %s %s", name, holder.target)
 		if holder.scope == clients.ScopeUser {
 			command += " --scope user"
+		}
+		if holder.path != "" {
+			command += fmt.Sprintf(" --skills-dir %s", filepath.Dir(filepath.Dir(holder.path)))
 		}
 		guidance = append(guidance, command)
 	}
@@ -187,14 +207,15 @@ func (a cliApp) attachSkill(name, target, scope, skillsDir string, dryRun bool) 
 		DryRun:    dryRun,
 	}
 
-	entry, owned := state[name]
+	stateKey, entry, owned := findSkillAttachment(state, name, skillPath)
+	var previousContent []byte
+	hadPreviousContent := false
 	if owned {
-		if filepath.Clean(entry.Path) != skillPath {
-			return skillAttachResult{}, fmt.Errorf("skill %q is already attached to %s at %s; detach it before attaching to %s", name, target, entry.Path, skillPath)
-		}
 		current, readErr := os.ReadFile(skillPath)
 		switch {
 		case readErr == nil:
+			previousContent = append([]byte(nil), current...)
+			hadPreviousContent = true
 			if skillContentHash(current) != entry.Hash {
 				return skillAttachResult{}, fmt.Errorf("refusing to update modified skill file %s; detach or restore it manually", skillPath)
 			}
@@ -223,9 +244,12 @@ func (a cliApp) attachSkill(name, target, scope, skillsDir string, dryRun bool) 
 	if err := syncshared.WriteFileAtomically(skillPath, rendered.Content, 0o644); err != nil {
 		return skillAttachResult{}, fmt.Errorf("write skill file %s: %w", skillPath, err)
 	}
-	state[name] = skillAttachmentEntry{Path: skillPath, Hash: desiredHash}
-	if err := saveSkillAttachmentState(statePath, state); err != nil {
-		return skillAttachResult{}, err
+	state[stateKey] = skillAttachmentEntry{Name: name, Path: skillPath, Hash: desiredHash}
+	if err := saveSkillAttachmentStateFunc(statePath, state); err != nil {
+		if rollbackErr := rollbackSkillFileWrite(skillPath, previousContent, hadPreviousContent); rollbackErr != nil {
+			return skillAttachResult{}, fmt.Errorf("write skill attachment state: %w; rollback skill file %s: %v", err, skillPath, rollbackErr)
+		}
+		return skillAttachResult{}, fmt.Errorf("write skill attachment state: %w", err)
 	}
 	return result, nil
 }
@@ -241,15 +265,24 @@ func (a cliApp) detachSkill(name, target, scope, skillsDir string, dryRun bool) 
 		return skillAttachResult{}, err
 	}
 
-	entry, owned := state[name]
+	root, rootErr := ct.skillRoots.resolve(scope, skillsDir)
+	if rootErr != nil {
+		return skillAttachResult{}, rootErr
+	}
+	root = filepath.Clean(root)
+	expectedSkillPath := filepath.Join(root, name, "SKILL.md")
+
+	stateKey, entry, owned := findSkillAttachment(state, name, expectedSkillPath)
 	if !owned {
-		root, rootErr := ct.skillRoots.resolve(scope, skillsDir)
-		if rootErr != nil {
-			return skillAttachResult{}, rootErr
+		if matches := skillAttachmentsByName(state, name); len(matches) > 0 {
+			locations := make([]string, 0, len(matches))
+			for _, match := range matches {
+				locations = append(locations, match.Path)
+			}
+			return skillAttachResult{}, fmt.Errorf("skill %q is attached to %s, but not at %s; attached paths: %s", name, target, expectedSkillPath, strings.Join(locations, ", "))
 		}
-		root = filepath.Clean(root)
 		return skillAttachResult{
-			SkillPath: filepath.Join(root, name, "SKILL.md"),
+			SkillPath: expectedSkillPath,
 			SkillsDir: root,
 			DryRun:    dryRun,
 			Unchanged: []string{name},
@@ -257,18 +290,7 @@ func (a cliApp) detachSkill(name, target, scope, skillsDir string, dryRun bool) 
 	}
 
 	skillPath := filepath.Clean(entry.Path)
-	if strings.TrimSpace(skillsDir) != "" {
-		root, err := ct.skillRoots.resolve(scope, skillsDir)
-		if err != nil {
-			return skillAttachResult{}, err
-		}
-		expected := filepath.Join(filepath.Clean(root), name, "SKILL.md")
-		if expected != skillPath {
-			return skillAttachResult{}, fmt.Errorf("skill %q is attached at %s, not %s", name, skillPath, expected)
-		}
-	}
-
-	root := filepath.Dir(filepath.Dir(skillPath))
+	root = filepath.Dir(filepath.Dir(skillPath))
 	result := skillAttachResult{
 		SkillPath: skillPath,
 		SkillsDir: root,
@@ -299,8 +321,8 @@ func (a cliApp) detachSkill(name, target, scope, skillsDir string, dryRun bool) 
 			return skillAttachResult{}, fmt.Errorf("remove empty skill directory %s: %w", filepath.Dir(skillPath), err)
 		}
 	}
-	delete(state, name)
-	if err := saveSkillAttachmentState(statePath, state); err != nil {
+	delete(state, stateKey)
+	if err := saveSkillAttachmentStateFunc(statePath, state); err != nil {
 		return skillAttachResult{}, err
 	}
 	return result, nil
@@ -413,18 +435,33 @@ func frontmatterDescription(lines []string) string {
 			continue
 		}
 		value = strings.TrimSpace(value)
-		switch value {
-		case "", "|", ">":
+		if style, ok := yamlBlockScalarStyle(value); ok || value == "" {
 			collected := collectIndentedYAMLValue(lines[i+1:])
-			if value == "|" {
+			if style == "|" {
 				return strings.TrimSpace(strings.Join(collected, "\n"))
 			}
 			return strings.TrimSpace(strings.Join(collected, " "))
-		default:
-			return strings.TrimSpace(unquoteYAMLScalar(value))
 		}
+		return strings.TrimSpace(unquoteYAMLScalar(value))
 	}
 	return ""
+}
+
+func yamlBlockScalarStyle(value string) (string, bool) {
+	if value == "" {
+		return "", false
+	}
+	style := value[0]
+	if style != '|' && style != '>' {
+		return "", false
+	}
+	for _, r := range value[1:] {
+		if r == '-' || r == '+' || (r >= '0' && r <= '9') {
+			continue
+		}
+		return "", false
+	}
+	return string(style), true
 }
 
 func frontmatterExtraLines(lines []string) []string {
@@ -554,16 +591,19 @@ func strconvUnquote(value string) (string, error) {
 	return out.String(), nil
 }
 
-const skillAttachmentStateVersion = 1
+const skillAttachmentStateVersion = 2
+
+var saveSkillAttachmentStateFunc = saveSkillAttachmentState
 
 type skillAttachmentEntry struct {
+	Name string `json:"name"`
 	Path string `json:"path"`
 	Hash string `json:"hash"`
 }
 
 type skillAttachmentStateFile struct {
-	Version int                             `json:"version"`
-	Skills  map[string]skillAttachmentEntry `json:"skills"`
+	Version int                    `json:"version"`
+	Skills  []skillAttachmentEntry `json:"skills"`
 }
 
 func loadSkillAttachmentState(path string) (map[string]skillAttachmentEntry, error) {
@@ -574,20 +614,41 @@ func loadSkillAttachmentState(path string) (map[string]skillAttachmentEntry, err
 		}
 		return nil, fmt.Errorf("read skill attachment state %q: %w", path, err)
 	}
-	state := skillAttachmentStateFile{}
-	if err := json.Unmarshal(payload, &state); err != nil {
+
+	probe := struct {
+		Version int             `json:"version"`
+		Skills  json.RawMessage `json:"skills"`
+	}{}
+	if err := json.Unmarshal(payload, &probe); err != nil {
 		return nil, fmt.Errorf("parse skill attachment state JSON: %w", err)
 	}
-	if state.Version != skillAttachmentStateVersion {
-		return nil, fmt.Errorf("unsupported skill attachment state version %d in %q", state.Version, path)
+
+	switch probe.Version {
+	case 1:
+		legacy := map[string]skillAttachmentEntry{}
+		if len(probe.Skills) > 0 {
+			if err := json.Unmarshal(probe.Skills, &legacy); err != nil {
+				return nil, fmt.Errorf("parse skill attachment state v1 entries: %w", err)
+			}
+		}
+		return normalizeSkillAttachmentState(legacy), nil
+	case skillAttachmentStateVersion:
+		entries := []skillAttachmentEntry{}
+		if len(probe.Skills) > 0 {
+			if err := json.Unmarshal(probe.Skills, &entries); err != nil {
+				return nil, fmt.Errorf("parse skill attachment state v2 entries: %w", err)
+			}
+		}
+		return normalizeSkillAttachmentEntries(entries), nil
+	default:
+		return nil, fmt.Errorf("unsupported skill attachment state version %d in %q", probe.Version, path)
 	}
-	return normalizeSkillAttachmentState(state.Skills), nil
 }
 
 func saveSkillAttachmentState(path string, skills map[string]skillAttachmentEntry) error {
 	state := skillAttachmentStateFile{
 		Version: skillAttachmentStateVersion,
-		Skills:  normalizeSkillAttachmentState(skills),
+		Skills:  sortedSkillAttachmentEntries(normalizeSkillAttachmentState(skills)),
 	}
 	payload, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
@@ -599,16 +660,90 @@ func saveSkillAttachmentState(path string, skills map[string]skillAttachmentEntr
 
 func normalizeSkillAttachmentState(skills map[string]skillAttachmentEntry) map[string]skillAttachmentEntry {
 	normalized := make(map[string]skillAttachmentEntry, len(skills))
-	for name, entry := range skills {
-		name = strings.TrimSpace(name)
-		entry.Path = filepath.Clean(strings.TrimSpace(entry.Path))
-		entry.Hash = strings.TrimSpace(entry.Hash)
-		if name == "" || entry.Path == "." || entry.Hash == "" {
+	for key, entry := range skills {
+		if strings.TrimSpace(entry.Name) == "" {
+			entry.Name = strings.TrimSpace(key)
+		}
+		normalizedEntry, ok := normalizeSkillAttachmentEntry(entry)
+		if !ok {
 			continue
 		}
-		normalized[name] = entry
+		normalized[skillAttachmentKey(normalizedEntry.Name, normalizedEntry.Path)] = normalizedEntry
 	}
 	return normalized
+}
+
+func normalizeSkillAttachmentEntries(entries []skillAttachmentEntry) map[string]skillAttachmentEntry {
+	normalized := make(map[string]skillAttachmentEntry, len(entries))
+	for _, entry := range entries {
+		normalizedEntry, ok := normalizeSkillAttachmentEntry(entry)
+		if !ok {
+			continue
+		}
+		normalized[skillAttachmentKey(normalizedEntry.Name, normalizedEntry.Path)] = normalizedEntry
+	}
+	return normalized
+}
+
+func normalizeSkillAttachmentEntry(entry skillAttachmentEntry) (skillAttachmentEntry, bool) {
+	entry.Name = strings.TrimSpace(entry.Name)
+	entry.Path = filepath.Clean(strings.TrimSpace(entry.Path))
+	entry.Hash = strings.TrimSpace(entry.Hash)
+	if entry.Name == "" || entry.Path == "." || entry.Hash == "" {
+		return skillAttachmentEntry{}, false
+	}
+	return entry, true
+}
+
+func sortedSkillAttachmentEntries(state map[string]skillAttachmentEntry) []skillAttachmentEntry {
+	entries := make([]skillAttachmentEntry, 0, len(state))
+	for _, entry := range state {
+		entries = append(entries, entry)
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Name != entries[j].Name {
+			return entries[i].Name < entries[j].Name
+		}
+		return entries[i].Path < entries[j].Path
+	})
+	return entries
+}
+
+func skillAttachmentKey(name, path string) string {
+	return strings.TrimSpace(name) + "\x00" + filepath.Clean(strings.TrimSpace(path))
+}
+
+func findSkillAttachment(state map[string]skillAttachmentEntry, name, path string) (string, skillAttachmentEntry, bool) {
+	key := skillAttachmentKey(name, path)
+	entry, ok := state[key]
+	return key, entry, ok
+}
+
+func skillAttachmentsByName(state map[string]skillAttachmentEntry, name string) []skillAttachmentEntry {
+	name = strings.TrimSpace(name)
+	matches := []skillAttachmentEntry{}
+	for _, entry := range state {
+		if entry.Name == name {
+			matches = append(matches, entry)
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		return matches[i].Path < matches[j].Path
+	})
+	return matches
+}
+
+func rollbackSkillFileWrite(path string, previous []byte, hadPrevious bool) error {
+	if hadPrevious {
+		return syncshared.WriteFileAtomically(path, previous, 0o644)
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Remove(filepath.Dir(path)); err != nil && !errors.Is(err, os.ErrNotExist) && !isDirectoryNotEmpty(err) {
+		return err
+	}
+	return nil
 }
 
 func skillContentHash(content []byte) string {
@@ -617,8 +752,16 @@ func skillContentHash(content []byte) string {
 }
 
 func sortedAttachedSkillNames(state map[string]skillAttachmentEntry) []string {
-	names := make([]string, 0, len(state))
-	for name := range state {
+	seen := map[string]struct{}{}
+	for _, entry := range state {
+		name := strings.TrimSpace(entry.Name)
+		if name == "" {
+			continue
+		}
+		seen[name] = struct{}{}
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
 		names = append(names, name)
 	}
 	sort.Strings(names)

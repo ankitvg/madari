@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -68,6 +69,50 @@ Use the release checklist.
 	}
 }
 
+func TestRenderClientSkillNormalizesBlockScalarDescription(t *testing.T) {
+	tests := []struct {
+		name        string
+		description string
+		want        string
+	}{
+		{
+			name: "folded chomp",
+			description: `description: >-
+  Source release
+  workflow`,
+			want: `description: "Source release workflow"`,
+		},
+		{
+			name: "literal chomp",
+			description: `description: |-
+  Source release
+  workflow`,
+			want: `description: "Source release\nworkflow"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content := "---\nname: old-name\n" + tt.description + "\nallowed-tools:\n  - Read\n---\n\n# Release\nUse the release checklist.\n"
+			rendered, err := renderClientSkill(registry.Skill{Name: "release"}, []byte(content))
+			if err != nil {
+				t.Fatalf("render client skill: %v", err)
+			}
+
+			got := string(rendered.Content)
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("expected %q in rendered skill:\n%s", tt.want, got)
+			}
+			if strings.Contains(got, `description: ">`) || strings.Contains(got, `description: "|`) {
+				t.Fatalf("expected block scalar description to be parsed, got:\n%s", got)
+			}
+			if !strings.Contains(got, "allowed-tools:\n  - Read") {
+				t.Fatalf("expected unrelated frontmatter to be preserved, got:\n%s", got)
+			}
+		})
+	}
+}
+
 func TestRenderClientSkillRequiresDescriptionAndBody(t *testing.T) {
 	if _, err := renderClientSkill(registry.Skill{Name: "release"}, []byte("# Release\n")); err == nil || !strings.Contains(err.Error(), "requires a description") {
 		t.Fatalf("expected missing description error, got: %v", err)
@@ -81,9 +126,11 @@ func TestRenderClientSkillRequiresDescriptionAndBody(t *testing.T) {
 
 func TestSkillAttachmentStateRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "codex-skills-managed.json")
+	skillPath := filepath.Join(t.TempDir(), ".agents", "skills", "release", "SKILL.md")
 	state := map[string]skillAttachmentEntry{
-		"release": {
-			Path: filepath.Join(t.TempDir(), ".agents", "skills", "release", "SKILL.md"),
+		skillAttachmentKey("release", skillPath): {
+			Name: "release",
+			Path: skillPath,
 			Hash: "abc123",
 		},
 	}
@@ -95,7 +142,40 @@ func TestSkillAttachmentStateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load state: %v", err)
 	}
-	if got["release"] != state["release"] {
+	if got[skillAttachmentKey("release", skillPath)] != state[skillAttachmentKey("release", skillPath)] {
 		t.Fatalf("state roundtrip mismatch: got=%+v want=%+v", got, state)
+	}
+}
+
+func TestSkillAttachmentStateLoadsV1NameKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "codex-skills-managed.json")
+	skillPath := filepath.Join(t.TempDir(), ".agents", "skills", "release", "SKILL.md")
+	payload := `{
+  "version": 1,
+  "skills": {
+    "release": {
+      "path": "` + filepath.ToSlash(skillPath) + `",
+      "hash": "abc123"
+    }
+  }
+}
+`
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write legacy state: %v", err)
+	}
+
+	got, err := loadSkillAttachmentState(path)
+	if err != nil {
+		t.Fatalf("load legacy state: %v", err)
+	}
+	entry, ok := got[skillAttachmentKey("release", skillPath)]
+	if !ok {
+		t.Fatalf("expected normalized legacy entry, got=%+v", got)
+	}
+	if entry.Name != "release" || entry.Path != filepath.Clean(skillPath) || entry.Hash != "abc123" {
+		t.Fatalf("unexpected legacy entry: %+v", entry)
 	}
 }
