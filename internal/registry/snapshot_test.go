@@ -29,6 +29,7 @@ func TestSnapshotExportParseRoundTrip(t *testing.T) {
 	if err := store.SaveRing(Ring{
 		Name:        "research",
 		Members:     []string{"beta", "alpha"},
+		Skills:      []string{"release"},
 		Description: "Research helpers",
 	}); err != nil {
 		t.Fatalf("save ring: %v", err)
@@ -69,6 +70,9 @@ func TestSnapshotExportParseRoundTrip(t *testing.T) {
 	if got := strings.Join(parsed.Rings[0].Members, ","); got != "alpha,beta" {
 		t.Fatalf("expected deterministic ring members, got: %s", got)
 	}
+	if got := strings.Join(parsed.Rings[0].Skills, ","); got != "release" {
+		t.Fatalf("expected deterministic ring skills, got: %s", got)
+	}
 	if len(parsed.Skills) != 1 || parsed.Skills[0].Name != "release" {
 		t.Fatalf("expected release skill in parsed snapshot, got: %#v", parsed.Skills)
 	}
@@ -96,6 +100,7 @@ func TestMarshalSnapshotUsesSnakeCaseKeys(t *testing.T) {
 			{
 				Name:        "research",
 				Members:     []string{"alpha"},
+				Skills:      []string{"release"},
 				Description: "Research helpers",
 			},
 		},
@@ -156,6 +161,14 @@ func TestParseSnapshotV2TreatsMissingSkillsAsEmpty(t *testing.T) {
 	}
 	if len(snapshot.Skills) != 0 {
 		t.Fatalf("expected missing v2 skills to parse as empty, got: %#v", snapshot.Skills)
+	}
+}
+
+func TestParseSnapshotV3RejectsRingSkills(t *testing.T) {
+	payload := []byte(`{"version":3,"servers":[],"rings":[{"name":"research","skills":["release"]}],"skills":[{"name":"release","content":"# Release\n"}]}`)
+	_, err := ParseSnapshotJSON(payload)
+	if err == nil || !strings.Contains(err.Error(), "does not support ring skills") {
+		t.Fatalf("expected v3 ring-skills error, got: %v", err)
 	}
 }
 
@@ -311,6 +324,56 @@ func TestImportSnapshotRingsDryRunAndApply(t *testing.T) {
 	}
 	if _, err := store.GetRing("local"); err != nil {
 		t.Fatalf("existing ring absent from snapshot should be preserved: %v", err)
+	}
+}
+
+func TestImportSnapshotRingsWithSkillsDryRunAndApply(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "servers"))
+	if err := store.SaveSkill(Skill{Name: "release", Description: "old"}, []byte("# Release\n")); err != nil {
+		t.Fatalf("save release skill: %v", err)
+	}
+	if err := store.SaveSkill(Skill{Name: "review", Description: "review"}, []byte("# Review\n")); err != nil {
+		t.Fatalf("save review skill: %v", err)
+	}
+	if err := store.SaveRing(Ring{Name: "workflow", Skills: []string{"release"}, Description: "old"}); err != nil {
+		t.Fatalf("save ring: %v", err)
+	}
+
+	snapshot := Snapshot{
+		Version: SnapshotVersion,
+		Rings: []Ring{
+			{Name: "workflow", Skills: []string{"review", "release"}, Description: "new"},
+		},
+	}
+
+	dryRunResult, err := ImportSnapshot(store, snapshot, false)
+	if err != nil {
+		t.Fatalf("dry-run import failed: %v", err)
+	}
+	if len(dryRunResult.RingsUpdated) != 1 || dryRunResult.RingsUpdated[0] != "workflow" {
+		t.Fatalf("expected workflow ring updated in dry-run, got: %+v", dryRunResult)
+	}
+	afterDryRun, err := store.GetRing("workflow")
+	if err != nil {
+		t.Fatalf("load workflow after dry-run: %v", err)
+	}
+	if strings.Join(afterDryRun.Skills, ",") != "release" {
+		t.Fatalf("expected dry-run not to change ring skills, got: %#v", afterDryRun)
+	}
+
+	applyResult, err := ImportSnapshot(store, snapshot, true)
+	if err != nil {
+		t.Fatalf("apply import failed: %v", err)
+	}
+	if len(applyResult.RingsUpdated) != 1 || applyResult.RingsUpdated[0] != "workflow" {
+		t.Fatalf("expected workflow ring updated in apply, got: %+v", applyResult)
+	}
+	afterApply, err := store.GetRing("workflow")
+	if err != nil {
+		t.Fatalf("load workflow after apply: %v", err)
+	}
+	if strings.Join(afterApply.Skills, ",") != "release,review" || afterApply.Description != "new" {
+		t.Fatalf("expected workflow ring skills updated, got: %#v", afterApply)
 	}
 }
 
@@ -482,6 +545,26 @@ func TestImportSnapshotRejectsUnknownRingMembers(t *testing.T) {
 	_, err := ImportSnapshot(store, snapshot, false)
 	if err == nil || !strings.Contains(err.Error(), `ring "bad" references unknown servers: ghost`) {
 		t.Fatalf("expected unknown ring member error, got: %v", err)
+	}
+}
+
+func TestImportSnapshotRejectsUnknownRingSkills(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "servers"))
+	if err := store.SaveSkill(Skill{Name: "release", Description: "release"}, []byte("# Release\n")); err != nil {
+		t.Fatalf("save release skill: %v", err)
+	}
+
+	snapshot := Snapshot{
+		Version: SnapshotVersion,
+		Rings: []Ring{
+			{Name: "good", Skills: []string{"release"}},
+			{Name: "bad", Skills: []string{"ghost"}},
+		},
+	}
+
+	_, err := ImportSnapshot(store, snapshot, false)
+	if err == nil || !strings.Contains(err.Error(), `ring "bad" references unknown skills: ghost`) {
+		t.Fatalf("expected unknown ring skill error, got: %v", err)
 	}
 }
 

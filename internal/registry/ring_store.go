@@ -18,7 +18,7 @@ func (s *Store) RingsDir() string {
 }
 
 // AddRing inserts a new ring; it fails if the ring already exists or any
-// member is missing from the registry.
+// referenced server or skill is missing from the registry.
 func (s *Store) AddRing(ring Ring) error {
 	if err := ring.Validate(); err != nil {
 		return err
@@ -129,7 +129,8 @@ func (s *Store) RemoveRing(name string) error {
 	return nil
 }
 
-// ValidateRingMembers checks that every ring member exists in the registry.
+// ValidateRingMembers checks that every server and skill referenced by the
+// ring exists in the registry.
 func (s *Store) ValidateRingMembers(ring Ring) error {
 	var missing []string
 	for _, member := range ring.Members {
@@ -142,6 +143,19 @@ func (s *Store) ValidateRingMembers(ring Ring) error {
 	if len(missing) > 0 {
 		sort.Strings(missing)
 		return fmt.Errorf("ring %q references unknown servers: %s", ring.Name, strings.Join(missing, ", "))
+	}
+
+	var missingSkills []string
+	for _, skill := range ring.Skills {
+		if _, err := s.GetSkill(strings.TrimSpace(skill)); errors.Is(err, ErrSkillNotFound) {
+			missingSkills = append(missingSkills, skill)
+		} else if err != nil {
+			return err
+		}
+	}
+	if len(missingSkills) > 0 {
+		sort.Strings(missingSkills)
+		return fmt.Errorf("ring %q references unknown skills: %s", ring.Name, strings.Join(missingSkills, ", "))
 	}
 	return nil
 }

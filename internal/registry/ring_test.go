@@ -10,6 +10,7 @@ func TestParseAndMarshalRingRoundTrip(t *testing.T) {
 	in := Ring{
 		Name:        "research",
 		Members:     []string{"stewreads", "arxiv"},
+		Skills:      []string{"release", "review"},
 		Description: "Research helpers",
 	}
 
@@ -28,14 +29,17 @@ func TestParseAndMarshalRingRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(out.Members, []string{"arxiv", "stewreads"}) {
 		t.Fatalf("expected sorted members to survive roundtrip, got: %#v", out.Members)
 	}
+	if !reflect.DeepEqual(out.Skills, []string{"release", "review"}) {
+		t.Fatalf("expected sorted skills to survive roundtrip, got: %#v", out.Skills)
+	}
 }
 
 func TestMarshalRingIsDeterministic(t *testing.T) {
-	a, err := MarshalRing(Ring{Name: "research", Members: []string{"beta", "alpha"}})
+	a, err := MarshalRing(Ring{Name: "research", Members: []string{"beta", "alpha"}, Skills: []string{"release", "audit"}})
 	if err != nil {
 		t.Fatalf("marshal failed: %v", err)
 	}
-	b, err := MarshalRing(Ring{Name: "research", Members: []string{"alpha", "beta"}})
+	b, err := MarshalRing(Ring{Name: "research", Members: []string{"alpha", "beta"}, Skills: []string{"audit", "release"}})
 	if err != nil {
 		t.Fatalf("marshal failed: %v", err)
 	}
@@ -43,9 +47,20 @@ func TestMarshalRingIsDeterministic(t *testing.T) {
 		t.Fatalf("expected member order not to affect output:\n%s\nvs\n%s", a, b)
 	}
 
-	expected := "name = \"research\"\nmembers = [\"alpha\", \"beta\"]\n"
+	expected := "name = \"research\"\nmembers = [\"alpha\", \"beta\"]\nskills = [\"audit\", \"release\"]\n"
 	if string(a) != expected {
 		t.Fatalf("expected deterministic output:\n%s\ngot:\n%s", expected, a)
+	}
+}
+
+func TestMarshalRingAllowsSkillOnlyRing(t *testing.T) {
+	encoded, err := MarshalRing(Ring{Name: "workflow", Skills: []string{"release"}})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	expected := "name = \"workflow\"\nskills = [\"release\"]\n"
+	if string(encoded) != expected {
+		t.Fatalf("expected skill-only ring output:\n%s\ngot:\n%s", expected, encoded)
 	}
 }
 
@@ -104,7 +119,7 @@ func TestRingValidate(t *testing.T) {
 		{
 			name:    "no members",
 			mutate:  func(r *Ring) { r.Members = nil },
-			expects: "at least one member is required",
+			expects: "at least one member or skill is required",
 		},
 		{
 			name:    "duplicate members",
@@ -115,6 +130,16 @@ func TestRingValidate(t *testing.T) {
 			name:    "invalid member name",
 			mutate:  func(r *Ring) { r.Members = []string{"Not Valid"} },
 			expects: "invalid member",
+		},
+		{
+			name:    "duplicate skills",
+			mutate:  func(r *Ring) { r.Members = nil; r.Skills = []string{"release", "release"} },
+			expects: "duplicate skill",
+		},
+		{
+			name:    "invalid skill name",
+			mutate:  func(r *Ring) { r.Members = nil; r.Skills = []string{"Not Valid"} },
+			expects: "invalid skill",
 		},
 	}
 
@@ -134,11 +159,17 @@ func TestRingValidate(t *testing.T) {
 }
 
 func TestRingHasMember(t *testing.T) {
-	ring := Ring{Name: "research", Members: []string{"stewreads", "arxiv"}}
+	ring := Ring{Name: "research", Members: []string{"stewreads", "arxiv"}, Skills: []string{"release"}}
 	if !ring.HasMember("arxiv") {
 		t.Fatalf("expected arxiv membership")
 	}
 	if ring.HasMember("other") {
 		t.Fatalf("did not expect other membership")
+	}
+	if !ring.HasSkill("release") {
+		t.Fatalf("expected release skill membership")
+	}
+	if ring.HasSkill("other") {
+		t.Fatalf("did not expect other skill membership")
 	}
 }

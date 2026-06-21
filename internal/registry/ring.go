@@ -8,12 +8,14 @@ import (
 	"strings"
 )
 
-// Ring is a named capability set of MCP servers. Members reference registry
-// entries by name only; rings never embed command, args, or env — the server
-// manifest stays the single source of truth.
+// Ring is a named capability set. Members reference server registry entries
+// by name; Skills reference skill registry entries by name. Rings never embed
+// command, args, env, or skill content — those primitives stay the source of
+// truth.
 type Ring struct {
 	Name        string   `toml:"name" json:"name"`
 	Members     []string `toml:"members" json:"members"`
+	Skills      []string `toml:"skills,omitempty" json:"skills,omitempty"`
 	Description string   `toml:"description,omitempty" json:"description,omitempty"`
 }
 
@@ -26,8 +28,8 @@ func (r Ring) Validate() error {
 		errs = append(errs, err.Error())
 	}
 
-	if len(r.Members) == 0 {
-		errs = append(errs, "at least one member is required")
+	if len(r.Members)+len(r.Skills) == 0 {
+		errs = append(errs, "at least one member or skill is required")
 	}
 	seen := map[string]struct{}{}
 	for _, member := range r.Members {
@@ -42,6 +44,19 @@ func (r Ring) Validate() error {
 		}
 		seen[member] = struct{}{}
 	}
+	seenSkills := map[string]struct{}{}
+	for _, skill := range r.Skills {
+		if err := validateServerName(strings.TrimSpace(skill)); err != nil {
+			errs = append(errs, fmt.Sprintf("invalid skill %q", skill))
+			continue
+		}
+		skill = strings.TrimSpace(skill)
+		if _, exists := seenSkills[skill]; exists {
+			errs = append(errs, fmt.Sprintf("duplicate skill %q", skill))
+			continue
+		}
+		seenSkills[skill] = struct{}{}
+	}
 
 	if len(errs) > 0 {
 		return fmt.Errorf("invalid ring: %s", strings.Join(errs, "; "))
@@ -49,7 +64,7 @@ func (r Ring) Validate() error {
 	return nil
 }
 
-// HasMember reports whether name is a member of the ring.
+// HasMember reports whether name is a server member of the ring.
 func (r Ring) HasMember(name string) bool {
 	name = strings.TrimSpace(name)
 	for _, member := range r.Members {
@@ -60,10 +75,21 @@ func (r Ring) HasMember(name string) bool {
 	return false
 }
 
+// HasSkill reports whether name is a skill member of the ring.
+func (r Ring) HasSkill(name string) bool {
+	name = strings.TrimSpace(name)
+	for _, skill := range r.Skills {
+		if strings.TrimSpace(skill) == name {
+			return true
+		}
+	}
+	return false
+}
+
 // ParseRing parses a constrained TOML ring manifest and rejects unknown
 // fields, mirroring ParseManifest's strictness.
 func ParseRing(data []byte) (Ring, error) {
-	ring := Ring{Members: []string{}}
+	ring := Ring{Members: []string{}, Skills: []string{}}
 
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	lineNo := 0
@@ -101,6 +127,12 @@ func ParseRing(data []byte) (Ring, error) {
 				return Ring{}, fmt.Errorf("line %d: invalid members: %w", lineNo, err)
 			}
 			ring.Members = av
+		case "skills":
+			av, err := parseStringArray(value)
+			if err != nil {
+				return Ring{}, fmt.Errorf("line %d: invalid skills: %w", lineNo, err)
+			}
+			ring.Skills = av
 		case "description":
 			sv, err := parseString(value)
 			if err != nil {
@@ -129,9 +161,16 @@ func MarshalRing(ring Ring) ([]byte, error) {
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "name = %s\n", strconv.Quote(ring.Name))
-	members := append([]string(nil), ring.Members...)
-	sort.Strings(members)
-	fmt.Fprintf(&b, "members = %s\n", formatStringArray(members))
+	if len(ring.Members) > 0 {
+		members := append([]string(nil), ring.Members...)
+		sort.Strings(members)
+		fmt.Fprintf(&b, "members = %s\n", formatStringArray(members))
+	}
+	if len(ring.Skills) > 0 {
+		skills := append([]string(nil), ring.Skills...)
+		sort.Strings(skills)
+		fmt.Fprintf(&b, "skills = %s\n", formatStringArray(skills))
+	}
 	if strings.TrimSpace(ring.Description) != "" {
 		fmt.Fprintf(&b, "description = %s\n", strconv.Quote(ring.Description))
 	}
