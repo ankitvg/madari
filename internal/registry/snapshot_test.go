@@ -391,6 +391,77 @@ func TestImportSnapshotSkillsDryRunAndApply(t *testing.T) {
 	}
 }
 
+func TestImportSnapshotDoesNotReadUnrelatedBrokenLocalSkillContent(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "servers"))
+	if err := store.SaveSkill(Skill{Name: "broken", Description: "local"}, []byte("# Broken\n")); err != nil {
+		t.Fatalf("save broken skill: %v", err)
+	}
+	contentPath, err := store.SkillContentPath("broken")
+	if err != nil {
+		t.Fatalf("skill content path: %v", err)
+	}
+	if err := os.Remove(contentPath); err != nil {
+		t.Fatalf("remove skill content: %v", err)
+	}
+
+	snapshot := Snapshot{
+		Version: SnapshotVersion,
+		Servers: []Manifest{
+			{Name: "alpha", Command: "/usr/bin/env", Enabled: true, Clients: []string{"claude-desktop"}},
+		},
+	}
+	result, err := ImportSnapshot(store, snapshot, false)
+	if err != nil {
+		t.Fatalf("server-only import should ignore unrelated broken skill content: %v", err)
+	}
+	if len(result.Added) != 1 || result.Added[0] != "alpha" {
+		t.Fatalf("expected alpha added, got: %+v", result)
+	}
+}
+
+func TestImportSnapshotCanRepairBrokenLocalSkillContent(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "servers"))
+	if err := store.SaveSkill(Skill{Name: "release", Description: "old"}, []byte("# Old\n")); err != nil {
+		t.Fatalf("save release skill: %v", err)
+	}
+	contentPath, err := store.SkillContentPath("release")
+	if err != nil {
+		t.Fatalf("skill content path: %v", err)
+	}
+	if err := os.Remove(contentPath); err != nil {
+		t.Fatalf("remove skill content: %v", err)
+	}
+
+	snapshot := Snapshot{
+		Version: SnapshotVersion,
+		Skills: []SnapshotSkill{
+			{Name: "release", Description: "new", Content: "# Release\n"},
+		},
+	}
+	dryRunResult, err := ImportSnapshot(store, snapshot, false)
+	if err != nil {
+		t.Fatalf("dry-run import should classify broken local skill as updated: %v", err)
+	}
+	if len(dryRunResult.SkillsUpdated) != 1 || dryRunResult.SkillsUpdated[0] != "release" {
+		t.Fatalf("expected release updated in dry-run, got: %+v", dryRunResult)
+	}
+
+	applyResult, err := ImportSnapshot(store, snapshot, true)
+	if err != nil {
+		t.Fatalf("apply import should repair broken local skill content: %v", err)
+	}
+	if len(applyResult.SkillsUpdated) != 1 || applyResult.SkillsUpdated[0] != "release" {
+		t.Fatalf("expected release updated in apply, got: %+v", applyResult)
+	}
+	content, err := store.GetSkillContent("release")
+	if err != nil {
+		t.Fatalf("load repaired skill content: %v", err)
+	}
+	if string(content) != "# Release\n" {
+		t.Fatalf("expected repaired content, got: %q", content)
+	}
+}
+
 func TestImportSnapshotRejectsUnknownRingMembers(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "servers"))
 	if err := store.Save(Manifest{Name: "alpha", Command: "/usr/bin/env", Enabled: true, Clients: []string{"claude-desktop"}}); err != nil {

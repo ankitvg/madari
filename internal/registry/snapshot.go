@@ -155,13 +155,16 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 	for _, ring := range existingRings {
 		existingRingsByName[ring.Name] = ring
 	}
-	existingSkills, err := snapshotSkillsFromStore(store)
-	if err != nil {
-		return ImportResult{}, err
-	}
-	existingSkillsByName := make(map[string]SnapshotSkill, len(existingSkills))
-	for _, skill := range existingSkills {
-		existingSkillsByName[skill.Name] = skill
+	existingSkillsByName := map[string]Skill{}
+	if len(snapshot.Skills) > 0 {
+		existingSkills, err := store.ListSkills()
+		if err != nil {
+			return ImportResult{}, err
+		}
+		existingSkillsByName = make(map[string]Skill, len(existingSkills))
+		for _, skill := range existingSkills {
+			existingSkillsByName[skill.Name] = skill
+		}
 	}
 
 	// Validate every ring before any write: a rejected snapshot must not
@@ -255,7 +258,14 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 			continue
 		}
 
-		if skillsEqual(existingSkill, incoming) {
+		existingSnapshot := SnapshotSkill{
+			Name:        existingSkill.Name,
+			Description: existingSkill.Description,
+		}
+		if content, err := store.GetSkillContent(incoming.Name); err == nil {
+			existingSnapshot.Content = string(content)
+		}
+		if skillsEqual(existingSnapshot, incoming) {
 			result.SkillsUnchanged = append(result.SkillsUnchanged, incoming.Name)
 			continue
 		}
