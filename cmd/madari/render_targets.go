@@ -5,9 +5,6 @@ import (
 	"io"
 	"sort"
 	"strings"
-
-	claudedesktop "github.com/ankitvg/madari/internal/clients/claude-desktop"
-	"github.com/ankitvg/madari/internal/clients/claudecode"
 )
 
 // renderedServer is the self-contained client config entry ring render emits.
@@ -23,13 +20,7 @@ type ringRenderTarget struct {
 	render func(io.Writer, map[string]renderedServer) error
 }
 
-var ringRenderTargets = map[string]ringRenderTarget{
-	claudedesktop.Target: {target: claudedesktop.Target, render: renderMCPServersJSON},
-	claudecode.Target:    {target: claudecode.Target, render: renderMCPServersJSON},
-	"codex":              {target: "codex", render: renderCodexTOML},
-	"gemini":             {target: "gemini", render: renderMCPServersJSON},
-	"vibe":               {target: "vibe", render: renderVibeTOML},
-}
+var ringRenderTargets = ringRenderTargetsFromClientTargets()
 
 func supportedRingRenderTargets() []string {
 	targets := make([]string, 0, len(ringRenderTargets))
