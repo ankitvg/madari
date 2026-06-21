@@ -59,7 +59,7 @@ streamable HTTP, or hand-managed stdio entries are preserved and never adopted.
 ## Rings
 
 ```bash
-madari ring create research --member stewreads --member arxiv --description "Research helpers"
+madari ring create research --member stewreads --member arxiv --skill release --description "Research helpers"
 madari ring list
 madari ring show research
 madari ring attach research claude-code
@@ -80,18 +80,23 @@ madari ring render research --client vibe
 madari ring status
 ```
 
-Rings are named capability sets of servers stored at
-`<config-root>/rings/<name>.toml` (see the manifest spec). Members reference
-registry entries by name and must exist when the ring is created.
+Rings are named capability sets of servers and skills stored at
+`<config-root>/rings/<name>.toml` (see the manifest spec). Server members
+reference server registry entries by name; skill members reference managed
+skill entries by name. Referenced entries must exist when the ring is created.
 
-Attach records a `ring:<name>` ownership source for every member and
-materializes the eligible ones; detach releases the source, and an entry
-leaves the client config only when no source owns it. Ownership is
+Attach records a `ring:<name>` ownership source for every server and skill
+member. Eligible servers are materialized into MCP client config; skill members
+are materialized as native `SKILL.md` files for `claude-code`, `codex`,
+`gemini`, and `vibe`. Rings containing skills cannot attach to
+`claude-desktop`. Detach releases the source, and a server config entry or
+skill file leaves the client only when no source owns it. Ownership is
 reference-counted: overlapping rings and standalone+ring combinations resolve
-in any attach/detach order. Disabled, secret-refused, or missing members stay
-owned but absent until they become eligible. Ring membership edits (including
-snapshot imports) reconcile on the next sync, attach, or detach. Attaching
-onto an entry madari does not manage is refused, even when values match.
+in any attach/detach order. Disabled, secret-refused, or missing server
+members stay owned but absent until they become eligible. Ring membership
+edits (including snapshot imports) reconcile on the next sync, attach, or
+detach. Attaching onto an entry or skill file madari does not manage is
+refused, even when values match.
 
 `ring delete` removes the ring definition only after every target/scope has
 released its `ring:<name>` ownership source. If the ring is still attached,
@@ -99,7 +104,7 @@ the command exits non-zero and prints scoped `ring detach` guidance. Deleting
 a ring never edits client configs or managed state.
 
 `ring render` prints a self-contained MCP config to stdout and mutates
-nothing — no state, no refcounts. Members are filtered by client
+nothing — no state, no refcounts. Server members are filtered by client
 compatibility; disabled, missing, or command-invalid members are omitted
 with stderr warnings, and static values for `[secret_env]` keys are never
 emitted (the warning names the keys to provide via the runtime environment).
@@ -109,20 +114,23 @@ Render targets are independent from sync adapters. `claude-code`,
 `[[mcp_servers]]` entries with `transport = "stdio"`.
 Codex render output also emits `env_vars = [...]` for `[required_env]` and
 `[secret_env]` keys so runtime-provided environment values can be forwarded.
+Ring skill members are not embedded in MCP render output; use `ring attach`
+for native skill materialization.
 Ephemeral-session recipe:
 
 ```bash
 claude --mcp-config <(madari ring render research --client claude-code)
 ```
 
-`ring status` shows attached rings and per-server ownership sources for
-every client and scope, flags rings whose file is missing (with the
+`ring status` shows attached rings plus per-server and per-skill ownership
+sources for every client and scope, flags rings whose file is missing (with the
 `ring detach` command that releases the stale sources), and calls out
-members pending sync, stale owners left by membership edits (`stale`), and
-members missing from the registry. Remediation hints assume default config
-paths — pass `--config-path` when the ring was attached to a custom config. `madari doctor` reports
+members pending sync, stale owners left by membership edits (`stale` for
+servers, `stale-skills` for skills), and members missing from the registry.
+Remediation hints assume default config paths — pass `--config-path` when the
+ring was attached to a custom config. `madari doctor` reports
 the same conditions as `ring_issues` (missing ring file = error, dangling
-member = warning).
+server member = warning).
 
 ## Skills
 
@@ -151,12 +159,14 @@ mutates nothing. `skill render --client <target>` synthesizes a native
 `SKILL.md` with YAML frontmatter for `claude-code`, `codex`, `gemini`, or
 `vibe`; it still writes no files.
 
-`skill attach` writes `<skills-dir>/<name>/SKILL.md` and records ownership in
-Madari state. Project scope is the default; user scope writes to the target's
-user skill root. `--skills-dir` overrides the root. Attach refuses to overwrite
-unmanaged files. `skill detach` removes only Madari-owned `SKILL.md` files and
-refuses to delete files modified since Madari last wrote them. Skills are not
-ring members, are not written into MCP client configs, and are not consumed by
+Direct `skill attach` writes `<skills-dir>/<name>/SKILL.md` and records
+`standalone` ownership in Madari state. Project scope is the default; user scope
+writes to the target's user skill root. `--skills-dir` overrides the root.
+Attach refuses to overwrite unmanaged files. `skill detach` releases direct
+ownership and removes the `SKILL.md` only when no source owns it anymore; it
+refuses to delete files modified since Madari last wrote them. Ring attach uses
+the same native skill materialization state with `ring:<name>` ownership
+sources. Skills are not written into MCP client configs and are not consumed by
 `run`.
 
 ## Diagnostics
@@ -340,7 +350,11 @@ itself.
   "removed": [],
   "unchanged": [],
   "skipped": [],
-  "refused": []
+  "refused": [],
+  "skills_added": [],
+  "skills_updated": [],
+  "skills_removed": [],
+  "skills_unchanged": []
 }
 ```
 
@@ -354,6 +368,7 @@ itself.
     {
       "name": "research",
       "members": ["arxiv", "stewreads"],
+      "skills": ["release"],
       "description": "Research helpers"
     }
   ]
@@ -369,6 +384,7 @@ itself.
   "ring": {
     "name": "research",
     "members": ["arxiv", "stewreads"],
+    "skills": ["release"],
     "description": "Research helpers"
   }
 }
@@ -419,15 +435,23 @@ managed content path:
           "name": "research",
           "exists": true,
           "members": ["arxiv", "stewreads"],
+          "skills": ["release"],
           "owned": ["arxiv", "stewreads"],
+          "skills_owned": ["release"],
           "pending": [],
+          "skills_pending": [],
           "stale": [],
-          "missing_members": []
+          "skills_stale": [],
+          "missing_members": [],
+          "missing_skills": []
         }
       ],
       "servers": [
         {"name": "arxiv", "sources": ["ring:research"]},
         {"name": "stewreads", "sources": ["ring:research", "standalone"]}
+      ],
+      "skills": [
+        {"name": "release", "sources": ["ring:research"]}
       ]
     }
   ]

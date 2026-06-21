@@ -21,13 +21,18 @@ func newRingTestStore(t *testing.T) *Store {
 			t.Fatalf("save manifest %s: %v", name, err)
 		}
 	}
+	for _, name := range []string{"release", "review"} {
+		if err := store.SaveSkill(Skill{Name: name, Description: name + " workflow"}, []byte("# "+name+"\n")); err != nil {
+			t.Fatalf("save skill %s: %v", name, err)
+		}
+	}
 	return store
 }
 
 func TestRingStoreLifecycle(t *testing.T) {
 	store := newRingTestStore(t)
 
-	ring := Ring{Name: "research", Members: []string{"stewreads", "arxiv"}, Description: "Research helpers"}
+	ring := Ring{Name: "research", Members: []string{"stewreads", "arxiv"}, Skills: []string{"release"}, Description: "Research helpers"}
 	if err := store.AddRing(ring); err != nil {
 		t.Fatalf("add ring: %v", err)
 	}
@@ -36,7 +41,7 @@ func TestRingStoreLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get ring: %v", err)
 	}
-	if got.Name != "research" || len(got.Members) != 2 {
+	if got.Name != "research" || len(got.Members) != 2 || len(got.Skills) != 1 {
 		t.Fatalf("unexpected ring: %#v", got)
 	}
 
@@ -85,6 +90,22 @@ func TestAddRingRejectsUnknownMembers(t *testing.T) {
 	}
 	if _, getErr := store.GetRing("research"); !errors.Is(getErr, ErrRingNotFound) {
 		t.Fatalf("expected no ring written after member validation failure, got: %v", getErr)
+	}
+}
+
+func TestAddRingRejectsUnknownSkills(t *testing.T) {
+	store := newRingTestStore(t)
+
+	err := store.AddRing(Ring{Name: "research", Skills: []string{"release", "ghost", "phantom"}})
+	if err == nil {
+		t.Fatalf("expected unknown-skill error")
+	}
+	if !strings.Contains(err.Error(), "unknown skills") ||
+		!strings.Contains(err.Error(), "ghost, phantom") {
+		t.Fatalf("expected sorted unknown skill names, got: %v", err)
+	}
+	if _, getErr := store.GetRing("research"); !errors.Is(getErr, ErrRingNotFound) {
+		t.Fatalf("expected no ring written after skill validation failure, got: %v", getErr)
 	}
 }
 

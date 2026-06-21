@@ -11,7 +11,8 @@ import (
 const (
 	snapshotVersionV1 = 1
 	snapshotVersionV2 = 2
-	SnapshotVersion   = 3
+	snapshotVersionV3 = 3
+	SnapshotVersion   = 4
 )
 
 type Snapshot struct {
@@ -60,15 +61,19 @@ func ExportSnapshot(store *Store) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 
-	// A snapshot must round-trip: every exported ring member has to exist in
-	// the exported server set, or the fresh import of this backup would be
-	// refused. Fail loudly instead of writing a broken artifact.
-	exportable := make(map[string]struct{}, len(servers))
+	// A snapshot must round-trip: every exported ring reference has to exist
+	// in the exported primitive sets, or the fresh import of this backup would
+	// be refused. Fail loudly instead of writing a broken artifact.
+	exportableServers := make(map[string]struct{}, len(servers))
 	for _, server := range servers {
-		exportable[server.Name] = struct{}{}
+		exportableServers[server.Name] = struct{}{}
+	}
+	exportableSkills := make(map[string]struct{}, len(skills))
+	for _, skill := range skills {
+		exportableSkills[skill.Name] = struct{}{}
 	}
 	for _, ring := range rings {
-		if err := validateRingMembersAgainst(ring, exportable); err != nil {
+		if err := validateRingReferencesAgainst(ring, exportableServers, exportableSkills); err != nil {
 			return Snapshot{}, fmt.Errorf("%w; update or delete the ring before exporting", err)
 		}
 	}
@@ -82,7 +87,7 @@ func ExportSnapshot(store *Store) (Snapshot, error) {
 }
 
 func MarshalSnapshotJSON(snapshot Snapshot) ([]byte, error) {
-	if snapshot.Version == 0 || snapshot.Version == snapshotVersionV1 || snapshot.Version == snapshotVersionV2 {
+	if snapshot.Version == 0 || snapshot.Version < SnapshotVersion {
 		snapshot.Version = SnapshotVersion
 	}
 	if snapshot.Servers == nil {
@@ -156,7 +161,7 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 		existingRingsByName[ring.Name] = ring
 	}
 	existingSkillsByName := map[string]Skill{}
-	if len(snapshot.Skills) > 0 {
+	if len(snapshot.Skills) > 0 || snapshotHasRingSkills(snapshot) {
 		existingSkills, err := store.ListSkills()
 		if err != nil {
 			return ImportResult{}, err
@@ -176,8 +181,15 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 	for _, server := range snapshot.Servers {
 		allowedMembers[server.Name] = struct{}{}
 	}
+	allowedSkills := make(map[string]struct{}, len(existingSkillsByName)+len(snapshot.Skills))
+	for name := range existingSkillsByName {
+		allowedSkills[name] = struct{}{}
+	}
+	for _, skill := range snapshot.Skills {
+		allowedSkills[skill.Name] = struct{}{}
+	}
 	for _, ring := range snapshot.Rings {
-		if err := validateRingMembersAgainst(ring, allowedMembers); err != nil {
+		if err := validateRingReferencesAgainst(ring, allowedMembers, allowedSkills); err != nil {
 			return ImportResult{}, err
 		}
 	}
@@ -282,14 +294,17 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 }
 
 func (s Snapshot) Validate() error {
-	if s.Version != snapshotVersionV1 && s.Version != snapshotVersionV2 && s.Version != SnapshotVersion {
+	if s.Version != snapshotVersionV1 && s.Version != snapshotVersionV2 && s.Version != snapshotVersionV3 && s.Version != SnapshotVersion {
 		return fmt.Errorf("unsupported snapshot version %d (supported: %d)", s.Version, SnapshotVersion)
 	}
 	if s.Version == snapshotVersionV1 && len(s.Rings) > 0 {
 		return fmt.Errorf("snapshot version %d does not support rings", snapshotVersionV1)
 	}
-	if s.Version < SnapshotVersion && len(s.Skills) > 0 {
+	if s.Version < snapshotVersionV3 && len(s.Skills) > 0 {
 		return fmt.Errorf("snapshot version %d does not support skills", s.Version)
+	}
+	if s.Version < SnapshotVersion && snapshotHasRingSkills(s) {
+		return fmt.Errorf("snapshot version %d does not support ring skills", s.Version)
 	}
 
 	seen := map[string]struct{}{}
@@ -328,20 +343,36 @@ func (s Snapshot) Validate() error {
 	return nil
 }
 
-func validateRingMembersAgainst(ring Ring, allowed map[string]struct{}) error {
+func validateRingReferencesAgainst(ring Ring, allowedServers, allowedSkills map[string]struct{}) error {
 	var missing []string
 	for _, member := range ring.Members {
 		member = strings.TrimSpace(member)
-		if _, ok := allowed[member]; ok {
+		if _, ok := allowedServers[member]; ok {
 			continue
 		}
 		missing = append(missing, member)
 	}
-	if len(missing) == 0 {
+	var errs []string
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		errs = append(errs, fmt.Sprintf("unknown servers: %s", strings.Join(missing, ", ")))
+	}
+	var missingSkills []string
+	for _, skill := range ring.Skills {
+		skill = strings.TrimSpace(skill)
+		if _, ok := allowedSkills[skill]; ok {
+			continue
+		}
+		missingSkills = append(missingSkills, skill)
+	}
+	if len(missingSkills) > 0 {
+		sort.Strings(missingSkills)
+		errs = append(errs, fmt.Sprintf("unknown skills: %s", strings.Join(missingSkills, ", ")))
+	}
+	if len(errs) == 0 {
 		return nil
 	}
-	sort.Strings(missing)
-	return fmt.Errorf("ring %q references unknown servers: %s", ring.Name, strings.Join(missing, ", "))
+	return fmt.Errorf("ring %q references %s", ring.Name, strings.Join(errs, "; "))
 }
 
 func manifestsEqual(a, b Manifest) bool {
@@ -391,7 +422,12 @@ func ringsEqual(a, b Ring) bool {
 	}
 	aMembers := normalizedRingMembers(a)
 	bMembers := normalizedRingMembers(b)
-	return slices.Equal(aMembers, bMembers)
+	if !slices.Equal(aMembers, bMembers) {
+		return false
+	}
+	aSkills := normalizedRingSkills(a)
+	bSkills := normalizedRingSkills(b)
+	return slices.Equal(aSkills, bSkills)
 }
 
 func skillsEqual(a, b SnapshotSkill) bool {
@@ -436,4 +472,22 @@ func normalizedRingMembers(r Ring) []string {
 	}
 	sort.Strings(members)
 	return members
+}
+
+func normalizedRingSkills(r Ring) []string {
+	skills := make([]string, 0, len(r.Skills))
+	for _, skill := range r.Skills {
+		skills = append(skills, strings.TrimSpace(skill))
+	}
+	sort.Strings(skills)
+	return skills
+}
+
+func snapshotHasRingSkills(snapshot Snapshot) bool {
+	for _, ring := range snapshot.Rings {
+		if len(ring.Skills) > 0 {
+			return true
+		}
+	}
+	return false
 }

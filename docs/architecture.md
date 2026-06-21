@@ -12,9 +12,9 @@ Madari keeps four concepts separate:
 
 - Server: an executable MCP capability with command, args, env, and target
   client metadata.
-- Ring: a named capability grouping. Today persisted rings contain server
-  members only; the grouping surface is intentionally the place where future
-  capability types such as skills can compose with MCP servers.
+- Ring: a named capability grouping. Persisted rings can contain server
+  members and skill members by name; the referenced server manifests and skill
+  files remain the source of truth.
 - Skill: procedural or domain instructions for how an agent should use
   capabilities. Skills are standalone Markdown primitives with their own
   metadata, managed content, and render surface.
@@ -23,10 +23,11 @@ Madari keeps four concepts separate:
   yet and should not be modeled as persistent client sync.
 
 Current behavior follows this boundary: `sync` and `ring attach` persist MCP
-server config, `ring render` emits MCP config only, plain `skill render` emits
-managed Markdown only, and `skill attach` materializes client-native `SKILL.md`
-files without changing MCP client configs. Skills are not ring members or run
-inputs yet.
+server config, `ring attach` also materializes ring skill members as native
+skill files for supported targets, `ring render` emits MCP config only, plain
+`skill render` emits managed Markdown only, and `skill attach` materializes
+client-native `SKILL.md` files without changing MCP client configs. Skills are
+not run inputs yet.
 
 ## Components
 
@@ -38,7 +39,8 @@ inputs yet.
 - Human-readable and versionable.
 - Snapshots (`export`/`import`) carry servers, rings, and skills as versioned
   JSON; export refuses rings that would not round-trip, import validates
-  everything before writing anything and never attaches or syncs.
+  everything before writing anything and never attaches or syncs. Snapshot
+  version 4 adds ring skill membership.
 
 2. Client Targets and Adapters
 - The command layer keeps a single client target registry for target-level
@@ -75,26 +77,29 @@ inputs yet.
   released only by detach or membership reconciliation.
 
 5. Rings
-- Named capability sets (`rings/<name>.toml`). In the current schema, members
-  are server references by name only — the server manifest stays the single
-  source of truth for command, args, and env. Skills are standalone in V1;
-  future skill membership should grow the ring schema deliberately rather than
-  overloading server manifests.
+- Named capability sets (`rings/<name>.toml`). Server members are references by
+  name only — the server manifest stays the single source of truth for command,
+  args, and env. Skill members are references by name only — managed skill
+  metadata and Markdown stay the source of truth.
 - Attachment is derived state: ring `R` is attached to a target+scope iff
-  `ring:R` appears among ownership sources there. Attach records the source
-  on every member and materializes the eligible ones; detach releases it by
-  name (no ring file required), and an entry leaves the config only when its
-  last source goes. Overlapping rings resolve by refcount in any order.
+  `ring:R` appears among server ownership sources or skill attachment sources
+  there. Attach records the source on every server and skill member,
+  materializes eligible servers into MCP config, and materializes skills into
+  native skill directories for supported targets. Detach releases the source by
+  name (no ring file required), and an entry or skill file leaves the client
+  only when its last source goes. Overlapping rings resolve by refcount in any
+  order.
 - Every sync/attach/detach runs a reconciliation pass: recorded ring sources
   are recomputed against current ring membership, so edits (including
   snapshot imports) converge on the next operation. Unmanaged config
   collisions are never granted a ring source.
-- `ring render` materializes a self-contained client-native config to stdout
-  (secret values omitted) without touching state or refcounts. Render targets
-  are registered independently from sync adapters, so a client can support
+- `ring render` materializes a self-contained client-native MCP config to
+  stdout (secret values omitted) without touching state or refcounts. Ring
+  skill members are not embedded in render output. Render targets are
+  registered independently from sync adapters, so a client can support
   render-only output before persistent sync/attach support exists. `ring
-  status` reports attachments, per-server sources, and pending/stale
-  reconciliation work.
+  status` reports attachments, per-server and per-skill sources, and
+  pending/stale reconciliation work.
 - `ring delete` refuses while any target/scope still records the ring as an
   ownership source, and never edits client configs or managed state.
 
@@ -108,10 +113,12 @@ inputs yet.
   `--client`, render synthesizes native `SKILL.md` frontmatter without writing
   files.
 - `skill attach` writes Madari-owned `SKILL.md` files into supported native
-  skill directories and records separate skill attachment state. It refuses to
-  overwrite unmanaged files or remove files modified after Madari wrote them.
-- Skills are exported/imported in snapshots but are not consumed by rings, MCP
-  sync adapters, or run execution.
+  skill directories and records separate source-aware skill attachment state.
+  Direct attach owns the `standalone` source; ring attach owns `ring:<name>`.
+  It refuses to overwrite unmanaged files or remove files modified after
+  Madari wrote them.
+- Skills are exported/imported in snapshots and can be consumed by rings. They
+  are not written into MCP config files and are not consumed by run execution.
 
 7. Doctor Engine
 - Verifies command/binary resolution.
@@ -120,7 +127,7 @@ inputs yet.
 - Detects drift between manifests and materialized client entries (stale,
   missing, orphaned) for every target+scope with managed entries.
 - Flags ring issues: an attached ring whose file is missing (error, with
-  detach guidance) and rings referencing deleted manifests (warning).
+  detach guidance) and rings referencing deleted server manifests (warning).
 
 ## Safety Model
 

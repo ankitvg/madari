@@ -52,16 +52,22 @@ type ringTargetStatus struct {
 	scope   string
 	rings   []ringAttachment
 	servers []serverSources
+	skills  []serverSources
 }
 
 type ringAttachment struct {
 	name           string
 	exists         bool
 	members        []string
+	skills         []string
 	owned          []string
+	skillsOwned    []string
 	pending        []string
+	skillsPending  []string
 	stale          []string
+	skillsStale    []string
 	missingMembers []string
+	missingSkills  []string
 }
 
 type serverSources struct {
@@ -97,6 +103,14 @@ func (a cliApp) cmdRingStatus(args []string) error {
 	for _, manifest := range manifests {
 		manifestNames[manifest.Name] = true
 	}
+	skills, err := a.store.ListSkills()
+	if err != nil {
+		return err
+	}
+	skillNames := make(map[string]bool, len(skills))
+	for _, skill := range skills {
+		skillNames[skill.Name] = true
+	}
 
 	statuses := []ringTargetStatus{}
 	for _, ref := range a.managedStateRefs() {
@@ -104,9 +118,16 @@ func (a cliApp) cmdRingStatus(args []string) error {
 		if err != nil {
 			return err
 		}
+		skillState := map[string]skillAttachmentEntry{}
+		if supportsSkillMaterialization(ref.target) {
+			skillState, err = loadSkillAttachmentState(a.skillAttachmentStatePath(ref.target, ref.scope))
+			if err != nil {
+				return err
+			}
+		}
 		ts := ringTargetStatus{target: ref.target, scope: ref.scope}
 
-		for _, name := range syncshared.AttachedRings(state) {
+		for _, name := range unionStrings(syncshared.AttachedRings(state), attachedSkillRings(skillState)) {
 			attachment := ringAttachment{name: name}
 			ring, err := a.store.GetRing(name)
 			switch {
@@ -119,6 +140,9 @@ func (a cliApp) cmdRingStatus(args []string) error {
 				members := append([]string(nil), ring.Members...)
 				sort.Strings(members)
 				attachment.members = members
+				skillMembers := append([]string(nil), ring.Skills...)
+				sort.Strings(skillMembers)
+				attachment.skills = skillMembers
 				source := syncshared.RingSource(name)
 				memberSet := make(map[string]bool, len(members))
 				for _, member := range members {
@@ -133,6 +157,19 @@ func (a cliApp) cmdRingStatus(args []string) error {
 						attachment.missingMembers = append(attachment.missingMembers, member)
 					}
 				}
+				skillMemberSet := make(map[string]bool, len(skillMembers))
+				for _, skill := range skillMembers {
+					skill = strings.TrimSpace(skill)
+					skillMemberSet[skill] = true
+					if skillAttachmentStateHasSource(skillState, skill, source) {
+						attachment.skillsOwned = append(attachment.skillsOwned, skill)
+					} else {
+						attachment.skillsPending = append(attachment.skillsPending, skill)
+					}
+					if !skillNames[skill] {
+						attachment.missingSkills = append(attachment.missingSkills, skill)
+					}
+				}
 				// Stale owners: state entries still carrying the source
 				// after a membership edit removed them from the ring.
 				for owner, sources := range state {
@@ -141,6 +178,11 @@ func (a cliApp) cmdRingStatus(args []string) error {
 					}
 				}
 				sort.Strings(attachment.stale)
+				for _, entry := range skillState {
+					if !skillMemberSet[entry.Name] && skillAttachmentHasSource(entry, source) {
+						attachment.skillsStale = appendUniqueName(attachment.skillsStale, entry.Name)
+					}
+				}
 			}
 			ts.rings = append(ts.rings, attachment)
 		}
@@ -149,6 +191,9 @@ func (a cliApp) cmdRingStatus(args []string) error {
 		sort.Strings(serverNames)
 		for _, name := range serverNames {
 			ts.servers = append(ts.servers, serverSources{name: name, sources: state[name]})
+		}
+		for _, entry := range sortedSkillAttachmentEntries(skillState) {
+			ts.skills = append(ts.skills, serverSources{name: entry.Name, sources: entry.Sources})
 		}
 		statuses = append(statuses, ts)
 	}
@@ -169,22 +214,34 @@ func (a cliApp) cmdRingStatus(args []string) error {
 				Scope:   scope,
 				Rings:   make([]ringAttachmentJSON, 0, len(ts.rings)),
 				Servers: make([]ringServerJSON, 0, len(ts.servers)),
+				Skills:  make([]ringSkillJSON, 0, len(ts.skills)),
 			}
 			for _, att := range ts.rings {
 				targetJSON.Rings = append(targetJSON.Rings, ringAttachmentJSON{
 					Name:           att.name,
 					Exists:         att.exists,
 					Members:        nonNilStrings(att.members),
+					Skills:         nonNilStrings(att.skills),
 					Owned:          nonNilStrings(att.owned),
+					SkillsOwned:    nonNilStrings(att.skillsOwned),
 					Pending:        nonNilStrings(att.pending),
+					SkillsPending:  nonNilStrings(att.skillsPending),
 					Stale:          nonNilStrings(att.stale),
+					SkillsStale:    nonNilStrings(att.skillsStale),
 					MissingMembers: nonNilStrings(att.missingMembers),
+					MissingSkills:  nonNilStrings(att.missingSkills),
 				})
 			}
 			for _, server := range ts.servers {
 				targetJSON.Servers = append(targetJSON.Servers, ringServerJSON{
 					Name:    server.name,
 					Sources: nonNilStrings(server.sources),
+				})
+			}
+			for _, skill := range ts.skills {
+				targetJSON.Skills = append(targetJSON.Skills, ringSkillJSON{
+					Name:    skill.name,
+					Sources: nonNilStrings(skill.sources),
 				})
 			}
 			payload.Targets = append(payload.Targets, targetJSON)
@@ -197,7 +254,7 @@ func (a cliApp) cmdRingStatus(args []string) error {
 		if ts.scope == clients.ScopeUser {
 			label += " (user scope)"
 		}
-		if len(ts.servers) == 0 {
+		if len(ts.servers)+len(ts.skills) == 0 {
 			fmt.Fprintf(a.stdout, "%s: no managed entries\n", label)
 			continue
 		}
@@ -220,28 +277,48 @@ func (a cliApp) cmdRingStatus(args []string) error {
 					continue
 				}
 				marker := "ok"
-				if len(att.pending)+len(att.stale) > 0 {
+				if len(att.pending)+len(att.stale)+len(att.skillsPending)+len(att.skillsStale) > 0 {
 					marker = "out-of-sync"
 				}
 				line := fmt.Sprintf("    %s [%s] members=%d owned=%d", att.name, marker, len(att.members), len(att.owned))
+				if len(att.skills) > 0 || len(att.skillsOwned) > 0 || len(att.skillsPending) > 0 || len(att.skillsStale) > 0 {
+					line += fmt.Sprintf(" skills=%d skill-owned=%d", len(att.skills), len(att.skillsOwned))
+				}
 				if len(att.pending) > 0 {
 					line += fmt.Sprintf(" pending=%s", strings.Join(att.pending, ","))
+				}
+				if len(att.skillsPending) > 0 {
+					line += fmt.Sprintf(" pending-skills=%s", strings.Join(att.skillsPending, ","))
 				}
 				if len(att.stale) > 0 {
 					line += fmt.Sprintf(" stale=%s", strings.Join(att.stale, ","))
 				}
-				if len(att.pending)+len(att.stale) > 0 {
+				if len(att.skillsStale) > 0 {
+					line += fmt.Sprintf(" stale-skills=%s", strings.Join(att.skillsStale, ","))
+				}
+				if len(att.pending)+len(att.stale)+len(att.skillsPending)+len(att.skillsStale) > 0 {
 					line += fmt.Sprintf(" (run `%s`; pass --config-path if attached to a custom config)", syncHint)
 				}
 				if len(att.missingMembers) > 0 {
 					line += fmt.Sprintf(" missing-from-registry=%s", strings.Join(att.missingMembers, ","))
 				}
+				if len(att.missingSkills) > 0 {
+					line += fmt.Sprintf(" missing-skills-from-registry=%s", strings.Join(att.missingSkills, ","))
+				}
 				fmt.Fprintln(a.stdout, line)
 			}
 		}
-		fmt.Fprintln(a.stdout, "  servers:")
-		for _, server := range ts.servers {
-			fmt.Fprintf(a.stdout, "    %s: %s\n", server.name, strings.Join(server.sources, ", "))
+		if len(ts.servers) > 0 {
+			fmt.Fprintln(a.stdout, "  servers:")
+			for _, server := range ts.servers {
+				fmt.Fprintf(a.stdout, "    %s: %s\n", server.name, strings.Join(server.sources, ", "))
+			}
+		}
+		if len(ts.skills) > 0 {
+			fmt.Fprintln(a.stdout, "  skills:")
+			for _, skill := range ts.skills {
+				fmt.Fprintf(a.stdout, "    %s: %s\n", skill.name, strings.Join(skill.sources, ", "))
+			}
 		}
 	}
 	return nil
@@ -360,6 +437,9 @@ func (a cliApp) cmdRingRender(args []string) error {
 		}
 		servers[member] = entry
 	}
+	if len(ring.Skills) > 0 {
+		fmt.Fprintf(a.stderr, "warning: ring skills are not included in MCP config render; use `madari ring attach %s %s` to materialize native skill files\n", ring.Name, target)
+	}
 
 	return renderTarget.render(a.stdout, servers)
 }
@@ -467,23 +547,53 @@ func (a cliApp) cmdRingAttach(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := validateRingSkillTarget("ring attach", ring, target); err != nil {
+		return err
+	}
 
 	a.warnRingMembers(ring, manifests, target)
 	syncable, skipped := filterSyncableManifests(manifests, target)
 
 	adapter := syncAdapters[target]
-	result, err := adapter.AttachRing(ring, syncable, clients.SyncOptions{
+	opts := clients.SyncOptions{
 		ConfigPath: configPath,
 		StatePath:  a.ringOpStatePath(target, scope),
 		Rings:      rings,
 		Scope:      scope,
-		DryRun:     dryRun,
-	})
-	if err != nil {
-		return err
+	}
+	if len(ring.Skills) > 0 && !dryRun {
+		if _, err := a.attachRingSkills(ring, target, scope, true); err != nil {
+			return err
+		}
+	}
+	if len(ring.Members) > 0 && !dryRun {
+		opts.DryRun = true
+		if _, err := adapter.AttachRing(ring, syncable, opts); err != nil {
+			return err
+		}
+	}
+
+	result := clients.SyncResult{ConfigPath: "-", DryRun: dryRun}
+	if len(ring.Members) > 0 {
+		opts.DryRun = dryRun
+		result, err = adapter.AttachRing(ring, syncable, opts)
+		if err != nil {
+			return err
+		}
+	}
+
+	skillResult := skillAttachResult{DryRun: dryRun}
+	if len(ring.Skills) > 0 {
+		skillResult, err = a.attachRingSkills(ring, target, scope, dryRun)
+		if err != nil {
+			return err
+		}
 	}
 	fmt.Fprintf(a.stdout, "ring: %s\n", ringName)
-	printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, skipped, result.Refused)
+	if len(ring.Members) > 0 {
+		printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, skipped, result.Refused)
+	}
+	printRingSkillSummary(a.stdout, skillResult)
 	return nil
 }
 
@@ -505,7 +615,12 @@ func (a cliApp) cmdRingDetach(args []string) error {
 	if err != nil {
 		return err
 	}
-	if !slices.Contains(syncshared.AttachedRings(state), ringName) {
+	serverAttached := slices.Contains(syncshared.AttachedRings(state), ringName)
+	skillAttached, err := a.ringSkillAttached(ringName, target, scope)
+	if err != nil {
+		return err
+	}
+	if !serverAttached && !skillAttached {
 		fmt.Fprintf(a.stdout, "ring %s is not attached to %s; nothing to do\n", ringName, target)
 		return nil
 	}
@@ -516,18 +631,36 @@ func (a cliApp) cmdRingDetach(args []string) error {
 	}
 
 	adapter := syncAdapters[target]
-	result, err := adapter.DetachRing(ringName, clients.SyncOptions{
-		ConfigPath: configPath,
-		StatePath:  statePath,
-		Rings:      rings,
-		Scope:      scope,
-		DryRun:     dryRun,
-	})
-	if err != nil {
-		return err
+	result := clients.SyncResult{ConfigPath: "-", DryRun: dryRun}
+	if skillAttached && !dryRun {
+		if _, err := a.detachSkillSourceAll(target, scope, syncshared.RingSource(ringName), true); err != nil {
+			return err
+		}
+	}
+	if serverAttached {
+		result, err = adapter.DetachRing(ringName, clients.SyncOptions{
+			ConfigPath: configPath,
+			StatePath:  statePath,
+			Rings:      rings,
+			Scope:      scope,
+			DryRun:     dryRun,
+		})
+		if err != nil {
+			return err
+		}
+	}
+	skillResult := skillAttachResult{DryRun: dryRun}
+	if skillAttached {
+		skillResult, err = a.detachSkillSourceAll(target, scope, syncshared.RingSource(ringName), dryRun)
+		if err != nil {
+			return err
+		}
 	}
 	fmt.Fprintf(a.stdout, "ring: %s\n", ringName)
-	printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, nil, result.Refused)
+	if serverAttached {
+		printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, nil, result.Refused)
+	}
+	printRingSkillSummary(a.stdout, skillResult)
 	return nil
 }
 
@@ -608,6 +741,7 @@ func (a cliApp) cmdRingDelete(args []string) error {
 func (a cliApp) ringDeleteHolders(name string) ([]ringDeleteHolder, error) {
 	source := syncshared.RingSource(name)
 	var holders []ringDeleteHolder
+	seen := map[string]struct{}{}
 	for _, ref := range a.managedStateRefs() {
 		state, err := syncshared.LoadManagedState(ref.path)
 		if err != nil {
@@ -617,8 +751,29 @@ func (a cliApp) ringDeleteHolders(name string) ([]ringDeleteHolder, error) {
 			if !slices.Contains(sources, source) {
 				continue
 			}
-			holders = append(holders, ringDeleteHolder{target: ref.target, scope: ref.scope})
+			key := ref.target + "\x00" + ref.scope
+			if _, exists := seen[key]; !exists {
+				holders = append(holders, ringDeleteHolder{target: ref.target, scope: ref.scope})
+				seen[key] = struct{}{}
+			}
 			break
+		}
+		if supportsSkillMaterialization(ref.target) {
+			skillState, err := loadSkillAttachmentState(a.skillAttachmentStatePath(ref.target, ref.scope))
+			if err != nil {
+				return nil, err
+			}
+			for _, entry := range skillState {
+				if !skillAttachmentHasSource(entry, source) {
+					continue
+				}
+				key := ref.target + "\x00" + ref.scope
+				if _, exists := seen[key]; !exists {
+					holders = append(holders, ringDeleteHolder{target: ref.target, scope: ref.scope})
+					seen[key] = struct{}{}
+				}
+				break
+			}
 		}
 	}
 	return holders, nil
@@ -643,9 +798,164 @@ func (a cliApp) warnRingMembers(ring registry.Ring, manifests []registry.Manifes
 	}
 }
 
+func validateRingSkillTarget(command string, ring registry.Ring, target string) error {
+	if len(ring.Skills) == 0 || supportsSkillMaterialization(target) {
+		return nil
+	}
+	return commandInputError(command, fmt.Sprintf("ring %q contains skills but %s does not support skill materialization (supported skill targets: %s)", ring.Name, target, strings.Join(supportedSkillTargets(), ", ")))
+}
+
+func (a cliApp) attachRingSkills(ring registry.Ring, target, scope string, dryRun bool) (skillAttachResult, error) {
+	result := skillAttachResult{DryRun: dryRun}
+	source := syncshared.RingSource(ring.Name)
+	skills := append([]string(nil), ring.Skills...)
+	sort.Strings(skills)
+	for _, skill := range skills {
+		part, err := a.attachSkillSource(skill, target, scope, "", source, dryRun)
+		if err != nil {
+			return skillAttachResult{}, err
+		}
+		mergeSkillAttachResult(&result, part)
+	}
+	return result, nil
+}
+
+func (a cliApp) ringSkillAttached(ringName, target, scope string) (bool, error) {
+	if !supportsSkillMaterialization(target) {
+		return false, nil
+	}
+	state, err := loadSkillAttachmentState(a.skillAttachmentStatePath(target, scope))
+	if err != nil {
+		return false, err
+	}
+	source := syncshared.RingSource(ringName)
+	for _, entry := range state {
+		if skillAttachmentHasSource(entry, source) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (a cliApp) syncRingSkills(target, scope string, rings []registry.Ring, dryRun bool, attachedRingsBeforeSync []string) (skillAttachResult, error) {
+	result := skillAttachResult{DryRun: dryRun}
+	if !supportsSkillMaterialization(target) {
+		return result, nil
+	}
+	serverState, err := syncshared.LoadManagedState(a.ringOpStatePath(target, scope))
+	if err != nil {
+		return skillAttachResult{}, err
+	}
+	skillState, err := loadSkillAttachmentState(a.skillAttachmentStatePath(target, scope))
+	if err != nil {
+		return skillAttachResult{}, err
+	}
+
+	byName := make(map[string]registry.Ring, len(rings))
+	for _, ring := range rings {
+		byName[ring.Name] = ring
+	}
+	for _, ringName := range unionStrings(attachedRingsBeforeSync, syncshared.AttachedRings(serverState), attachedSkillRings(skillState)) {
+		ring, exists := byName[ringName]
+		if !exists {
+			continue
+		}
+		if err := validateRingSkillTarget("sync", ring, target); err != nil {
+			return skillAttachResult{}, err
+		}
+		source := syncshared.RingSource(ringName)
+		var stale []string
+		for _, entry := range skillState {
+			if skillAttachmentHasSource(entry, source) && !ring.HasSkill(entry.Name) {
+				stale = appendUniqueName(stale, entry.Name)
+			}
+		}
+		if len(stale) > 0 {
+			part, err := a.detachSkillSourceNames(target, scope, source, stale, dryRun)
+			if err != nil {
+				return skillAttachResult{}, err
+			}
+			mergeSkillAttachResult(&result, part)
+		}
+		if len(ring.Skills) > 0 {
+			part, err := a.attachRingSkills(ring, target, scope, dryRun)
+			if err != nil {
+				return skillAttachResult{}, err
+			}
+			mergeSkillAttachResult(&result, part)
+		}
+	}
+	return result, nil
+}
+
+func attachedSkillRings(state map[string]skillAttachmentEntry) []string {
+	seen := map[string]struct{}{}
+	for _, entry := range state {
+		for _, source := range entry.Sources {
+			ring, ok := syncshared.RingNameFromSource(source)
+			if !ok {
+				continue
+			}
+			seen[ring] = struct{}{}
+		}
+	}
+	rings := make([]string, 0, len(seen))
+	for ring := range seen {
+		rings = append(rings, ring)
+	}
+	sort.Strings(rings)
+	return rings
+}
+
+func skillAttachmentStateHasSource(state map[string]skillAttachmentEntry, name, source string) bool {
+	for _, entry := range state {
+		if entry.Name == name && skillAttachmentHasSource(entry, source) {
+			return true
+		}
+	}
+	return false
+}
+
+func unionStrings(lists ...[]string) []string {
+	seen := map[string]struct{}{}
+	for _, list := range lists {
+		for _, item := range list {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			seen[item] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for item := range seen {
+		out = append(out, item)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func printRingSkillSummary(out io.Writer, result skillAttachResult) {
+	if result.SkillsDir == "" && len(result.Added)+len(result.Updated)+len(result.Removed)+len(result.Unchanged) == 0 {
+		return
+	}
+	if result.SkillsDir != "" {
+		fmt.Fprintf(out, "skills dir: %s\n", result.SkillsDir)
+	}
+	fmt.Fprintf(out, "skills added: %s\n", formatNameList(result.Added))
+	fmt.Fprintf(out, "skills updated: %s\n", formatNameList(result.Updated))
+	fmt.Fprintf(out, "skills removed: %s\n", formatNameList(result.Removed))
+	if len(result.Unchanged) > 0 {
+		fmt.Fprintf(out, "skills unchanged: %s\n", formatNameList(result.Unchanged))
+	}
+	if len(result.Added)+len(result.Updated)+len(result.Removed) == 0 {
+		fmt.Fprintln(out, "no skill changes")
+	}
+}
+
 func (a cliApp) cmdRingCreate(args []string) error {
 	if len(args) == 0 {
-		return commandUsageError("ring create", "madari ring create <name> --member <server> [--member ...] [--description <text>]")
+		return commandUsageError("ring create", "madari ring create <name> [--member <server> ...] [--skill <skill> ...] [--description <text>]")
 	}
 	if isHelpToken(args[0]) {
 		printRingCreateHelp(a.stdout)
@@ -656,8 +966,10 @@ func (a cliApp) cmdRingCreate(args []string) error {
 	fs := flag.NewFlagSet("ring create", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var members stringList
+	var skills stringList
 	var description string
 	fs.Var(&members, "member", "Ring member server name (repeatable)")
+	fs.Var(&skills, "skill", "Ring member skill name (repeatable)")
 	fs.StringVar(&description, "description", "", "Ring description")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -673,12 +985,13 @@ func (a cliApp) cmdRingCreate(args []string) error {
 	ring := registry.Ring{
 		Name:        name,
 		Members:     append([]string(nil), members...),
+		Skills:      append([]string(nil), skills...),
 		Description: description,
 	}
 	if err := a.store.AddRing(ring); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.stdout, "created ring %s with %d member(s)\n", name, len(members))
+	fmt.Fprintf(a.stdout, "created ring %s with %d server member(s), %d skill member(s)\n", name, len(members), len(skills))
 	return nil
 }
 
@@ -723,11 +1036,13 @@ func (a cliApp) cmdRingList(args []string) error {
 		fmt.Fprintln(a.stdout, "no rings configured")
 		return nil
 	}
-	fmt.Fprintln(a.stdout, "NAME\tMEMBERS\tDESCRIPTION")
+	fmt.Fprintln(a.stdout, "NAME\tMEMBERS\tSKILLS\tDESCRIPTION")
 	for _, ring := range rings {
 		members := append([]string(nil), ring.Members...)
 		sort.Strings(members)
-		fmt.Fprintf(a.stdout, "%s\t%s\t%s\n", ring.Name, strings.Join(members, ","), ring.Description)
+		skills := append([]string(nil), ring.Skills...)
+		sort.Strings(skills)
+		fmt.Fprintf(a.stdout, "%s\t%s\t%s\t%s\n", ring.Name, strings.Join(members, ","), strings.Join(skills, ","), ring.Description)
 	}
 	return nil
 }
@@ -783,6 +1098,14 @@ func (a cliApp) cmdRingShow(args []string) error {
 	for _, member := range members {
 		fmt.Fprintf(a.stdout, "  - %s\n", member)
 	}
+	if len(ring.Skills) > 0 {
+		fmt.Fprintln(a.stdout, "skills:")
+		skills := append([]string(nil), ring.Skills...)
+		sort.Strings(skills)
+		for _, skill := range skills {
+			fmt.Fprintf(a.stdout, "  - %s\n", skill)
+		}
+	}
 	return nil
 }
 
@@ -791,7 +1114,7 @@ func printRingHelp(out io.Writer) {
 	fmt.Fprintln(out, "  madari ring <subcommand> [options]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Subcommands:")
-	fmt.Fprintln(out, "  create    Create a ring from registry servers")
+	fmt.Fprintln(out, "  create    Create a ring from registry servers and skills")
 	fmt.Fprintln(out, "  list      List configured rings")
 	fmt.Fprintln(out, "  show      Show one ring's members")
 	fmt.Fprintln(out, "  attach    Attach a ring to a client (materialize members)")
@@ -801,24 +1124,25 @@ func printRingHelp(out io.Writer) {
 	fmt.Fprintln(out, "  status    Show attached rings and ownership per client")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Rings are named capability sets of MCP servers. Members reference")
-	fmt.Fprintln(out, "  registry entries by name; the server manifest stays the single source")
-	fmt.Fprintln(out, "  of truth for command, args, and env.")
+	fmt.Fprintln(out, "  Rings are named capability sets of MCP servers and skills. Server")
+	fmt.Fprintln(out, "  members reference registry entries by name; skill members reference")
+	fmt.Fprintln(out, "  managed skill entries by name.")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Run `madari ring <subcommand> --help` for subcommand help.")
 }
 
 func printRingCreateHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  madari ring create <name> --member <server> [--member ...] [--description <text>]")
+	fmt.Fprintln(out, "  madari ring create <name> [--member <server> ...] [--skill <skill> ...] [--description <text>]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
-	fmt.Fprintln(out, "  --member <server>          Ring member server name (repeatable, required)")
+	fmt.Fprintln(out, "  --member <server>          Ring member server name (repeatable)")
+	fmt.Fprintln(out, "  --skill <skill>            Ring member skill name (repeatable)")
 	fmt.Fprintln(out, "  --description <text>       Ring description")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Create a ring referencing existing registry servers by name. Every")
-	fmt.Fprintln(out, "  member must already exist in the registry.")
+	fmt.Fprintln(out, "  Create a ring referencing existing registry servers and skills by name.")
+	fmt.Fprintln(out, "  At least one server member or skill member is required.")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Examples:")
 	fmt.Fprintln(out, "  madari ring create research --member stewreads --member arxiv")
@@ -834,10 +1158,11 @@ func printRingAttachHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --config-path <path>       Override client config path")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Record ring ownership for every member and materialize the eligible")
-	fmt.Fprintln(out, "  ones into the client config. Attaching onto an entry madari does not")
-	fmt.Fprintln(out, "  manage is refused, even when values match. Disabled or secret-refused")
-	fmt.Fprintln(out, "  members stay owned but absent until they become eligible.")
+	fmt.Fprintln(out, "  Record ring ownership for every server and skill member. Eligible")
+	fmt.Fprintln(out, "  servers are materialized into the client config; skills are written")
+	fmt.Fprintln(out, "  to the client's native skill directory when the target supports skills.")
+	fmt.Fprintln(out, "  A ring with skills cannot attach to targets without skill support.")
+	fmt.Fprintln(out, "  Attaching onto entries madari does not manage is refused.")
 }
 
 func printRingDetachHelp(out io.Writer) {
@@ -850,9 +1175,9 @@ func printRingDetachHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --config-path <path>       Override client config path")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Release the ring's ownership; entries owned by nothing else leave the")
-	fmt.Fprintln(out, "  client config. Works by name even if the ring file no longer exists.")
-	fmt.Fprintln(out, "  Detaching a ring that is not attached is a no-op.")
+	fmt.Fprintln(out, "  Release the ring's ownership; server config entries and skill files")
+	fmt.Fprintln(out, "  owned by nothing else are removed. Works by name even if the ring file")
+	fmt.Fprintln(out, "  no longer exists. Detaching a ring that is not attached is a no-op.")
 }
 
 func printRingDeleteHelp(out io.Writer) {
@@ -873,7 +1198,7 @@ func printRingListHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --json                     Emit JSON instead of text")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  List configured rings with members and description.")
+	fmt.Fprintln(out, "  List configured rings with server members, skill members, and description.")
 }
 
 func printRingShowHelp(out io.Writer) {
@@ -884,5 +1209,5 @@ func printRingShowHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --json                     Emit JSON instead of text")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Show one ring's members and description.")
+	fmt.Fprintln(out, "  Show one ring's server members, skill members, and description.")
 }

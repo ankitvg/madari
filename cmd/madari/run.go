@@ -674,6 +674,19 @@ func (a cliApp) cmdSync(args []string) error {
 	if scope == clients.ScopeUser {
 		statePath = a.managedUserStatePath(target)
 	}
+	attachedRingsBeforeSync := []string{}
+	if supportsSkillMaterialization(target) {
+		state, err := syncshared.LoadManagedState(statePath)
+		if err != nil {
+			return err
+		}
+		attachedRingsBeforeSync = syncshared.AttachedRings(state)
+	}
+	if !dryRun {
+		if _, err := a.syncRingSkills(target, scope, rings, true, attachedRingsBeforeSync); err != nil {
+			return err
+		}
+	}
 	result, err := adapter.Sync(syncable, clients.SyncOptions{
 		ConfigPath: configPath,
 		StatePath:  statePath,
@@ -684,22 +697,31 @@ func (a cliApp) cmdSync(args []string) error {
 	if err != nil {
 		return err
 	}
+	skillResult, err := a.syncRingSkills(target, scope, rings, dryRun, attachedRingsBeforeSync)
+	if err != nil {
+		return err
+	}
 	if jsonOut {
 		return writeJSON(a.stdout, syncJSON{
-			SchemaVersion: jsonSchemaVersion,
-			Command:       "sync",
-			Target:        target,
-			ConfigPath:    result.ConfigPath,
-			DryRun:        result.DryRun,
-			Added:         nonNilStrings(result.Added),
-			Updated:       nonNilStrings(result.Updated),
-			Removed:       nonNilStrings(result.Removed),
-			Unchanged:     nonNilStrings(result.Unchanged),
-			Skipped:       nonNilStrings(skipped),
-			Refused:       nonNilStrings(result.Refused),
+			SchemaVersion:   jsonSchemaVersion,
+			Command:         "sync",
+			Target:          target,
+			ConfigPath:      result.ConfigPath,
+			DryRun:          result.DryRun,
+			Added:           nonNilStrings(result.Added),
+			Updated:         nonNilStrings(result.Updated),
+			Removed:         nonNilStrings(result.Removed),
+			Unchanged:       nonNilStrings(result.Unchanged),
+			Skipped:         nonNilStrings(skipped),
+			Refused:         nonNilStrings(result.Refused),
+			SkillsAdded:     nonNilStrings(skillResult.Added),
+			SkillsUpdated:   nonNilStrings(skillResult.Updated),
+			SkillsRemoved:   nonNilStrings(skillResult.Removed),
+			SkillsUnchanged: nonNilStrings(skillResult.Unchanged),
 		})
 	}
 	printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, skipped, result.Refused)
+	printRingSkillSummary(a.stdout, skillResult)
 	return nil
 }
 

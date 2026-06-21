@@ -71,28 +71,31 @@ keys = ["STEWREADS_GMAIL_APP_PASSWORD"]
 
 ## Ring Files
 
-Rings are named capability sets. The current schema supports server members
-only and stores one TOML document per ring at
+Rings are named capability sets of servers and skills. Madari stores one TOML
+document per ring at
 `<config-root>/rings/<name>.toml` (sibling of `servers/`).
 
 - `name` (string, required): stable ring ID; same pattern as server names.
-- `members` (array of strings, required, non-empty, unique): server names.
+- `members` (array of strings, optional, unique): server names.
   Members reference registry entries by name only — rings never embed
   command, args, or env; the server manifest stays the single source of
-  truth. Every member must exist in the registry when a ring is created or
-  imported.
+  truth.
+- `skills` (array of strings, optional, unique): skill names. Skill members
+  reference managed skill entries by name only — rings never embed Markdown
+  content.
 - `description` (string, optional): friendly description.
 
+At least one `members` or `skills` entry is required. Every referenced server
+and skill must exist in the registry when a ring is created or imported.
 Ring manifests have no sections; unknown keys are rejected. Files are
-written deterministically with sorted members. Future capability types such as
-skills should extend this schema explicitly instead of embedding procedural
-instructions in server manifests.
+written deterministically with sorted server and skill members.
 
 ### Example
 
 ```toml
 name = "research"
 members = ["arxiv", "stewreads"]
+skills = ["release"]
 description = "Research helpers"
 ```
 
@@ -108,9 +111,10 @@ at `<config-root>/skills/<name>.md`.
 Skill manifests have no sections; unknown keys are rejected. The Markdown
 body is arbitrary text, but it must be non-empty. Plain `skill render` emits
 that managed body exactly. Client-native render/attach synthesize a `SKILL.md`
-frontmatter block from the manifest metadata and the managed body. Skills are
-not ring members, are not written into MCP client configs, and are not consumed
-by `run`.
+frontmatter block from the manifest metadata and the managed body. Skills can
+be referenced by rings and materialized through `ring attach` for supported
+skill targets. Skills are not written into MCP client configs and are not
+consumed by `run`.
 
 ### Example
 

@@ -124,3 +124,8 @@ func supportedSkillTargets() []string {
 	sort.Strings(targets)
 	return targets
 }
+
+func supportsSkillMaterialization(target string) bool {
+	ct, ok := clientTargetByName(target)
+	return ok && ct.skillRoots.supported()
+}
