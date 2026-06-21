@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ankitvg/madari/internal/clients/syncshared"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -554,6 +555,19 @@ func TestRunWithStoreSkillAttachLifecycle(t *testing.T) {
 	if !strings.Contains(string(payload), "Updated.") {
 		t.Fatalf("expected attached skill update, got:\n%s", payload)
 	}
+
+	statePath := filepath.Join(filepath.Dir(store.ServersDir()), "state", "codex-skills-managed.json")
+	state, err := loadSkillAttachmentState(statePath)
+	if err != nil {
+		t.Fatalf("load skill attachment state: %v", err)
+	}
+	entry, ok := state[skillAttachmentKey("release", skillPath)]
+	if !ok {
+		t.Fatalf("expected attached skill state, got: %+v", state)
+	}
+	if !reflect.DeepEqual(entry.Sources, []string{syncshared.SourceStandalone}) {
+		t.Fatalf("expected standalone source, got: %+v", entry.Sources)
+	}
 }
 
 func TestRunWithStoreSkillAttachAllowsSameSkillAcrossRoots(t *testing.T) {
@@ -591,6 +605,100 @@ func TestRunWithStoreSkillAttachAllowsSameSkillAcrossRoots(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(rootB, "release", "SKILL.md")); err != nil {
 		t.Fatalf("expected second root skill to remain: %v", err)
+	}
+}
+
+func TestRunWithStoreSkillAttachAddsStandaloneToExistingRingOwnedSkill(t *testing.T) {
+	store := newTestStore(t)
+	tmp := t.TempDir()
+	path := writeSkillFile(t, tmp, "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+	skillsDir := filepath.Join(tmp, "skills")
+	if result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", skillsDir); result.code != 0 {
+		t.Fatalf("skill attach failed: %s", result.stderr)
+	}
+	statePath := filepath.Join(filepath.Dir(store.ServersDir()), "state", "codex-skills-managed.json")
+	skillPath := filepath.Join(skillsDir, "release", "SKILL.md")
+	state, err := loadSkillAttachmentState(statePath)
+	if err != nil {
+		t.Fatalf("load skill attachment state: %v", err)
+	}
+	key := skillAttachmentKey("release", skillPath)
+	entry := state[key]
+	entry.Sources = []string{syncshared.RingSource("research")}
+	state[key] = entry
+	if err := saveSkillAttachmentState(statePath, state); err != nil {
+		t.Fatalf("save synthetic ring-owned state: %v", err)
+	}
+
+	result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", skillsDir)
+	if result.code != 0 {
+		t.Fatalf("skill attach existing ring-owned failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "updated: release") {
+		t.Fatalf("expected source update summary, got:\n%s", result.stdout)
+	}
+	state, err = loadSkillAttachmentState(statePath)
+	if err != nil {
+		t.Fatalf("reload skill attachment state: %v", err)
+	}
+	wantSources := []string{syncshared.RingSource("research"), syncshared.SourceStandalone}
+	if !reflect.DeepEqual(state[key].Sources, wantSources) {
+		t.Fatalf("expected standalone added to ring source, got: %+v", state[key].Sources)
+	}
+}
+
+func TestRunWithStoreSkillDetachPreservesRingOwnedSkill(t *testing.T) {
+	store := newTestStore(t)
+	tmp := t.TempDir()
+	path := writeSkillFile(t, tmp, "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+	skillsDir := filepath.Join(tmp, "skills")
+	if result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", skillsDir); result.code != 0 {
+		t.Fatalf("skill attach failed: %s", result.stderr)
+	}
+	statePath := filepath.Join(filepath.Dir(store.ServersDir()), "state", "codex-skills-managed.json")
+	skillPath := filepath.Join(skillsDir, "release", "SKILL.md")
+	state, err := loadSkillAttachmentState(statePath)
+	if err != nil {
+		t.Fatalf("load skill attachment state: %v", err)
+	}
+	key := skillAttachmentKey("release", skillPath)
+	entry := state[key]
+	entry.Sources = []string{syncshared.SourceStandalone, syncshared.RingSource("research")}
+	state[key] = entry
+	if err := saveSkillAttachmentState(statePath, state); err != nil {
+		t.Fatalf("save synthetic mixed-source state: %v", err)
+	}
+
+	result := runCmd(store, "skill", "detach", "release", "codex", "--skills-dir", skillsDir)
+	if result.code != 0 {
+		t.Fatalf("skill detach failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "removed: release") {
+		t.Fatalf("expected removed summary for standalone release, got:\n%s", result.stdout)
+	}
+	if _, err := os.Stat(skillPath); err != nil {
+		t.Fatalf("ring-owned skill file should remain: %v", err)
+	}
+	state, err = loadSkillAttachmentState(statePath)
+	if err != nil {
+		t.Fatalf("reload skill attachment state: %v", err)
+	}
+	if !reflect.DeepEqual(state[key].Sources, []string{syncshared.RingSource("research")}) {
+		t.Fatalf("expected only ring source to remain, got: %+v", state[key].Sources)
+	}
+
+	result = runCmd(store, "skill", "detach", "release", "codex", "--skills-dir", skillsDir)
+	if result.code != 0 || !strings.Contains(result.stdout, "unchanged: release") {
+		t.Fatalf("expected ring-only detach no-op, code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	if _, err := os.Stat(skillPath); err != nil {
+		t.Fatalf("ring-only skill file should remain: %v", err)
 	}
 }
 
@@ -777,6 +885,37 @@ func TestRunWithStoreSkillRemoveRefusesAttachedSkill(t *testing.T) {
 	result := runCmd(store, "skill", "remove", "release")
 	if result.code == 0 || !strings.Contains(result.stderr, "skill \"release\" is still attached") || !strings.Contains(result.stderr, "madari skill detach release codex") {
 		t.Fatalf("expected attached-skill removal refusal, code=%d stderr=%s", result.code, result.stderr)
+	}
+}
+
+func TestRunWithStoreSkillRemoveRefusesRingOwnedSkill(t *testing.T) {
+	store := newTestStore(t)
+	tmp := t.TempDir()
+	path := writeSkillFile(t, tmp, "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+	skillsDir := filepath.Join(tmp, "skills")
+	if result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", skillsDir); result.code != 0 {
+		t.Fatalf("skill attach failed: %s", result.stderr)
+	}
+	statePath := filepath.Join(filepath.Dir(store.ServersDir()), "state", "codex-skills-managed.json")
+	skillPath := filepath.Join(skillsDir, "release", "SKILL.md")
+	state, err := loadSkillAttachmentState(statePath)
+	if err != nil {
+		t.Fatalf("load skill attachment state: %v", err)
+	}
+	key := skillAttachmentKey("release", skillPath)
+	entry := state[key]
+	entry.Sources = []string{syncshared.RingSource("research")}
+	state[key] = entry
+	if err := saveSkillAttachmentState(statePath, state); err != nil {
+		t.Fatalf("save synthetic ring-owned state: %v", err)
+	}
+
+	result := runCmd(store, "skill", "remove", "release")
+	if result.code == 0 || !strings.Contains(result.stderr, "skill \"release\" is still attached") || !strings.Contains(result.stderr, "madari ring detach research codex") {
+		t.Fatalf("expected ring-owned removal refusal, code=%d stderr=%s", result.code, result.stderr)
 	}
 }
 
@@ -1865,6 +2004,9 @@ func TestClientTargetRegistryDefinesCurrentCapabilities(t *testing.T) {
 	}
 	if got := supportedSkillTargets(); !reflect.DeepEqual(got, []string{"claude-code", "codex", "gemini", "vibe"}) {
 		t.Fatalf("unexpected skill targets: got %#v", got)
+	}
+	if supportsSkillMaterialization("claude-desktop") || !supportsSkillMaterialization("codex") {
+		t.Fatalf("unexpected skill materialization support")
 	}
 	if got := defaultInstallClientTarget(); got != "claude-desktop" {
 		t.Fatalf("unexpected default install client target: %q", got)

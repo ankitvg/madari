@@ -108,8 +108,10 @@ inputs yet.
   `--client`, render synthesizes native `SKILL.md` frontmatter without writing
   files.
 - `skill attach` writes Madari-owned `SKILL.md` files into supported native
-  skill directories and records separate skill attachment state. It refuses to
-  overwrite unmanaged files or remove files modified after Madari wrote them.
+  skill directories and records separate source-aware skill attachment state.
+  Direct attach owns the `standalone` source; the state shape is ready for
+  future `ring:<name>` sources. It refuses to overwrite unmanaged files or
+  remove files modified after Madari wrote them.
 - Skills are exported/imported in snapshots but are not consumed by rings, MCP
   sync adapters, or run execution.
 

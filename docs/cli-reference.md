@@ -151,13 +151,14 @@ mutates nothing. `skill render --client <target>` synthesizes a native
 `SKILL.md` with YAML frontmatter for `claude-code`, `codex`, `gemini`, or
 `vibe`; it still writes no files.
 
-`skill attach` writes `<skills-dir>/<name>/SKILL.md` and records ownership in
-Madari state. Project scope is the default; user scope writes to the target's
-user skill root. `--skills-dir` overrides the root. Attach refuses to overwrite
-unmanaged files. `skill detach` removes only Madari-owned `SKILL.md` files and
-refuses to delete files modified since Madari last wrote them. Skills are not
-ring members, are not written into MCP client configs, and are not consumed by
-`run`.
+Direct `skill attach` writes `<skills-dir>/<name>/SKILL.md` and records
+`standalone` ownership in Madari state. Project scope is the default; user scope
+writes to the target's user skill root. `--skills-dir` overrides the root.
+Attach refuses to overwrite unmanaged files. `skill detach` releases direct
+ownership and removes the `SKILL.md` only when no source owns it anymore; it
+refuses to delete files modified since Madari last wrote them. The state is
+source-aware for future ring ownership, but skills are not ring members yet, are
+not written into MCP client configs, and are not consumed by `run`.
 
 ## Diagnostics
 
