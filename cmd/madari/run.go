@@ -1779,6 +1779,8 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  madari sync claude-code --dry-run")
 	fmt.Fprintln(out, "  madari skill add release --file SKILL.md")
 	fmt.Fprintln(out, "  madari skill render release")
+	fmt.Fprintln(out, "  madari skill render release --client codex")
+	fmt.Fprintln(out, "  madari skill attach release codex --dry-run")
 	fmt.Fprintln(out, "  madari export --file madari-snapshot.json")
 	fmt.Fprintln(out, "  madari import --file madari-snapshot.json")
 	fmt.Fprintln(out, "  madari import --file madari-snapshot.json --apply")

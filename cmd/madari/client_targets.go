@@ -20,6 +20,7 @@ type clientTarget struct {
 	syncAdapter        clients.ClientAdapter
 	ringConfigRenderer func(io.Writer, map[string]renderedServer) error
 	userScope          bool
+	skillRoots         skillTargetRoots
 }
 
 var clientTargets = []clientTarget{
@@ -33,22 +34,38 @@ var clientTargets = []clientTarget{
 		syncAdapter:        claudecode.Adapter{},
 		ringConfigRenderer: renderMCPServersJSON,
 		userScope:          true,
+		skillRoots: skillTargetRoots{
+			project: defaultProjectSkillRoot(".claude", "skills"),
+			user:    defaultHomeSkillRoot(".claude", "skills"),
+		},
 	},
 	{
 		target:             codex.Target,
 		syncAdapter:        codex.Adapter{},
 		ringConfigRenderer: renderCodexTOML,
+		skillRoots: skillTargetRoots{
+			project: defaultProjectSkillRoot(".agents", "skills"),
+			user:    defaultHomeSkillRoot(".agents", "skills"),
+		},
 	},
 	{
 		target:             gemini.Target,
 		syncAdapter:        gemini.Adapter{},
 		ringConfigRenderer: renderMCPServersJSON,
 		userScope:          true,
+		skillRoots: skillTargetRoots{
+			project: defaultProjectSkillRoot(".gemini", "skills"),
+			user:    defaultHomeSkillRoot(".gemini", "skills"),
+		},
 	},
 	{
 		target:             vibe.Target,
 		syncAdapter:        vibe.Adapter{},
 		ringConfigRenderer: renderVibeTOML,
+		skillRoots: skillTargetRoots{
+			project: defaultProjectSkillRoot(".vibe", "skills"),
+			user:    defaultVibeUserSkillRoot(),
+		},
 	},
 }
 
@@ -95,4 +112,15 @@ func sortedClientTargetNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+func supportedSkillTargets() []string {
+	targets := []string{}
+	for _, ct := range clientTargets {
+		if ct.skillRoots.supported() {
+			targets = append(targets, ct.target)
+		}
+	}
+	sort.Strings(targets)
+	return targets
 }

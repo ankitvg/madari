@@ -23,9 +23,10 @@ Madari keeps four concepts separate:
   yet and should not be modeled as persistent client sync.
 
 Current behavior follows this boundary: `sync` and `ring attach` persist MCP
-server config, `ring render` emits MCP config only, and `skill render` emits
-Markdown instructions only. Skills do not write client config and are not ring
-members or run inputs yet.
+server config, `ring render` emits MCP config only, plain `skill render` emits
+managed Markdown only, and `skill attach` materializes client-native `SKILL.md`
+files without changing MCP client configs. Skills are not ring members or run
+inputs yet.
 
 ## Components
 
@@ -41,9 +42,8 @@ members or run inputs yet.
 
 2. Client Targets and Adapters
 - The command layer keeps a single client target registry for target-level
-  capabilities: sync adapter, ring config renderer, and scope support.
-  Future client-native skill render support should extend that registry
-  instead of adding another target-specific switch.
+  capabilities: sync adapter, ring config renderer, skill roots, and scope
+  support.
 - Translate registry entries into client-specific config.
 - Current adapters: Claude Desktop, Claude Code, Gemini, Codex, and Vibe.
 - Adapters own read/merge/write behavior for their client format.
@@ -104,10 +104,13 @@ members or run inputs yet.
 - `skill add` copies a non-empty Markdown file into Madari; `skill update`
   replaces that managed copy and preserves description unless a new one is
   provided.
-- `skill render` prints the managed Markdown exactly to stdout. It mutates no
-  state, writes no client files, and does not imply model restriction to that
-  workflow.
-- V1 skills are exported/imported in snapshots but are not consumed by rings,
+- Plain `skill render` prints the managed Markdown exactly to stdout. With
+  `--client`, render synthesizes native `SKILL.md` frontmatter without writing
+  files.
+- `skill attach` writes Madari-owned `SKILL.md` files into supported native
+  skill directories and records separate skill attachment state. It refuses to
+  overwrite unmanaged files or remove files modified after Madari wrote them.
+- Skills are exported/imported in snapshots but are not consumed by rings, MCP
   sync adapters, or run execution.
 
 7. Doctor Engine

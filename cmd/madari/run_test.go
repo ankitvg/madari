@@ -436,6 +436,350 @@ func TestRunWithStoreSkillJSONOutputs(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreSkillClientRenderNormalizesFrontmatter(t *testing.T) {
+	store := newTestStore(t)
+	source := `---
+name: old-release
+description: Source release workflow
+allowed-tools:
+  - Read
+---
+
+# Release
+Cut a patch release.
+`
+	path := writeSkillFile(t, t.TempDir(), "release.md", source)
+	if result := runCmd(store, "skill", "add", "release", "--file", path); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "skill", "render", "release", "--client", "codex")
+	if result.code != 0 {
+		t.Fatalf("skill render --client failed: %s", result.stderr)
+	}
+	for _, want := range []string{
+		`name: "release"`,
+		`description: "Source release workflow"`,
+		"allowed-tools:\n  - Read",
+		"# Release\nCut a patch release.",
+	} {
+		if !strings.Contains(result.stdout, want) {
+			t.Fatalf("expected %q in client render:\n%s", want, result.stdout)
+		}
+	}
+	if strings.Contains(result.stdout, "old-release") || strings.Count(result.stdout, "description:") != 1 {
+		t.Fatalf("expected normalized frontmatter, got:\n%s", result.stdout)
+	}
+
+	generic := runCmd(store, "skill", "render", "release")
+	if generic.code != 0 {
+		t.Fatalf("generic render failed: %s", generic.stderr)
+	}
+	if generic.stdout != source {
+		t.Fatalf("generic render should remain exact, got:\n%s", generic.stdout)
+	}
+}
+
+func TestRunWithStoreSkillAttachDryRunWritesNothing(t *testing.T) {
+	store := newTestStore(t)
+	path := writeSkillFile(t, t.TempDir(), "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", skillsDir, "--dry-run")
+	if result.code != 0 {
+		t.Fatalf("skill attach --dry-run failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "dry-run: true") || !strings.Contains(result.stdout, "added: release") {
+		t.Fatalf("expected dry-run add summary, got:\n%s", result.stdout)
+	}
+	if _, err := os.Stat(filepath.Join(skillsDir, "release", "SKILL.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry-run should not write skill file, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(store.ServersDir()), "state", "codex-skills-managed.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry-run should not write state file, stat err=%v", err)
+	}
+}
+
+func TestRunWithStoreSkillAttachLifecycle(t *testing.T) {
+	store := newTestStore(t)
+	tmp := t.TempDir()
+	path := writeSkillFile(t, tmp, "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+
+	skillsDir := filepath.Join(tmp, "skills")
+	result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", skillsDir)
+	if result.code != 0 {
+		t.Fatalf("skill attach failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "added: release") {
+		t.Fatalf("expected add summary, got:\n%s", result.stdout)
+	}
+	skillPath := filepath.Join(skillsDir, "release", "SKILL.md")
+	payload, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("expected attached skill file: %v", err)
+	}
+	if !strings.Contains(string(payload), `name: "release"`) || !strings.Contains(string(payload), "# Release") {
+		t.Fatalf("unexpected attached skill file:\n%s", payload)
+	}
+
+	result = runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", skillsDir)
+	if result.code != 0 {
+		t.Fatalf("second skill attach failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "unchanged: release") {
+		t.Fatalf("expected unchanged summary, got:\n%s", result.stdout)
+	}
+
+	updatedPath := writeSkillFile(t, tmp, "release-updated.md", "# Release\n\nUpdated.\n")
+	if result := runCmd(store, "skill", "update", "release", "--file", updatedPath); result.code != 0 {
+		t.Fatalf("skill update failed: %s", result.stderr)
+	}
+	result = runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", skillsDir)
+	if result.code != 0 {
+		t.Fatalf("skill attach update failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "updated: release") {
+		t.Fatalf("expected updated summary, got:\n%s", result.stdout)
+	}
+	payload, err = os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read updated attached skill: %v", err)
+	}
+	if !strings.Contains(string(payload), "Updated.") {
+		t.Fatalf("expected attached skill update, got:\n%s", payload)
+	}
+}
+
+func TestRunWithStoreSkillAttachAllowsSameSkillAcrossRoots(t *testing.T) {
+	store := newTestStore(t)
+	tmp := t.TempDir()
+	path := writeSkillFile(t, tmp, "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+
+	rootA := filepath.Join(tmp, "project-a", "skills")
+	rootB := filepath.Join(tmp, "project-b", "skills")
+	if result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", rootA); result.code != 0 {
+		t.Fatalf("first skill attach failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", rootB); result.code != 0 {
+		t.Fatalf("second root skill attach failed: %s", result.stderr)
+	}
+
+	statePath := filepath.Join(filepath.Dir(store.ServersDir()), "state", "codex-skills-managed.json")
+	state, err := loadSkillAttachmentState(statePath)
+	if err != nil {
+		t.Fatalf("load skill attachment state: %v", err)
+	}
+	if got := len(skillAttachmentsByName(state, "release")); got != 2 {
+		t.Fatalf("expected two release attachments, got %d: %+v", got, state)
+	}
+
+	result := runCmd(store, "skill", "detach", "release", "codex", "--skills-dir", rootA)
+	if result.code != 0 {
+		t.Fatalf("detach first root failed: %s", result.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(rootA, "release", "SKILL.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected first root skill removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rootB, "release", "SKILL.md")); err != nil {
+		t.Fatalf("expected second root skill to remain: %v", err)
+	}
+}
+
+func TestRunWithStoreSkillAttachVibeUserHonorsVibeHome(t *testing.T) {
+	store := newTestStore(t)
+	tmp := t.TempDir()
+	vibeHome := filepath.Join(tmp, "vibe-home")
+	t.Setenv("VIBE_HOME", vibeHome)
+
+	path := writeSkillFile(t, tmp, "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "skill", "attach", "release", "vibe", "--scope", "user", "--dry-run")
+	if result.code != 0 {
+		t.Fatalf("skill attach dry-run failed: %s", result.stderr)
+	}
+	want := "skills_dir: " + filepath.Join(vibeHome, "skills")
+	if !strings.Contains(result.stdout, want) {
+		t.Fatalf("expected VIBE_HOME skill root %q, got:\n%s", want, result.stdout)
+	}
+}
+
+func TestRunWithStoreSkillAttachRollsBackAddedFileWhenStateWriteFails(t *testing.T) {
+	store := newTestStore(t)
+	tmp := t.TempDir()
+	path := writeSkillFile(t, tmp, "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+
+	original := saveSkillAttachmentStateFunc
+	saveSkillAttachmentStateFunc = func(string, map[string]skillAttachmentEntry) error {
+		return errors.New("state save failed")
+	}
+	t.Cleanup(func() {
+		saveSkillAttachmentStateFunc = original
+	})
+
+	skillsDir := filepath.Join(tmp, "skills")
+	result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", skillsDir)
+	if result.code == 0 || !strings.Contains(result.stderr, "state save failed") {
+		t.Fatalf("expected state save failure, code=%d stderr=%s", result.code, result.stderr)
+	}
+	if _, err := os.Stat(filepath.Join(skillsDir, "release", "SKILL.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected added skill file rolled back, stat err=%v", err)
+	}
+}
+
+func TestRunWithStoreSkillAttachRestoresUpdatedFileWhenStateWriteFails(t *testing.T) {
+	store := newTestStore(t)
+	tmp := t.TempDir()
+	path := writeSkillFile(t, tmp, "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+	skillsDir := filepath.Join(tmp, "skills")
+	if result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", skillsDir); result.code != 0 {
+		t.Fatalf("initial skill attach failed: %s", result.stderr)
+	}
+	skillPath := filepath.Join(skillsDir, "release", "SKILL.md")
+	originalContent, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read initial skill file: %v", err)
+	}
+
+	updatedPath := writeSkillFile(t, tmp, "release-updated.md", "# Release\n\nUpdated.\n")
+	if result := runCmd(store, "skill", "update", "release", "--file", updatedPath); result.code != 0 {
+		t.Fatalf("skill update failed: %s", result.stderr)
+	}
+	original := saveSkillAttachmentStateFunc
+	saveSkillAttachmentStateFunc = func(string, map[string]skillAttachmentEntry) error {
+		return errors.New("state save failed")
+	}
+	t.Cleanup(func() {
+		saveSkillAttachmentStateFunc = original
+	})
+
+	result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", skillsDir)
+	if result.code == 0 || !strings.Contains(result.stderr, "state save failed") {
+		t.Fatalf("expected state save failure, code=%d stderr=%s", result.code, result.stderr)
+	}
+	restored, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read restored skill file: %v", err)
+	}
+	if string(restored) != string(originalContent) {
+		t.Fatalf("expected original skill file restored:\nwant:\n%s\ngot:\n%s", originalContent, restored)
+	}
+}
+
+func TestRunWithStoreSkillAttachRefusesUnmanagedFile(t *testing.T) {
+	store := newTestStore(t)
+	path := writeSkillFile(t, t.TempDir(), "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+
+	skillsDir := filepath.Join(t.TempDir(), "skills")
+	skillPath := filepath.Join(skillsDir, "release", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+		t.Fatalf("mkdir unmanaged skill dir: %v", err)
+	}
+	if err := os.WriteFile(skillPath, []byte("# Unmanaged\n"), 0o644); err != nil {
+		t.Fatalf("write unmanaged skill: %v", err)
+	}
+	result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", skillsDir)
+	if result.code == 0 || !strings.Contains(result.stderr, "refusing to overwrite unmanaged skill file") {
+		t.Fatalf("expected unmanaged conflict, code=%d stderr=%s", result.code, result.stderr)
+	}
+}
+
+func TestRunWithStoreSkillDetachRemovesOwnedFileOnly(t *testing.T) {
+	store := newTestStore(t)
+	tmp := t.TempDir()
+	path := writeSkillFile(t, tmp, "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+	skillsDir := filepath.Join(tmp, "skills")
+	if result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", skillsDir); result.code != 0 {
+		t.Fatalf("skill attach failed: %s", result.stderr)
+	}
+	skillDir := filepath.Join(skillsDir, "release")
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	assetPath := filepath.Join(skillDir, "reference.md")
+	if err := os.WriteFile(assetPath, []byte("supporting file\n"), 0o644); err != nil {
+		t.Fatalf("write supporting file: %v", err)
+	}
+
+	result := runCmd(store, "skill", "detach", "release", "codex", "--skills-dir", skillsDir)
+	if result.code != 0 {
+		t.Fatalf("skill detach failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "removed: release") {
+		t.Fatalf("expected removed summary, got:\n%s", result.stdout)
+	}
+	if _, err := os.Stat(skillPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected SKILL.md removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(assetPath); err != nil {
+		t.Fatalf("supporting file should remain: %v", err)
+	}
+
+	result = runCmd(store, "skill", "detach", "release", "codex", "--skills-dir", skillsDir)
+	if result.code != 0 || !strings.Contains(result.stdout, "unchanged: release") {
+		t.Fatalf("expected idempotent detach, code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+}
+
+func TestRunWithStoreSkillDetachRefusesModifiedFile(t *testing.T) {
+	store := newTestStore(t)
+	tmp := t.TempDir()
+	path := writeSkillFile(t, tmp, "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+	skillsDir := filepath.Join(tmp, "skills")
+	if result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", skillsDir); result.code != 0 {
+		t.Fatalf("skill attach failed: %s", result.stderr)
+	}
+	skillPath := filepath.Join(skillsDir, "release", "SKILL.md")
+	if err := os.WriteFile(skillPath, []byte("# User edit\n"), 0o644); err != nil {
+		t.Fatalf("modify attached skill: %v", err)
+	}
+
+	result := runCmd(store, "skill", "detach", "release", "codex", "--skills-dir", skillsDir)
+	if result.code == 0 || !strings.Contains(result.stderr, "refusing to remove modified skill file") {
+		t.Fatalf("expected modified-file refusal, code=%d stderr=%s", result.code, result.stderr)
+	}
+}
+
+func TestRunWithStoreSkillRemoveRefusesAttachedSkill(t *testing.T) {
+	store := newTestStore(t)
+	path := writeSkillFile(t, t.TempDir(), "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", filepath.Join(t.TempDir(), "skills")); result.code != 0 {
+		t.Fatalf("skill attach failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "skill", "remove", "release")
+	if result.code == 0 || !strings.Contains(result.stderr, "skill \"release\" is still attached") || !strings.Contains(result.stderr, "madari skill detach release codex") {
+		t.Fatalf("expected attached-skill removal refusal, code=%d stderr=%s", result.code, result.stderr)
+	}
+}
+
 func TestRunWithStoreSkillValidatesInputs(t *testing.T) {
 	store := newTestStore(t)
 	tmp := t.TempDir()
@@ -1518,6 +1862,9 @@ func TestClientTargetRegistryDefinesCurrentCapabilities(t *testing.T) {
 	}
 	if got := userScopedSyncTargets(); !reflect.DeepEqual(got, []string{"claude-code", "gemini"}) {
 		t.Fatalf("unexpected user-scoped targets: got %#v", got)
+	}
+	if got := supportedSkillTargets(); !reflect.DeepEqual(got, []string{"claude-code", "codex", "gemini", "vibe"}) {
+		t.Fatalf("unexpected skill targets: got %#v", got)
 	}
 	if got := defaultInstallClientTarget(); got != "claude-desktop" {
 		t.Fatalf("unexpected default install client target: %q", got)
