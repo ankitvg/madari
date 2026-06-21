@@ -33,6 +33,12 @@ func TestSnapshotExportParseRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save ring: %v", err)
 	}
+	if err := store.SaveSkill(Skill{
+		Name:        "release",
+		Description: "Release workflow",
+	}, []byte("# Release\n\nCut a patch release.\n")); err != nil {
+		t.Fatalf("save skill: %v", err)
+	}
 
 	snapshot, err := ExportSnapshot(store)
 	if err != nil {
@@ -63,6 +69,12 @@ func TestSnapshotExportParseRoundTrip(t *testing.T) {
 	if got := strings.Join(parsed.Rings[0].Members, ","); got != "alpha,beta" {
 		t.Fatalf("expected deterministic ring members, got: %s", got)
 	}
+	if len(parsed.Skills) != 1 || parsed.Skills[0].Name != "release" {
+		t.Fatalf("expected release skill in parsed snapshot, got: %#v", parsed.Skills)
+	}
+	if parsed.Skills[0].Content != "# Release\n\nCut a patch release.\n" {
+		t.Fatalf("unexpected skill content: %q", parsed.Skills[0].Content)
+	}
 }
 
 func TestMarshalSnapshotUsesSnakeCaseKeys(t *testing.T) {
@@ -87,6 +99,13 @@ func TestMarshalSnapshotUsesSnakeCaseKeys(t *testing.T) {
 				Description: "Research helpers",
 			},
 		},
+		Skills: []SnapshotSkill{
+			{
+				Name:        "release",
+				Description: "Release workflow",
+				Content:     "# Release\n",
+			},
+		},
 	}
 
 	payload, err := MarshalSnapshotJSON(snapshot)
@@ -94,7 +113,7 @@ func TestMarshalSnapshotUsesSnakeCaseKeys(t *testing.T) {
 		t.Fatalf("marshal snapshot failed: %v", err)
 	}
 	text := string(payload)
-	for _, key := range []string{`"name"`, `"command"`, `"args"`, `"enabled"`, `"clients"`, `"required_env"`, `"keys"`, `"rings"`, `"members"`, `"description"`} {
+	for _, key := range []string{`"name"`, `"command"`, `"args"`, `"enabled"`, `"clients"`, `"required_env"`, `"keys"`, `"rings"`, `"members"`, `"skills"`, `"content"`, `"description"`} {
 		if !strings.Contains(text, key) {
 			t.Fatalf("expected payload to contain key %s, payload=%s", key, text)
 		}
@@ -117,6 +136,26 @@ func TestParseSnapshotV1TreatsMissingRingsAsEmpty(t *testing.T) {
 	}
 	if len(snapshot.Rings) != 0 {
 		t.Fatalf("expected missing v1 rings to parse as empty, got: %#v", snapshot.Rings)
+	}
+	if len(snapshot.Skills) != 0 {
+		t.Fatalf("expected missing v1 skills to parse as empty, got: %#v", snapshot.Skills)
+	}
+}
+
+func TestParseSnapshotV2TreatsMissingSkillsAsEmpty(t *testing.T) {
+	payload := []byte(`{"version":2,"servers":[{"name":"alpha","command":"/usr/bin/env","enabled":true,"clients":["claude-desktop"]}],"rings":[{"name":"research","members":["alpha"]}]}`)
+	snapshot, err := ParseSnapshotJSON(payload)
+	if err != nil {
+		t.Fatalf("parse v2 snapshot: %v", err)
+	}
+	if snapshot.Version != 2 {
+		t.Fatalf("expected v2 snapshot to keep version 2, got %d", snapshot.Version)
+	}
+	if len(snapshot.Rings) != 1 {
+		t.Fatalf("expected v2 rings to parse, got: %#v", snapshot.Rings)
+	}
+	if len(snapshot.Skills) != 0 {
+		t.Fatalf("expected missing v2 skills to parse as empty, got: %#v", snapshot.Skills)
 	}
 }
 
@@ -275,6 +314,154 @@ func TestImportSnapshotRingsDryRunAndApply(t *testing.T) {
 	}
 }
 
+func TestImportSnapshotSkillsDryRunAndApply(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "servers"))
+	for _, skill := range []SnapshotSkill{
+		{Name: "release", Description: "old", Content: "# Old\n"},
+		{Name: "stable", Description: "same", Content: "# Stable\n"},
+		{Name: "local", Description: "preserved", Content: "# Local\n"},
+	} {
+		if err := store.SaveSkill(Skill{Name: skill.Name, Description: skill.Description}, []byte(skill.Content)); err != nil {
+			t.Fatalf("save skill %s: %v", skill.Name, err)
+		}
+	}
+
+	snapshot := Snapshot{
+		Version: SnapshotVersion,
+		Skills: []SnapshotSkill{
+			{Name: "new-skill", Description: "new", Content: "# New\n"},
+			{Name: "release", Description: "new", Content: "# Release\n"},
+			{Name: "stable", Description: "same", Content: "# Stable\n"},
+		},
+	}
+
+	dryRunResult, err := ImportSnapshot(store, snapshot, false)
+	if err != nil {
+		t.Fatalf("dry-run import failed: %v", err)
+	}
+	if len(dryRunResult.SkillsAdded) != 1 || dryRunResult.SkillsAdded[0] != "new-skill" {
+		t.Fatalf("expected new-skill added in dry-run, got: %+v", dryRunResult)
+	}
+	if len(dryRunResult.SkillsUpdated) != 1 || dryRunResult.SkillsUpdated[0] != "release" {
+		t.Fatalf("expected release updated in dry-run, got: %+v", dryRunResult)
+	}
+	if len(dryRunResult.SkillsUnchanged) != 1 || dryRunResult.SkillsUnchanged[0] != "stable" {
+		t.Fatalf("expected stable unchanged in dry-run, got: %+v", dryRunResult)
+	}
+	releaseAfterDryRun, err := store.GetSkill("release")
+	if err != nil {
+		t.Fatalf("load release after dry-run: %v", err)
+	}
+	if releaseAfterDryRun.Description != "old" {
+		t.Fatalf("expected dry-run not to change skill, got: %#v", releaseAfterDryRun)
+	}
+	if _, err := store.GetSkill("new-skill"); !errors.Is(err, ErrSkillNotFound) {
+		t.Fatalf("expected dry-run not to create new skill, got: %v", err)
+	}
+
+	applyResult, err := ImportSnapshot(store, snapshot, true)
+	if err != nil {
+		t.Fatalf("apply import failed: %v", err)
+	}
+	if len(applyResult.SkillsAdded) != 1 || applyResult.SkillsAdded[0] != "new-skill" {
+		t.Fatalf("expected new-skill added in apply, got: %+v", applyResult)
+	}
+	if len(applyResult.SkillsUpdated) != 1 || applyResult.SkillsUpdated[0] != "release" {
+		t.Fatalf("expected release updated in apply, got: %+v", applyResult)
+	}
+	releaseAfterApply, err := store.GetSkill("release")
+	if err != nil {
+		t.Fatalf("load release after apply: %v", err)
+	}
+	if releaseAfterApply.Description != "new" {
+		t.Fatalf("expected release skill metadata updated, got: %#v", releaseAfterApply)
+	}
+	releaseContent, err := store.GetSkillContent("release")
+	if err != nil {
+		t.Fatalf("load release content after apply: %v", err)
+	}
+	if string(releaseContent) != "# Release\n" {
+		t.Fatalf("expected release content updated, got: %q", releaseContent)
+	}
+	if _, err := store.GetSkill("new-skill"); err != nil {
+		t.Fatalf("expected new skill to exist after apply: %v", err)
+	}
+	if _, err := store.GetSkill("local"); err != nil {
+		t.Fatalf("existing skill absent from snapshot should be preserved: %v", err)
+	}
+}
+
+func TestImportSnapshotDoesNotReadUnrelatedBrokenLocalSkillContent(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "servers"))
+	if err := store.SaveSkill(Skill{Name: "broken", Description: "local"}, []byte("# Broken\n")); err != nil {
+		t.Fatalf("save broken skill: %v", err)
+	}
+	contentPath, err := store.SkillContentPath("broken")
+	if err != nil {
+		t.Fatalf("skill content path: %v", err)
+	}
+	if err := os.Remove(contentPath); err != nil {
+		t.Fatalf("remove skill content: %v", err)
+	}
+
+	snapshot := Snapshot{
+		Version: SnapshotVersion,
+		Servers: []Manifest{
+			{Name: "alpha", Command: "/usr/bin/env", Enabled: true, Clients: []string{"claude-desktop"}},
+		},
+	}
+	result, err := ImportSnapshot(store, snapshot, false)
+	if err != nil {
+		t.Fatalf("server-only import should ignore unrelated broken skill content: %v", err)
+	}
+	if len(result.Added) != 1 || result.Added[0] != "alpha" {
+		t.Fatalf("expected alpha added, got: %+v", result)
+	}
+}
+
+func TestImportSnapshotCanRepairBrokenLocalSkillContent(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "servers"))
+	if err := store.SaveSkill(Skill{Name: "release", Description: "old"}, []byte("# Old\n")); err != nil {
+		t.Fatalf("save release skill: %v", err)
+	}
+	contentPath, err := store.SkillContentPath("release")
+	if err != nil {
+		t.Fatalf("skill content path: %v", err)
+	}
+	if err := os.Remove(contentPath); err != nil {
+		t.Fatalf("remove skill content: %v", err)
+	}
+
+	snapshot := Snapshot{
+		Version: SnapshotVersion,
+		Skills: []SnapshotSkill{
+			{Name: "release", Description: "new", Content: "# Release\n"},
+		},
+	}
+	dryRunResult, err := ImportSnapshot(store, snapshot, false)
+	if err != nil {
+		t.Fatalf("dry-run import should classify broken local skill as updated: %v", err)
+	}
+	if len(dryRunResult.SkillsUpdated) != 1 || dryRunResult.SkillsUpdated[0] != "release" {
+		t.Fatalf("expected release updated in dry-run, got: %+v", dryRunResult)
+	}
+
+	applyResult, err := ImportSnapshot(store, snapshot, true)
+	if err != nil {
+		t.Fatalf("apply import should repair broken local skill content: %v", err)
+	}
+	if len(applyResult.SkillsUpdated) != 1 || applyResult.SkillsUpdated[0] != "release" {
+		t.Fatalf("expected release updated in apply, got: %+v", applyResult)
+	}
+	content, err := store.GetSkillContent("release")
+	if err != nil {
+		t.Fatalf("load repaired skill content: %v", err)
+	}
+	if string(content) != "# Release\n" {
+		t.Fatalf("expected repaired content, got: %q", content)
+	}
+}
+
 func TestImportSnapshotRejectsUnknownRingMembers(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "servers"))
 	if err := store.Save(Manifest{Name: "alpha", Command: "/usr/bin/env", Enabled: true, Clients: []string{"claude-desktop"}}); err != nil {
@@ -322,6 +509,21 @@ func TestParseSnapshotRejectsInvalidPayloads(t *testing.T) {
 	_, err = ParseSnapshotJSON([]byte(`{"version":2,"servers":[],"rings":[{"name":"research","members":["alpha"]},{"name":"research","members":["beta"]}]}`))
 	if err == nil || !strings.Contains(err.Error(), "duplicate ring name") {
 		t.Fatalf("expected duplicate ring error, got: %v", err)
+	}
+
+	_, err = ParseSnapshotJSON([]byte(`{"version":2,"servers":[],"rings":[],"skills":[{"name":"release","content":"# Release\n"}]}`))
+	if err == nil || !strings.Contains(err.Error(), "does not support skills") {
+		t.Fatalf("expected v2 skills error, got: %v", err)
+	}
+
+	_, err = ParseSnapshotJSON([]byte(`{"version":3,"servers":[],"rings":[],"skills":[{"name":"release","content":"# One\n"},{"name":"release","content":"# Two\n"}]}`))
+	if err == nil || !strings.Contains(err.Error(), "duplicate skill name") {
+		t.Fatalf("expected duplicate skill error, got: %v", err)
+	}
+
+	_, err = ParseSnapshotJSON([]byte(`{"version":3,"servers":[],"rings":[],"skills":[{"name":"release","content":"   "}]}`))
+	if err == nil || !strings.Contains(err.Error(), "skill content is required") {
+		t.Fatalf("expected empty skill content error, got: %v", err)
 	}
 }
 

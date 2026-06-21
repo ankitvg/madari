@@ -10,26 +10,37 @@ import (
 
 const (
 	snapshotVersionV1 = 1
-	SnapshotVersion   = 2
+	snapshotVersionV2 = 2
+	SnapshotVersion   = 3
 )
 
 type Snapshot struct {
-	Version int        `json:"version"`
-	Servers []Manifest `json:"servers"`
-	Rings   []Ring     `json:"rings"`
+	Version int             `json:"version"`
+	Servers []Manifest      `json:"servers"`
+	Rings   []Ring          `json:"rings"`
+	Skills  []SnapshotSkill `json:"skills"`
+}
+
+type SnapshotSkill struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Content     string `json:"content"`
 }
 
 type ImportResult struct {
-	Added          []string
-	Updated        []string
-	Unchanged      []string
-	RingsAdded     []string
-	RingsUpdated   []string
-	RingsUnchanged []string
+	Added           []string
+	Updated         []string
+	Unchanged       []string
+	RingsAdded      []string
+	RingsUpdated    []string
+	RingsUnchanged  []string
+	SkillsAdded     []string
+	SkillsUpdated   []string
+	SkillsUnchanged []string
 }
 
 func (r ImportResult) HasChanges() bool {
-	return len(r.Added)+len(r.Updated)+len(r.RingsAdded)+len(r.RingsUpdated) > 0
+	return len(r.Added)+len(r.Updated)+len(r.RingsAdded)+len(r.RingsUpdated)+len(r.SkillsAdded)+len(r.SkillsUpdated) > 0
 }
 
 func ExportSnapshot(store *Store) (Snapshot, error) {
@@ -41,6 +52,10 @@ func ExportSnapshot(store *Store) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	rings, err := store.ListRings()
+	if err != nil {
+		return Snapshot{}, err
+	}
+	skills, err := snapshotSkillsFromStore(store)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -62,11 +77,12 @@ func ExportSnapshot(store *Store) (Snapshot, error) {
 		Version: SnapshotVersion,
 		Servers: servers,
 		Rings:   rings,
+		Skills:  skills,
 	}, nil
 }
 
 func MarshalSnapshotJSON(snapshot Snapshot) ([]byte, error) {
-	if snapshot.Version == 0 || snapshot.Version == snapshotVersionV1 {
+	if snapshot.Version == 0 || snapshot.Version == snapshotVersionV1 || snapshot.Version == snapshotVersionV2 {
 		snapshot.Version = SnapshotVersion
 	}
 	if snapshot.Servers == nil {
@@ -74,6 +90,9 @@ func MarshalSnapshotJSON(snapshot Snapshot) ([]byte, error) {
 	}
 	if snapshot.Rings == nil {
 		snapshot.Rings = []Ring{}
+	}
+	if snapshot.Skills == nil {
+		snapshot.Skills = []SnapshotSkill{}
 	}
 	if err := snapshot.Validate(); err != nil {
 		return nil, err
@@ -102,6 +121,9 @@ func ParseSnapshotJSON(payload []byte) (Snapshot, error) {
 	}
 	if snapshot.Rings == nil {
 		snapshot.Rings = []Ring{}
+	}
+	if snapshot.Skills == nil {
+		snapshot.Skills = []SnapshotSkill{}
 	}
 	if err := snapshot.Validate(); err != nil {
 		return Snapshot{}, err
@@ -132,6 +154,17 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 	existingRingsByName := make(map[string]Ring, len(existingRings))
 	for _, ring := range existingRings {
 		existingRingsByName[ring.Name] = ring
+	}
+	existingSkillsByName := map[string]Skill{}
+	if len(snapshot.Skills) > 0 {
+		existingSkills, err := store.ListSkills()
+		if err != nil {
+			return ImportResult{}, err
+		}
+		existingSkillsByName = make(map[string]Skill, len(existingSkills))
+		for _, skill := range existingSkills {
+			existingSkillsByName[skill.Name] = skill
+		}
 	}
 
 	// Validate every ring before any write: a rejected snapshot must not
@@ -209,15 +242,54 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 		}
 	}
 
+	skills := append([]SnapshotSkill(nil), snapshot.Skills...)
+	sort.Slice(skills, func(i, j int) bool {
+		return skills[i].Name < skills[j].Name
+	})
+	for _, incoming := range skills {
+		existingSkill, exists := existingSkillsByName[incoming.Name]
+		if !exists {
+			result.SkillsAdded = append(result.SkillsAdded, incoming.Name)
+			if apply {
+				if err := store.SaveSkill(incoming.toSkill(), []byte(incoming.Content)); err != nil {
+					return ImportResult{}, fmt.Errorf("save imported skill %q: %w", incoming.Name, err)
+				}
+			}
+			continue
+		}
+
+		existingSnapshot := SnapshotSkill{
+			Name:        existingSkill.Name,
+			Description: existingSkill.Description,
+		}
+		if content, err := store.GetSkillContent(incoming.Name); err == nil {
+			existingSnapshot.Content = string(content)
+		}
+		if skillsEqual(existingSnapshot, incoming) {
+			result.SkillsUnchanged = append(result.SkillsUnchanged, incoming.Name)
+			continue
+		}
+
+		result.SkillsUpdated = append(result.SkillsUpdated, incoming.Name)
+		if apply {
+			if err := store.SaveSkill(incoming.toSkill(), []byte(incoming.Content)); err != nil {
+				return ImportResult{}, fmt.Errorf("update imported skill %q: %w", incoming.Name, err)
+			}
+		}
+	}
+
 	return result, nil
 }
 
 func (s Snapshot) Validate() error {
-	if s.Version != snapshotVersionV1 && s.Version != SnapshotVersion {
+	if s.Version != snapshotVersionV1 && s.Version != snapshotVersionV2 && s.Version != SnapshotVersion {
 		return fmt.Errorf("unsupported snapshot version %d (supported: %d)", s.Version, SnapshotVersion)
 	}
 	if s.Version == snapshotVersionV1 && len(s.Rings) > 0 {
 		return fmt.Errorf("snapshot version %d does not support rings", snapshotVersionV1)
+	}
+	if s.Version < SnapshotVersion && len(s.Skills) > 0 {
+		return fmt.Errorf("snapshot version %d does not support skills", s.Version)
 	}
 
 	seen := map[string]struct{}{}
@@ -240,6 +312,17 @@ func (s Snapshot) Validate() error {
 			return fmt.Errorf("duplicate ring name %q in snapshot", ring.Name)
 		}
 		seenRings[ring.Name] = struct{}{}
+	}
+
+	seenSkills := map[string]struct{}{}
+	for _, skill := range s.Skills {
+		if err := skill.Validate(); err != nil {
+			return fmt.Errorf("invalid skill %q: %w", skill.Name, err)
+		}
+		if _, exists := seenSkills[skill.Name]; exists {
+			return fmt.Errorf("duplicate skill name %q in snapshot", skill.Name)
+		}
+		seenSkills[skill.Name] = struct{}{}
 	}
 
 	return nil
@@ -309,6 +392,41 @@ func ringsEqual(a, b Ring) bool {
 	aMembers := normalizedRingMembers(a)
 	bMembers := normalizedRingMembers(b)
 	return slices.Equal(aMembers, bMembers)
+}
+
+func skillsEqual(a, b SnapshotSkill) bool {
+	return a.Name == b.Name && a.Description == b.Description && a.Content == b.Content
+}
+
+func snapshotSkillsFromStore(store *Store) ([]SnapshotSkill, error) {
+	skills, err := store.ListSkills()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SnapshotSkill, 0, len(skills))
+	for _, skill := range skills {
+		content, err := store.GetSkillContent(skill.Name)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, SnapshotSkill{
+			Name:        skill.Name,
+			Description: skill.Description,
+			Content:     string(content),
+		})
+	}
+	return out, nil
+}
+
+func (s SnapshotSkill) Validate() error {
+	if err := s.toSkill().Validate(); err != nil {
+		return err
+	}
+	return validateSkillContent([]byte(s.Content))
+}
+
+func (s SnapshotSkill) toSkill() Skill {
+	return Skill{Name: s.Name, Description: s.Description}
 }
 
 func normalizedRingMembers(r Ring) []string {

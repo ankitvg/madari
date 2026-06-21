@@ -60,6 +60,15 @@ func writeTestExecutable(t *testing.T, dir, name string) string {
 	return path
 }
 
+func writeSkillFile(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill file: %v", err)
+	}
+	return path
+}
+
 func TestRunWithStoreLifecycleCommands(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
@@ -289,6 +298,204 @@ func TestRunWithStoreAddRejectsUnexpectedPositionals(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreSkillLifecycleCommands(t *testing.T) {
+	store := newTestStore(t)
+	tmp := t.TempDir()
+	content := "# Release\n\nCut a patch release.\n"
+	path := writeSkillFile(t, tmp, "release.md", content)
+
+	result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow")
+	if result.code != 0 {
+		t.Fatalf("skill add failed with code %d, stderr=%s", result.code, result.stderr)
+	}
+	if !strings.Contains(result.stdout, "added skill release") {
+		t.Fatalf("expected add output, got: %s", result.stdout)
+	}
+
+	skill, err := store.GetSkill("release")
+	if err != nil {
+		t.Fatalf("expected skill to exist: %v", err)
+	}
+	if skill.Description != "Release workflow" {
+		t.Fatalf("expected description to be saved, got: %q", skill.Description)
+	}
+	storedContent, err := store.GetSkillContent("release")
+	if err != nil {
+		t.Fatalf("expected skill content to exist: %v", err)
+	}
+	if string(storedContent) != content {
+		t.Fatalf("expected managed copy to match source, got: %q", storedContent)
+	}
+
+	result = runCmd(store, "skill", "list")
+	if result.code != 0 {
+		t.Fatalf("skill list failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "release") || !strings.Contains(result.stdout, "Release workflow") {
+		t.Fatalf("expected list output to include skill, got: %s", result.stdout)
+	}
+
+	result = runCmd(store, "skill", "show", "release")
+	if result.code != 0 {
+		t.Fatalf("skill show failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "name: release") || !strings.Contains(result.stdout, "content:") {
+		t.Fatalf("expected show output, got: %s", result.stdout)
+	}
+
+	result = runCmd(store, "skill", "render", "release")
+	if result.code != 0 {
+		t.Fatalf("skill render failed: %s", result.stderr)
+	}
+	if result.stdout != content {
+		t.Fatalf("expected exact render content %q, got %q", content, result.stdout)
+	}
+
+	updatedContent := "# Release\n\nUpdated steps.\n"
+	updatedPath := writeSkillFile(t, tmp, "release-updated.md", updatedContent)
+	result = runCmd(store, "skill", "update", "release", "--file", updatedPath)
+	if result.code != 0 {
+		t.Fatalf("skill update failed: %s", result.stderr)
+	}
+	skill, err = store.GetSkill("release")
+	if err != nil {
+		t.Fatalf("load updated skill: %v", err)
+	}
+	if skill.Description != "Release workflow" {
+		t.Fatalf("expected update without --description to preserve description, got: %q", skill.Description)
+	}
+	result = runCmd(store, "skill", "update", "release", "--file", updatedPath, "--description", "Updated workflow")
+	if result.code != 0 {
+		t.Fatalf("skill update with description failed: %s", result.stderr)
+	}
+	skill, err = store.GetSkill("release")
+	if err != nil {
+		t.Fatalf("load updated skill metadata: %v", err)
+	}
+	if skill.Description != "Updated workflow" {
+		t.Fatalf("expected description update, got: %q", skill.Description)
+	}
+	result = runCmd(store, "skill", "render", "release")
+	if result.code != 0 {
+		t.Fatalf("skill render after update failed: %s", result.stderr)
+	}
+	if result.stdout != updatedContent {
+		t.Fatalf("expected updated render content %q, got %q", updatedContent, result.stdout)
+	}
+
+	result = runCmd(store, "skill", "remove", "release")
+	if result.code != 0 {
+		t.Fatalf("skill remove failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "removed skill release") {
+		t.Fatalf("expected remove output, got: %s", result.stdout)
+	}
+	if _, err := store.GetSkill("release"); !errors.Is(err, registry.ErrSkillNotFound) {
+		t.Fatalf("expected skill removal, got: %v", err)
+	}
+}
+
+func TestRunWithStoreSkillJSONOutputs(t *testing.T) {
+	store := newTestStore(t)
+	path := writeSkillFile(t, t.TempDir(), "release.md", "# Release\n")
+
+	if result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+
+	listResult := runCmd(store, "skill", "list", "--json")
+	if listResult.code != 0 {
+		t.Fatalf("skill list --json failed: %s", listResult.stderr)
+	}
+	var listPayload skillListJSON
+	if err := json.Unmarshal([]byte(listResult.stdout), &listPayload); err != nil {
+		t.Fatalf("parse skill list json: %v\n%s", err, listResult.stdout)
+	}
+	if listPayload.SchemaVersion != jsonSchemaVersion || listPayload.Command != "skill list" {
+		t.Fatalf("unexpected list json envelope: %+v", listPayload)
+	}
+	if len(listPayload.Skills) != 1 || listPayload.Skills[0].Name != "release" || listPayload.Skills[0].ContentPath != "" {
+		t.Fatalf("unexpected skill list json: %+v", listPayload.Skills)
+	}
+
+	showResult := runCmd(store, "skill", "show", "release", "--json")
+	if showResult.code != 0 {
+		t.Fatalf("skill show --json failed: %s", showResult.stderr)
+	}
+	var showPayload skillShowJSON
+	if err := json.Unmarshal([]byte(showResult.stdout), &showPayload); err != nil {
+		t.Fatalf("parse skill show json: %v\n%s", err, showResult.stdout)
+	}
+	if showPayload.SchemaVersion != jsonSchemaVersion || showPayload.Command != "skill show" {
+		t.Fatalf("unexpected show json envelope: %+v", showPayload)
+	}
+	if showPayload.Skill.Name != "release" ||
+		showPayload.Skill.Description != "Release workflow" ||
+		!strings.HasSuffix(showPayload.Skill.ContentPath, filepath.Join("skills", "release.md")) {
+		t.Fatalf("unexpected skill show json: %+v", showPayload.Skill)
+	}
+}
+
+func TestRunWithStoreSkillValidatesInputs(t *testing.T) {
+	store := newTestStore(t)
+	tmp := t.TempDir()
+	path := writeSkillFile(t, tmp, "release.md", "# Release\n")
+	emptyPath := writeSkillFile(t, tmp, "empty.md", "  \n")
+
+	if result := runCmd(store, "skill", "add", "release", "--file", path); result.code != 0 {
+		t.Fatalf("setup skill add failed: %s", result.stderr)
+	}
+
+	tests := []struct {
+		name     string
+		args     []string
+		expected string
+	}{
+		{
+			name:     "duplicate add",
+			args:     []string{"skill", "add", "release", "--file", path},
+			expected: "already exists",
+		},
+		{
+			name:     "update missing skill",
+			args:     []string{"skill", "update", "missing", "--file", path},
+			expected: "skill \"missing\" not found",
+		},
+		{
+			name:     "add empty content",
+			args:     []string{"skill", "add", "empty", "--file", emptyPath},
+			expected: "is empty",
+		},
+		{
+			name:     "add missing file flag",
+			args:     []string{"skill", "add", "nofile"},
+			expected: "--file is required",
+		},
+		{
+			name:     "render missing skill",
+			args:     []string{"skill", "render", "missing"},
+			expected: "skill \"missing\" not found",
+		},
+		{
+			name:     "list extra positional",
+			args:     []string{"skill", "list", "extra"},
+			expected: "unexpected positional arguments",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := runCmd(store, tt.args...)
+			if result.code == 0 {
+				t.Fatalf("expected command to fail")
+			}
+			if !strings.Contains(result.stderr, tt.expected) {
+				t.Fatalf("expected stderr to contain %q, got: %s", tt.expected, result.stderr)
+			}
+		})
+	}
+}
+
 func TestRunWithStoreCommandUsageValidation(t *testing.T) {
 	store := newTestStore(t)
 
@@ -314,6 +521,8 @@ func TestRunWithStoreCommandUsageValidation(t *testing.T) {
 		{name: "export extra positionals", args: []string{"export", "extra"}, expected: "unexpected positional arguments", helpCommand: "export"},
 		{name: "import missing file", args: []string{"import"}, expected: "--file is required", helpCommand: "import"},
 		{name: "import extra positionals", args: []string{"import", "--file", "snapshot.json", "extra"}, expected: "unexpected positional arguments", helpCommand: "import"},
+		{name: "skill missing subcommand", args: []string{"skill"}, expected: "usage: madari skill", helpCommand: "skill"},
+		{name: "skill unknown subcommand", args: []string{"skill", "bogus"}, expected: "unknown skill subcommand", helpCommand: "skill"},
 	}
 
 	for _, tt := range tests {
@@ -376,6 +585,7 @@ func TestRunHelpSubcommandOutput(t *testing.T) {
 		{name: "help add", args: []string{"help", "add"}, contains: "madari add <name>"},
 		{name: "help sync", args: []string{"help", "sync"}, contains: "madari sync <client>"},
 		{name: "help ring", args: []string{"help", "ring"}, contains: "madari ring <subcommand>"},
+		{name: "help skill", args: []string{"help", "skill"}, contains: "madari skill <subcommand>"},
 		{name: "help list", args: []string{"help", "list"}, contains: "madari list"},
 		{name: "help doctor", args: []string{"help", "doctor"}, contains: "madari doctor"},
 		{name: "help status", args: []string{"help", "status"}, contains: "madari status"},
@@ -489,6 +699,12 @@ func TestRunWithStoreSubcommandHelpFlags(t *testing.T) {
 	}
 	if result := runCmd(store, "sync", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari sync <client>") {
 		t.Fatalf("expected sync --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	if result := runCmd(store, "skill", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari skill <subcommand>") {
+		t.Fatalf("expected skill --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	if result := runCmd(store, "skill", "add", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari skill add <name>") {
+		t.Fatalf("expected skill add --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
 	}
 	if result := runCmd(store, "list", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari list") {
 		t.Fatalf("expected list --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
@@ -1112,6 +1328,9 @@ func TestRunWithStoreExportStdout(t *testing.T) {
 	if len(snapshot.Rings) != 0 {
 		t.Fatalf("unexpected snapshot rings: %+v", snapshot.Rings)
 	}
+	if len(snapshot.Skills) != 0 {
+		t.Fatalf("unexpected snapshot skills: %+v", snapshot.Skills)
+	}
 }
 
 func TestRunWithStoreExportFile(t *testing.T) {
@@ -1180,6 +1399,13 @@ func TestRunWithStoreImportDryRunAndApply(t *testing.T) {
 				Members: []string{"alpha", "beta"},
 			},
 		},
+		Skills: []registry.SnapshotSkill{
+			{
+				Name:        "release",
+				Description: "Release workflow",
+				Content:     "# Release\n",
+			},
+		},
 	}
 	payload, err := registry.MarshalSnapshotJSON(snapshot)
 	if err != nil {
@@ -1203,6 +1429,9 @@ func TestRunWithStoreImportDryRunAndApply(t *testing.T) {
 	if !strings.Contains(dryRun.stdout, "rings added: research") {
 		t.Fatalf("expected dry-run ring diff output, got: %s", dryRun.stdout)
 	}
+	if !strings.Contains(dryRun.stdout, "skills added: release") {
+		t.Fatalf("expected dry-run skill diff output, got: %s", dryRun.stdout)
+	}
 	alphaAfterDryRun, err := store.Get("alpha")
 	if err != nil {
 		t.Fatalf("load alpha after dry-run: %v", err)
@@ -1215,6 +1444,9 @@ func TestRunWithStoreImportDryRunAndApply(t *testing.T) {
 	}
 	if _, err := store.GetRing("research"); !errors.Is(err, registry.ErrRingNotFound) {
 		t.Fatalf("expected dry-run not to create research ring, got: %v", err)
+	}
+	if _, err := store.GetSkill("release"); !errors.Is(err, registry.ErrSkillNotFound) {
+		t.Fatalf("expected dry-run not to create release skill, got: %v", err)
 	}
 
 	apply := runCmd(store, "import", "--file", path, "--apply")
@@ -1236,6 +1468,16 @@ func TestRunWithStoreImportDryRunAndApply(t *testing.T) {
 	}
 	if _, err := store.GetRing("research"); err != nil {
 		t.Fatalf("expected research ring after apply: %v", err)
+	}
+	if _, err := store.GetSkill("release"); err != nil {
+		t.Fatalf("expected release skill after apply: %v", err)
+	}
+	releaseContent, err := store.GetSkillContent("release")
+	if err != nil {
+		t.Fatalf("expected release skill content after apply: %v", err)
+	}
+	if string(releaseContent) != "# Release\n" {
+		t.Fatalf("unexpected release skill content: %q", releaseContent)
 	}
 }
 
