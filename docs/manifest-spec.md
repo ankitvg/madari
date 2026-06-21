@@ -95,3 +95,24 @@ name = "research"
 members = ["arxiv", "stewreads"]
 description = "Research helpers"
 ```
+
+## Skill Files
+
+Skills are standalone Markdown instruction primitives. Madari stores skill
+metadata at `<config-root>/skills/<name>.toml` and the managed Markdown body
+at `<config-root>/skills/<name>.md`.
+
+- `name` (string, required): stable skill ID; same pattern as server names.
+- `description` (string, optional): friendly description.
+
+Skill manifests have no sections; unknown keys are rejected. The Markdown
+body is arbitrary text, but it must be non-empty. V1 skills are managed and
+rendered independently: they are not ring members, are not synced into client
+configs, and are not consumed by `run`.
+
+### Example
+
+```toml
+name = "release"
+description = "Release workflow"
+```

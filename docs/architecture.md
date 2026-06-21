@@ -16,32 +16,34 @@ Madari keeps four concepts separate:
   members only; the grouping surface is intentionally the place where future
   capability types such as skills can compose with MCP servers.
 - Skill: procedural or domain instructions for how an agent should use
-  capabilities. Skills are not implemented yet, and should get their own
-  registry/render surface rather than being hidden inside server sync.
+  capabilities. Skills are standalone Markdown primitives with their own
+  metadata, managed content, and render surface.
 - Run: ephemeral execution that combines a task, selected capabilities, client
   target, optional skills/context, and result capture. Run is not implemented
   yet and should not be modeled as persistent client sync.
 
 Current behavior follows this boundary: `sync` and `ring attach` persist MCP
-server config, while `ring render` emits MCP config only. Future skill work
-should add an explicit skill render path before combining rings and skills in
-execution flows.
+server config, `ring render` emits MCP config only, and `skill render` emits
+Markdown instructions only. Skills do not write client config and are not ring
+members or run inputs yet.
 
 ## Components
 
 1. Registry
 - Path: `<os.UserConfigDir()>/madari/servers/*.toml` (or `$MADARI_CONFIG_DIR/servers/*.toml`)
-- One file per server entry; rings live alongside as `rings/<name>.toml`.
+- One file per server entry; rings live alongside as `rings/<name>.toml`;
+  skills live alongside as `skills/<name>.toml` plus managed Markdown content
+  at `skills/<name>.md`.
 - Human-readable and versionable.
-- Snapshots (`export`/`import`) carry servers and rings as versioned JSON;
-  export refuses rings that would not round-trip, import validates everything
-  before writing anything and never attaches or syncs.
+- Snapshots (`export`/`import`) carry servers, rings, and skills as versioned
+  JSON; export refuses rings that would not round-trip, import validates
+  everything before writing anything and never attaches or syncs.
 
 2. Client Targets and Adapters
 - The command layer keeps a single client target registry for target-level
   capabilities: sync adapter, ring config renderer, and scope support.
-  Future skill render support should extend that registry instead of adding
-  another target-specific switch.
+  Future client-native skill render support should extend that registry
+  instead of adding another target-specific switch.
 - Translate registry entries into client-specific config.
 - Current adapters: Claude Desktop, Claude Code, Gemini, Codex, and Vibe.
 - Adapters own read/merge/write behavior for their client format.
@@ -75,8 +77,9 @@ execution flows.
 5. Rings
 - Named capability sets (`rings/<name>.toml`). In the current schema, members
   are server references by name only — the server manifest stays the single
-  source of truth for command, args, and env. Future skill support should grow
-  the capability model deliberately rather than overloading server manifests.
+  source of truth for command, args, and env. Skills are standalone in V1;
+  future skill membership should grow the ring schema deliberately rather than
+  overloading server manifests.
 - Attachment is derived state: ring `R` is attached to a target+scope iff
   `ring:R` appears among ownership sources there. Attach records the source
   on every member and materializes the eligible ones; detach releases it by
@@ -95,7 +98,19 @@ execution flows.
 - `ring delete` refuses while any target/scope still records the ring as an
   ownership source, and never edits client configs or managed state.
 
-6. Doctor Engine
+6. Skills
+- Standalone instruction primitives stored as metadata plus managed Markdown:
+  `skills/<name>.toml` and `skills/<name>.md`.
+- `skill add` copies a non-empty Markdown file into Madari; `skill update`
+  replaces that managed copy and preserves description unless a new one is
+  provided.
+- `skill render` prints the managed Markdown exactly to stdout. It mutates no
+  state, writes no client files, and does not imply model restriction to that
+  workflow.
+- V1 skills are exported/imported in snapshots but are not consumed by rings,
+  sync adapters, or run execution.
+
+7. Doctor Engine
 - Verifies command/binary resolution.
 - Validates required env values are present.
 - Validates client config parseability.

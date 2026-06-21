@@ -154,6 +154,8 @@ func (a cliApp) dispatch(args []string) error {
 		return a.cmdSync(args[1:])
 	case "ring":
 		return a.cmdRing(args[1:])
+	case "skill":
+		return a.cmdSkill(args[1:])
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -1169,7 +1171,7 @@ func (a cliApp) cmdExport(args []string) error {
 	if err := os.WriteFile(cleanPath, payload, 0o644); err != nil {
 		return fmt.Errorf("write snapshot file %q: %w", cleanPath, err)
 	}
-	fmt.Fprintf(a.stdout, "exported %d server(s), %d ring(s) to %s\n", len(snapshot.Servers), len(snapshot.Rings), cleanPath)
+	fmt.Fprintf(a.stdout, "exported %d server(s), %d ring(s), %d skill(s) to %s\n", len(snapshot.Servers), len(snapshot.Rings), len(snapshot.Skills), cleanPath)
 	return nil
 }
 
@@ -1227,6 +1229,9 @@ func (a cliApp) cmdImport(args []string) error {
 	fmt.Fprintf(a.stdout, "rings added: %s\n", formatNameList(result.RingsAdded))
 	fmt.Fprintf(a.stdout, "rings updated: %s\n", formatNameList(result.RingsUpdated))
 	fmt.Fprintf(a.stdout, "rings unchanged: %s\n", formatNameList(result.RingsUnchanged))
+	fmt.Fprintf(a.stdout, "skills added: %s\n", formatNameList(result.SkillsAdded))
+	fmt.Fprintf(a.stdout, "skills updated: %s\n", formatNameList(result.SkillsUpdated))
+	fmt.Fprintf(a.stdout, "skills unchanged: %s\n", formatNameList(result.SkillsUnchanged))
 	if !result.HasChanges() {
 		fmt.Fprintln(a.stdout, "no changes")
 	}
@@ -1529,6 +1534,8 @@ func printCommandHelp(command string, out io.Writer) bool {
 		printSyncHelp(out)
 	case "ring":
 		printRingHelp(out)
+	case "skill":
+		printSkillHelp(out)
 	case "clients":
 		printClientsHelp(out)
 	case "doctor":
@@ -1723,7 +1730,7 @@ func printExportHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --file <path>              Write snapshot JSON to file (default: stdout)")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Export all server and ring manifests as a versioned JSON snapshot.")
+	fmt.Fprintln(out, "  Export all server, ring, and skill manifests as a versioned JSON snapshot.")
 }
 
 func printImportHelp(out io.Writer) {
@@ -1735,8 +1742,8 @@ func printImportHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --apply                    Apply changes to registry (default: dry-run)")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Import a snapshot into the registry by adding/updating listed servers")
-	fmt.Fprintln(out, "  and rings. Existing servers and rings absent from the snapshot are")
+	fmt.Fprintln(out, "  Import a snapshot into the registry by adding/updating listed servers,")
+	fmt.Fprintln(out, "  rings, and skills. Existing entries absent from the snapshot are")
 	fmt.Fprintln(out, "  left unchanged; importing rings never attaches or syncs them.")
 }
 
@@ -1752,6 +1759,7 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  disable   Disable a server")
 	fmt.Fprintln(out, "  sync      Sync server manifests to a client config")
 	fmt.Fprintln(out, "  ring      Manage rings (named capability sets of servers)")
+	fmt.Fprintln(out, "  skill     Manage standalone Markdown skills")
 	fmt.Fprintln(out, "  clients   List sync client config readiness")
 	fmt.Fprintln(out, "  doctor    Run diagnostics on local MCP setup")
 	fmt.Fprintln(out, "  status    Show concise readiness summary")
@@ -1769,6 +1777,8 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  madari disable stewreads")
 	fmt.Fprintln(out, "  madari sync claude-desktop --dry-run")
 	fmt.Fprintln(out, "  madari sync claude-code --dry-run")
+	fmt.Fprintln(out, "  madari skill add release --file SKILL.md")
+	fmt.Fprintln(out, "  madari skill render release")
 	fmt.Fprintln(out, "  madari export --file madari-snapshot.json")
 	fmt.Fprintln(out, "  madari import --file madari-snapshot.json")
 	fmt.Fprintln(out, "  madari import --file madari-snapshot.json --apply")

@@ -124,6 +124,28 @@ paths — pass `--config-path` when the ring was attached to a custom config. `m
 the same conditions as `ring_issues` (missing ring file = error, dangling
 member = warning).
 
+## Skills
+
+```bash
+madari skill add release --file ./SKILL.md --description "Release workflow"
+madari skill update release --file ./SKILL.md
+madari skill update release --file ./SKILL.md --description "Updated workflow"
+madari skill list
+madari skill show release
+madari skill render release
+madari skill remove release
+```
+
+Skills are standalone Markdown instructions stored as managed local copies:
+metadata lives at `<config-root>/skills/<name>.toml`, and content lives at
+`<config-root>/skills/<name>.md`. `skill add` fails if the skill exists;
+`skill update` fails if it does not. Updating preserves the existing
+description unless `--description` is passed.
+
+`skill render` prints the managed Markdown bytes exactly to stdout and
+mutates nothing. V1 skills are not ring members, are not synced into client
+configs, and are not consumed by `run`.
+
 ## Diagnostics
 
 ```bash
@@ -141,17 +163,19 @@ madari import --file madari-snapshot.json
 madari import --file madari-snapshot.json --apply
 ```
 
-Snapshots are versioned JSON documents containing server manifests and ring
-definitions. Export writes the current snapshot version with both `servers`
-and `rings`. Import is a dry-run by default; `--apply` adds or updates listed
-servers and rings, never deletes entries absent from the snapshot, and never
-attaches or syncs imported rings. Ring membership changes converge through
-the normal reconciliation pass on the next sync, attach, or detach.
+Snapshots are versioned JSON documents containing server manifests, ring
+definitions, and skill content. Export writes the current snapshot version
+with `servers`, `rings`, and `skills`. Import is a dry-run by default;
+`--apply` adds or updates listed servers, rings, and skills, never deletes
+entries absent from the snapshot, and never attaches or syncs imported rings.
+Ring membership changes converge through the normal reconciliation pass on
+the next sync, attach, or detach.
 
 ## JSON Output
 
-`list`, `status`, `doctor`, `sync --dry-run`, `ring list`, `ring show`, and
-`ring status` accept `--json` and emit a single JSON document on stdout with nothing else.
+`list`, `status`, `doctor`, `sync --dry-run`, `ring list`, `ring show`,
+`ring status`, `skill list`, and `skill show` accept `--json` and emit a
+single JSON document on stdout with nothing else.
 Every payload carries the envelope fields `schema_version` (currently `1`)
 and `command`. Field additions are backward-compatible; renames or removals
 bump `schema_version`. List-valued fields are always present (empty arrays,
@@ -165,6 +189,8 @@ madari sync claude-code --dry-run --json
 madari ring list --json
 madari ring show research --json
 madari ring status --json
+madari skill list --json
+madari skill show release --json
 ```
 
 `sync --json` requires `--dry-run`; the apply-mode output contract is not yet
@@ -331,6 +357,36 @@ itself.
     "name": "research",
     "members": ["arxiv", "stewreads"],
     "description": "Research helpers"
+  }
+}
+```
+
+`madari skill list --json`:
+
+```json
+{
+  "schema_version": 1,
+  "command": "skill list",
+  "skills": [
+    {
+      "name": "release",
+      "description": "Release workflow"
+    }
+  ]
+}
+```
+
+`madari skill show <name> --json` wraps one skill object and includes the
+managed content path:
+
+```json
+{
+  "schema_version": 1,
+  "command": "skill show",
+  "skill": {
+    "name": "release",
+    "description": "Release workflow",
+    "content_path": "/path/to/madari/skills/release.md"
   }
 }
 ```

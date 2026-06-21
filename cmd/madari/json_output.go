@@ -206,6 +206,32 @@ type ringServerJSON struct {
 	Sources []string `json:"sources"`
 }
 
+type skillListJSON struct {
+	SchemaVersion int         `json:"schema_version"`
+	Command       string      `json:"command"`
+	Skills        []skillJSON `json:"skills"`
+}
+
+type skillShowJSON struct {
+	SchemaVersion int       `json:"schema_version"`
+	Command       string    `json:"command"`
+	Skill         skillJSON `json:"skill"`
+}
+
+type skillJSON struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	ContentPath string `json:"content_path,omitempty"`
+}
+
+func skillToJSON(skill registry.Skill, contentPath string) skillJSON {
+	return skillJSON{
+		Name:        skill.Name,
+		Description: skill.Description,
+		ContentPath: contentPath,
+	}
+}
+
 // writeJSON emits one indented JSON document followed by a newline; --json
 // modes must write nothing else to stdout.
 func writeJSON(out io.Writer, payload any) error {
