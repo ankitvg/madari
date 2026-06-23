@@ -176,11 +176,11 @@ type ringJSON struct {
 
 type ringContractJSON struct {
 	Summary         string   `json:"summary,omitempty"`
-	GoodFor         []string `json:"good_for,omitempty"`
-	NotFor          []string `json:"not_for,omitempty"`
-	RequiredContext []string `json:"required_context,omitempty"`
-	OptionalContext []string `json:"optional_context,omitempty"`
-	ExpectedOutputs []string `json:"expected_outputs,omitempty"`
+	GoodFor         []string `json:"good_for"`
+	NotFor          []string `json:"not_for"`
+	RequiredContext []string `json:"required_context"`
+	OptionalContext []string `json:"optional_context"`
+	ExpectedOutputs []string `json:"expected_outputs"`
 }
 
 func ringToJSON(ring registry.Ring) ringJSON {

@@ -3163,6 +3163,30 @@ func TestRunWithStoreRingContractShowAndJSON(t *testing.T) {
 		t.Fatalf("unexpected contract payload: %v", contract)
 	}
 
+	if err := store.SaveRing(registry.Ring{
+		Name:    "minimal",
+		Members: []string{"logs"},
+		Contract: &registry.RingContract{
+			Summary: "Minimal contract",
+		},
+	}); err != nil {
+		t.Fatalf("save minimal ring with contract: %v", err)
+	}
+	result = runCmd(store, "ring", "show", "minimal", "--json")
+	if result.code != 0 {
+		t.Fatalf("minimal ring show --json failed: %s", result.stderr)
+	}
+	payload = decodeJSONObject(t, result.stdout)
+	minimalRing := payload["ring"].(map[string]any)
+	minimalContract := minimalRing["contract"].(map[string]any)
+	assertJSONKeys(t, minimalContract, "summary", "good_for", "not_for", "required_context", "optional_context", "expected_outputs")
+	for _, key := range []string{"good_for", "not_for", "required_context", "optional_context", "expected_outputs"} {
+		values, ok := minimalContract[key].([]any)
+		if !ok || len(values) != 0 {
+			t.Fatalf("expected %s to be an empty array, got: %#v", key, minimalContract[key])
+		}
+	}
+
 	result = runCmd(store, "ring", "list", "--json")
 	if result.code != 0 {
 		t.Fatalf("ring list --json failed: %s", result.stderr)
