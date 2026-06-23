@@ -62,6 +62,9 @@ streamable HTTP, or hand-managed stdio entries are preserved and never adopted.
 madari ring create research --member stewreads --member arxiv --skill release --description "Research helpers"
 madari ring list
 madari ring show research
+madari ring contract show research
+madari ring contract set research --file contract.toml
+madari ring contract clear research
 madari ring attach research claude-code
 madari ring attach research claude-code --scope user
 madari ring attach research gemini
@@ -84,6 +87,21 @@ Rings are named capability sets of servers and skills stored at
 `<config-root>/rings/<name>.toml` (see the manifest spec). Server members
 reference server registry entries by name; skill members reference managed
 skill entries by name. Referenced entries must exist when the ring is created.
+
+Ring contracts are advisory metadata for delegation. `ring contract set`
+replaces the whole contract from a standalone TOML file, `ring contract show`
+prints that same standalone file shape, and `ring contract clear` removes the
+contract. Contract commands do not change members, skills, attach state, sync
+behavior, or render output.
+
+```toml
+summary = "Collect source context and prepare a research brief."
+good_for = ["source collection", "evidence review"]
+not_for = ["deployments", "database mutation"]
+required_context = ["research question"]
+optional_context = ["time window", "known source URLs"]
+expected_outputs = ["findings summary", "sources inspected"]
+```
 
 Attach records a `ring:<name>` ownership source for every server and skill
 member. Eligible servers are materialized into MCP client config; skill members

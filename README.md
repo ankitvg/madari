@@ -84,7 +84,8 @@ supported clients or included in rings, where Madari materializes native
 **Rings** are named capability sets. A ring can contain server members and skill
 members, then attach to a client as one unit. Rings can also carry an advisory
 contract for delegation: when to use the ring, what context to provide, and
-what outputs to expect. Ring ownership is reference counted, so overlapping
+what outputs to expect. Contracts can be managed from standalone TOML files with
+`madari ring contract`. Ring ownership is reference counted, so overlapping
 rings and standalone entries detach cleanly in any order.
 
 **Sync** writes managed server entries into client config files. Madari backs up

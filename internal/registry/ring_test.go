@@ -109,6 +109,44 @@ func TestMarshalRingOmitsEmptyContract(t *testing.T) {
 	}
 }
 
+func TestParseAndMarshalRingContractFile(t *testing.T) {
+	payload := `summary = "Observe production behavior"
+good_for = ["logs", "traces"]
+not_for = ["deployments", "schema changes"]
+required_context = ["project", "region", "time window"]
+optional_context = ["request id", "trace id"]
+expected_outputs = ["findings", "evidence", "next check"]
+`
+
+	contract, err := ParseRingContract([]byte(payload))
+	if err != nil {
+		t.Fatalf("parse contract failed: %v", err)
+	}
+	if !reflect.DeepEqual(contract.GoodFor, []string{"logs", "traces"}) {
+		t.Fatalf("expected contract array order preserved, got: %#v", contract.GoodFor)
+	}
+
+	encoded, err := MarshalRingContract(contract)
+	if err != nil {
+		t.Fatalf("marshal contract failed: %v", err)
+	}
+	if string(encoded) != payload {
+		t.Fatalf("expected deterministic contract file:\n%s\ngot:\n%s", payload, encoded)
+	}
+}
+
+func TestParseRingContractRejectsUnknownKeysAndSections(t *testing.T) {
+	if _, err := ParseRingContract([]byte(`unknown = "value"`)); err == nil || !strings.Contains(err.Error(), `unknown key "unknown" in contract file`) {
+		t.Fatalf("expected unknown contract file key error, got: %v", err)
+	}
+	if _, err := ParseRingContract([]byte("[contract]\nsummary = \"value\"\n")); err == nil || !strings.Contains(err.Error(), "unknown section") {
+		t.Fatalf("expected contract file section error, got: %v", err)
+	}
+	if _, err := ParseRingContract([]byte("# empty\n")); err == nil || !strings.Contains(err.Error(), "contract file has no fields") {
+		t.Fatalf("expected empty contract file error, got: %v", err)
+	}
+}
+
 func TestMarshalRingAllowsSkillOnlyRing(t *testing.T) {
 	encoded, err := MarshalRing(Ring{Name: "workflow", Skills: []string{"release"}})
 	if err != nil {

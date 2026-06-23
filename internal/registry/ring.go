@@ -109,6 +109,62 @@ func (r Ring) HasSkill(name string) bool {
 	return false
 }
 
+// ParseRingContract parses a standalone contract TOML file. The file contains
+// only contract fields, not a [contract] section.
+func ParseRingContract(data []byte) (RingContract, error) {
+	contract := RingContract{}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	lineNo := 0
+	for scanner.Scan() {
+		lineNo++
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		line = stripInlineComment(line)
+		if line == "" {
+			continue
+		}
+
+		if strings.HasPrefix(line, "[") {
+			if !strings.HasSuffix(line, "]") {
+				return RingContract{}, fmt.Errorf("line %d: invalid section header", lineNo)
+			}
+			name := strings.TrimSpace(line[1 : len(line)-1])
+			return RingContract{}, fmt.Errorf("line %d: unknown section %q", lineNo, name)
+		}
+
+		key, value, err := splitKeyValue(line)
+		if err != nil {
+			return RingContract{}, fmt.Errorf("line %d: %w", lineNo, err)
+		}
+		if err := parseRingContractKey(&contract, key, value, "contract file"); err != nil {
+			return RingContract{}, fmt.Errorf("line %d: %w", lineNo, err)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return RingContract{}, fmt.Errorf("scan ring contract: %w", err)
+	}
+	if contract.Empty() {
+		return RingContract{}, fmt.Errorf("contract file has no fields")
+	}
+	return contract, nil
+}
+
+// MarshalRingContract renders a standalone contract TOML file with fields in
+// the same deterministic order used by ring manifests.
+func MarshalRingContract(contract RingContract) ([]byte, error) {
+	if contract.Empty() {
+		return nil, fmt.Errorf("contract is empty")
+	}
+
+	var b strings.Builder
+	writeRingContractFields(&b, &contract)
+	return []byte(b.String()), nil
+}
+
 // ParseRing parses a constrained TOML ring manifest and rejects unknown
 // fields, mirroring ParseManifest's strictness.
 func ParseRing(data []byte) (Ring, error) {
@@ -210,6 +266,10 @@ func parseRingTopLevel(ring *Ring, key, value string) error {
 }
 
 func parseRingContract(contract *RingContract, key, value string) error {
+	return parseRingContractKey(contract, key, value, "[contract]")
+}
+
+func parseRingContractKey(contract *RingContract, key, value, context string) error {
 	switch key {
 	case "summary":
 		sv, err := parseString(value)
@@ -248,7 +308,7 @@ func parseRingContract(contract *RingContract, key, value string) error {
 		}
 		contract.ExpectedOutputs = av
 	default:
-		return fmt.Errorf("unknown key %q in [contract]", key)
+		return fmt.Errorf("unknown key %q in %s", key, context)
 	}
 	return nil
 }
@@ -276,24 +336,28 @@ func MarshalRing(ring Ring) ([]byte, error) {
 	}
 	if !ring.Contract.Empty() {
 		b.WriteString("\n[contract]\n")
-		if strings.TrimSpace(ring.Contract.Summary) != "" {
-			fmt.Fprintf(&b, "summary = %s\n", strconv.Quote(ring.Contract.Summary))
-		}
-		if len(ring.Contract.GoodFor) > 0 {
-			fmt.Fprintf(&b, "good_for = %s\n", formatStringArray(ring.Contract.GoodFor))
-		}
-		if len(ring.Contract.NotFor) > 0 {
-			fmt.Fprintf(&b, "not_for = %s\n", formatStringArray(ring.Contract.NotFor))
-		}
-		if len(ring.Contract.RequiredContext) > 0 {
-			fmt.Fprintf(&b, "required_context = %s\n", formatStringArray(ring.Contract.RequiredContext))
-		}
-		if len(ring.Contract.OptionalContext) > 0 {
-			fmt.Fprintf(&b, "optional_context = %s\n", formatStringArray(ring.Contract.OptionalContext))
-		}
-		if len(ring.Contract.ExpectedOutputs) > 0 {
-			fmt.Fprintf(&b, "expected_outputs = %s\n", formatStringArray(ring.Contract.ExpectedOutputs))
-		}
+		writeRingContractFields(&b, ring.Contract)
 	}
 	return []byte(b.String()), nil
+}
+
+func writeRingContractFields(b *strings.Builder, contract *RingContract) {
+	if strings.TrimSpace(contract.Summary) != "" {
+		fmt.Fprintf(b, "summary = %s\n", strconv.Quote(contract.Summary))
+	}
+	if len(contract.GoodFor) > 0 {
+		fmt.Fprintf(b, "good_for = %s\n", formatStringArray(contract.GoodFor))
+	}
+	if len(contract.NotFor) > 0 {
+		fmt.Fprintf(b, "not_for = %s\n", formatStringArray(contract.NotFor))
+	}
+	if len(contract.RequiredContext) > 0 {
+		fmt.Fprintf(b, "required_context = %s\n", formatStringArray(contract.RequiredContext))
+	}
+	if len(contract.OptionalContext) > 0 {
+		fmt.Fprintf(b, "optional_context = %s\n", formatStringArray(contract.OptionalContext))
+	}
+	if len(contract.ExpectedOutputs) > 0 {
+		fmt.Fprintf(b, "expected_outputs = %s\n", formatStringArray(contract.ExpectedOutputs))
+	}
 }

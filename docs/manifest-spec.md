@@ -108,6 +108,11 @@ render behavior.
 - `expected_outputs` (array of strings, optional): advisory response shape;
   these are not filesystem paths.
 
+`madari ring contract set <name> --file <path>` uses the same fields in a
+standalone contract file without the `[contract]` section. `madari ring
+contract show <name>` prints that standalone shape, and `madari ring contract
+clear <name>` removes the contract from the ring.
+
 ### Example
 
 ```toml
