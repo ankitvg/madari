@@ -1106,7 +1106,33 @@ func (a cliApp) cmdRingShow(args []string) error {
 			fmt.Fprintf(a.stdout, "  - %s\n", skill)
 		}
 	}
+	printRingContract(a.stdout, ring.Contract)
 	return nil
+}
+
+func printRingContract(out io.Writer, contract *registry.RingContract) {
+	if contract.Empty() {
+		return
+	}
+	fmt.Fprintln(out, "contract:")
+	if strings.TrimSpace(contract.Summary) != "" {
+		fmt.Fprintf(out, "  summary: %s\n", contract.Summary)
+	}
+	printContractList(out, "good_for", contract.GoodFor)
+	printContractList(out, "not_for", contract.NotFor)
+	printContractList(out, "required_context", contract.RequiredContext)
+	printContractList(out, "optional_context", contract.OptionalContext)
+	printContractList(out, "expected_outputs", contract.ExpectedOutputs)
+}
+
+func printContractList(out io.Writer, label string, values []string) {
+	if len(values) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "  %s:\n", label)
+	for _, value := range values {
+		fmt.Fprintf(out, "    - %s\n", value)
+	}
 }
 
 func printRingHelp(out io.Writer) {

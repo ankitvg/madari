@@ -12,9 +12,9 @@ Madari keeps four concepts separate:
 
 - Server: an executable MCP capability with command, args, env, and target
   client metadata.
-- Ring: a named capability grouping. Persisted rings can contain server
-  members and skill members by name; the referenced server manifests and skill
-  files remain the source of truth.
+- Ring: a named capability grouping with optional advisory contract metadata.
+  Persisted rings can contain server members and skill members by name; the
+  referenced server manifests and skill files remain the source of truth.
 - Skill: procedural or domain instructions for how an agent should use
   capabilities. Skills are standalone Markdown primitives with their own
   metadata, managed content, and render surface.
@@ -40,7 +40,7 @@ not run inputs yet.
 - Snapshots (`export`/`import`) carry servers, rings, and skills as versioned
   JSON; export refuses rings that would not round-trip, import validates
   everything before writing anything and never attaches or syncs. Snapshot
-  version 4 adds ring skill membership.
+  version 4 added ring skill membership; version 5 adds ring contract metadata.
 
 2. Client Targets and Adapters
 - The command layer keeps a single client target registry for target-level
@@ -80,7 +80,11 @@ not run inputs yet.
 - Named capability sets (`rings/<name>.toml`). Server members are references by
   name only — the server manifest stays the single source of truth for command,
   args, and env. Skill members are references by name only — managed skill
-  metadata and Markdown stay the source of truth.
+  metadata and Markdown stay the source of truth. Optional `[contract]`
+  metadata describes when the ring is useful, what context a delegating agent
+  should provide, and what outputs to expect. Contracts are advisory only:
+  attach, detach, sync, render, status, ownership, and skill materialization do
+  not change when a contract changes.
 - Attachment is derived state: ring `R` is attached to a target+scope iff
   `ring:R` appears among server ownership sources or skill attachment sources
   there. Attach records the source on every server and skill member,
@@ -100,6 +104,9 @@ not run inputs yet.
   render-only output before persistent sync/attach support exists. `ring
   status` reports attachments, per-server and per-skill sources, and
   pending/stale reconciliation work.
+- Contracts are distinct from future run/session/context primitives. Future
+  execution may render the contract into subagent initialization, but the ring
+  definition does not embed task context or result transport.
 - `ring delete` refuses while any target/scope still records the ring as an
   ownership source, and never edits client configs or managed state.
 

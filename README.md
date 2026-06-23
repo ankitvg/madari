@@ -82,9 +82,10 @@ supported clients or included in rings, where Madari materializes native
 `SKILL.md` files for the target.
 
 **Rings** are named capability sets. A ring can contain server members and skill
-members, then attach to a client as one unit. Ring ownership is reference
-counted, so overlapping rings and standalone entries detach cleanly in any
-order.
+members, then attach to a client as one unit. Rings can also carry an advisory
+contract for delegation: when to use the ring, what context to provide, and
+what outputs to expect. Ring ownership is reference counted, so overlapping
+rings and standalone entries detach cleanly in any order.
 
 **Sync** writes managed server entries into client config files. Madari backs up
 before writing, skips ineligible entries instead of aborting the whole sync, and

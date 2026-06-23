@@ -199,10 +199,11 @@ the next sync, attach, or detach.
 `list`, `status`, `doctor`, `sync --dry-run`, `ring list`, `ring show`,
 `ring status`, `skill list`, and `skill show` accept `--json` and emit a
 single JSON document on stdout with nothing else.
-Every payload carries the envelope fields `schema_version` (currently `1`)
+Every payload carries the envelope fields `schema_version` (currently `2`)
 and `command`. Field additions are backward-compatible; renames or removals
 bump `schema_version`. List-valued fields are always present (empty arrays,
-never `null`).
+never `null`) when their containing object is emitted. Optional objects such as
+ring `contract` are omitted when absent.
 
 ```bash
 madari list --json
@@ -219,13 +220,13 @@ madari skill show release --json
 `sync --json` requires `--dry-run`; the apply-mode output contract is not yet
 defined.
 
-### Schemas (schema_version 1)
+### Schemas (schema_version 2)
 
 `madari list --json`:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "command": "list",
   "servers": [
     {
@@ -244,7 +245,7 @@ summaries cover every sync target):
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "command": "status",
   "summary": {"total": 1, "ready": 1, "warning": 0, "error": 0, "skipped": 0},
   "client_configs": [
@@ -289,7 +290,7 @@ itself.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "command": "doctor",
   "servers_dir": "/path/to/madari/servers",
   "servers": [
@@ -340,7 +341,7 @@ itself.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "command": "sync",
   "target": "claude-code",
   "config_path": "/path/to/.mcp.json",
@@ -362,14 +363,22 @@ itself.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "command": "ring list",
   "rings": [
     {
       "name": "research",
       "members": ["arxiv", "stewreads"],
       "skills": ["release"],
-      "description": "Research helpers"
+      "description": "Research helpers",
+      "contract": {
+        "summary": "Collect source context and prepare a research brief.",
+        "good_for": ["source collection", "evidence review"],
+        "not_for": ["deployments", "database mutation"],
+        "required_context": ["research question"],
+        "optional_context": ["time window", "known source URLs"],
+        "expected_outputs": ["findings summary", "sources inspected"]
+      }
     }
   ]
 }
@@ -379,13 +388,21 @@ itself.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "command": "ring show",
   "ring": {
     "name": "research",
     "members": ["arxiv", "stewreads"],
     "skills": ["release"],
-    "description": "Research helpers"
+    "description": "Research helpers",
+    "contract": {
+      "summary": "Collect source context and prepare a research brief.",
+      "good_for": ["source collection", "evidence review"],
+      "not_for": ["deployments", "database mutation"],
+      "required_context": ["research question"],
+      "optional_context": ["time window", "known source URLs"],
+      "expected_outputs": ["findings summary", "sources inspected"]
+    }
   }
 }
 ```
@@ -394,7 +411,7 @@ itself.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "command": "skill list",
   "skills": [
     {
@@ -410,7 +427,7 @@ managed content path:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "command": "skill show",
   "skill": {
     "name": "release",
@@ -424,7 +441,7 @@ managed content path:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "command": "ring status",
   "targets": [
     {

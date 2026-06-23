@@ -2369,7 +2369,7 @@ func TestRunWithStoreListJSONEmpty(t *testing.T) {
 	}
 
 	expected := `{
-  "schema_version": 1,
+  "schema_version": 2,
   "command": "list",
   "servers": []
 }
@@ -2400,7 +2400,7 @@ func TestRunWithStoreListJSON(t *testing.T) {
 	}
 
 	expected := fmt.Sprintf(`{
-  "schema_version": 1,
+  "schema_version": 2,
   "command": "list",
   "servers": [
     {
@@ -2440,7 +2440,7 @@ func TestRunWithStoreSyncDryRunJSON(t *testing.T) {
 	}
 
 	expected := fmt.Sprintf(`{
-  "schema_version": 1,
+  "schema_version": 2,
   "command": "sync",
   "target": "claude-code",
   "config_path": %q,
@@ -2501,7 +2501,7 @@ func TestRunWithStoreStatusJSON(t *testing.T) {
 
 	payload := decodeJSONObject(t, result.stdout)
 	assertJSONKeys(t, payload, "schema_version", "command", "summary", "client_configs", "managed", "manifest_errors", "drift")
-	if payload["schema_version"].(float64) != 1 {
+	if payload["schema_version"].(float64) != 2 {
 		t.Fatalf("unexpected schema_version: %v", payload["schema_version"])
 	}
 	if payload["command"].(string) != "status" {
@@ -3049,7 +3049,7 @@ func TestRunWithStoreRingListJSON(t *testing.T) {
 		t.Fatalf("ring list --json failed: %s", result.stderr)
 	}
 	expectedEmpty := `{
-  "schema_version": 1,
+  "schema_version": 2,
   "command": "ring list",
   "rings": []
 }
@@ -3070,7 +3070,7 @@ func TestRunWithStoreRingListJSON(t *testing.T) {
 		t.Fatalf("ring list --json failed: %s", result.stderr)
 	}
 	expected := `{
-  "schema_version": 1,
+  "schema_version": 2,
   "command": "ring list",
   "rings": [
     {
@@ -3101,6 +3101,72 @@ func TestRunWithStoreRingListJSON(t *testing.T) {
 	assertJSONKeys(t, ring, "name", "members", "skills", "description")
 	if ring["name"] != "research" {
 		t.Fatalf("unexpected ring payload: %v", ring)
+	}
+}
+
+func TestRunWithStoreRingContractShowAndJSON(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "logs", "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	if err := store.SaveRing(registry.Ring{
+		Name:    "observe",
+		Members: []string{"logs"},
+		Contract: &registry.RingContract{
+			Summary:         "Observe production behavior",
+			GoodFor:         []string{"logs", "traces"},
+			NotFor:          []string{"deployments"},
+			RequiredContext: []string{"service", "time window"},
+			OptionalContext: []string{"request id"},
+			ExpectedOutputs: []string{"findings", "next check"},
+		},
+	}); err != nil {
+		t.Fatalf("save ring with contract: %v", err)
+	}
+
+	result := runCmd(store, "ring", "show", "observe")
+	if result.code != 0 {
+		t.Fatalf("ring show failed: %s", result.stderr)
+	}
+	for _, want := range []string{
+		"contract:",
+		"  summary: Observe production behavior",
+		"  good_for:",
+		"    - logs",
+		"  required_context:",
+		"    - time window",
+		"  expected_outputs:",
+		"    - next check",
+	} {
+		if !strings.Contains(result.stdout, want) {
+			t.Fatalf("expected %q in ring show output, got: %s", want, result.stdout)
+		}
+	}
+
+	result = runCmd(store, "ring", "show", "observe", "--json")
+	if result.code != 0 {
+		t.Fatalf("ring show --json failed: %s", result.stderr)
+	}
+	payload := decodeJSONObject(t, result.stdout)
+	ring := payload["ring"].(map[string]any)
+	assertJSONKeys(t, ring, "name", "members", "skills", "description", "contract")
+	contract := ring["contract"].(map[string]any)
+	assertJSONKeys(t, contract, "summary", "good_for", "not_for", "required_context", "optional_context", "expected_outputs")
+	if contract["summary"] != "Observe production behavior" {
+		t.Fatalf("unexpected contract payload: %v", contract)
+	}
+
+	result = runCmd(store, "ring", "list", "--json")
+	if result.code != 0 {
+		t.Fatalf("ring list --json failed: %s", result.stderr)
+	}
+	payload = decodeJSONObject(t, result.stdout)
+	rings := payload["rings"].([]any)
+	listRing := rings[0].(map[string]any)
+	if _, ok := listRing["contract"]; !ok {
+		t.Fatalf("expected contract in ring list JSON: %v", listRing)
 	}
 }
 

@@ -87,8 +87,26 @@ document per ring at
 
 At least one `members` or `skills` entry is required. Every referenced server
 and skill must exist in the registry when a ring is created or imported.
-Ring manifests have no sections; unknown keys are rejected. Files are
-written deterministically with sorted server and skill members.
+Ring manifests support only the top-level fields above plus the optional
+`[contract]` section. Unknown top-level keys, unknown sections, and unknown
+`[contract]` keys are rejected. Files are written deterministically with sorted
+server and skill members; contract arrays preserve authored order.
+
+### `[contract]`
+
+Ring contracts are advisory metadata for main-thread delegation and future
+subagent initialization. They do not affect attach, detach, sync, status, or
+render behavior.
+
+- `summary` (string, optional): what this ring is for.
+- `good_for` (array of strings, optional): task types this ring is suited to.
+- `not_for` (array of strings, optional): task types this ring should avoid.
+- `required_context` (array of strings, optional): conceptual inputs the main
+  thread should provide before delegating.
+- `optional_context` (array of strings, optional): useful but non-required
+  inputs.
+- `expected_outputs` (array of strings, optional): advisory response shape;
+  these are not filesystem paths.
 
 ### Example
 
@@ -97,6 +115,14 @@ name = "research"
 members = ["arxiv", "stewreads"]
 skills = ["release"]
 description = "Research helpers"
+
+[contract]
+summary = "Collect source context and prepare a research brief."
+good_for = ["source collection", "evidence review"]
+not_for = ["deployments", "database mutation"]
+required_context = ["research question"]
+optional_context = ["time window", "known source URLs"]
+expected_outputs = ["findings summary", "sources inspected", "recommended next check"]
 ```
 
 ## Skill Files

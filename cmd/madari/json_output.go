@@ -13,7 +13,7 @@ import (
 // jsonSchemaVersion identifies the envelope version shared by all --json
 // output. Field names and shapes below are a public contract: additions are
 // allowed, renames and removals require a version bump.
-const jsonSchemaVersion = 1
+const jsonSchemaVersion = 2
 
 type listJSON struct {
 	SchemaVersion int          `json:"schema_version"`
@@ -167,10 +167,20 @@ type ringShowJSON struct {
 }
 
 type ringJSON struct {
-	Name        string   `json:"name"`
-	Members     []string `json:"members"`
-	Skills      []string `json:"skills"`
-	Description string   `json:"description"`
+	Name        string            `json:"name"`
+	Members     []string          `json:"members"`
+	Skills      []string          `json:"skills"`
+	Description string            `json:"description"`
+	Contract    *ringContractJSON `json:"contract,omitempty"`
+}
+
+type ringContractJSON struct {
+	Summary         string   `json:"summary,omitempty"`
+	GoodFor         []string `json:"good_for,omitempty"`
+	NotFor          []string `json:"not_for,omitempty"`
+	RequiredContext []string `json:"required_context,omitempty"`
+	OptionalContext []string `json:"optional_context,omitempty"`
+	ExpectedOutputs []string `json:"expected_outputs,omitempty"`
 }
 
 func ringToJSON(ring registry.Ring) ringJSON {
@@ -178,12 +188,23 @@ func ringToJSON(ring registry.Ring) ringJSON {
 	sort.Strings(members)
 	skills := append([]string(nil), ring.Skills...)
 	sort.Strings(skills)
-	return ringJSON{
+	out := ringJSON{
 		Name:        ring.Name,
 		Members:     nonNilStrings(members),
 		Skills:      nonNilStrings(skills),
 		Description: ring.Description,
 	}
+	if !ring.Contract.Empty() {
+		out.Contract = &ringContractJSON{
+			Summary:         ring.Contract.Summary,
+			GoodFor:         nonNilStrings(ring.Contract.GoodFor),
+			NotFor:          nonNilStrings(ring.Contract.NotFor),
+			RequiredContext: nonNilStrings(ring.Contract.RequiredContext),
+			OptionalContext: nonNilStrings(ring.Contract.OptionalContext),
+			ExpectedOutputs: nonNilStrings(ring.Contract.ExpectedOutputs),
+		}
+	}
+	return out
 }
 
 type ringStatusJSON struct {
