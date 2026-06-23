@@ -13,7 +13,7 @@ import (
 // jsonSchemaVersion identifies the envelope version shared by all --json
 // output. Field names and shapes below are a public contract: additions are
 // allowed, renames and removals require a version bump.
-const jsonSchemaVersion = 2
+const jsonSchemaVersion = 1
 
 type listJSON struct {
 	SchemaVersion int          `json:"schema_version"`

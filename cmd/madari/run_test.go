@@ -2374,7 +2374,7 @@ func TestRunWithStoreListJSONEmpty(t *testing.T) {
 	}
 
 	expected := `{
-  "schema_version": 2,
+  "schema_version": 1,
   "command": "list",
   "servers": []
 }
@@ -2405,7 +2405,7 @@ func TestRunWithStoreListJSON(t *testing.T) {
 	}
 
 	expected := fmt.Sprintf(`{
-  "schema_version": 2,
+  "schema_version": 1,
   "command": "list",
   "servers": [
     {
@@ -2445,7 +2445,7 @@ func TestRunWithStoreSyncDryRunJSON(t *testing.T) {
 	}
 
 	expected := fmt.Sprintf(`{
-  "schema_version": 2,
+  "schema_version": 1,
   "command": "sync",
   "target": "claude-code",
   "config_path": %q,
@@ -2506,7 +2506,7 @@ func TestRunWithStoreStatusJSON(t *testing.T) {
 
 	payload := decodeJSONObject(t, result.stdout)
 	assertJSONKeys(t, payload, "schema_version", "command", "summary", "client_configs", "managed", "manifest_errors", "drift")
-	if payload["schema_version"].(float64) != 2 {
+	if payload["schema_version"].(float64) != 1 {
 		t.Fatalf("unexpected schema_version: %v", payload["schema_version"])
 	}
 	if payload["command"].(string) != "status" {
@@ -3054,7 +3054,7 @@ func TestRunWithStoreRingListJSON(t *testing.T) {
 		t.Fatalf("ring list --json failed: %s", result.stderr)
 	}
 	expectedEmpty := `{
-  "schema_version": 2,
+  "schema_version": 1,
   "command": "ring list",
   "rings": []
 }
@@ -3075,7 +3075,7 @@ func TestRunWithStoreRingListJSON(t *testing.T) {
 		t.Fatalf("ring list --json failed: %s", result.stderr)
 	}
 	expected := `{
-  "schema_version": 2,
+  "schema_version": 1,
   "command": "ring list",
   "rings": [
     {
