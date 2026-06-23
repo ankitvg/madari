@@ -64,9 +64,14 @@ func writeTestExecutable(t *testing.T, dir, name string) string {
 
 func writeSkillFile(t *testing.T, dir, name, content string) string {
 	t.Helper()
+	return writeTextFile(t, dir, name, content)
+}
+
+func writeTextFile(t *testing.T, dir, name, content string) string {
+	t.Helper()
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatalf("write skill file: %v", err)
+		t.Fatalf("write text file: %v", err)
 	}
 	return path
 }
@@ -3101,6 +3106,164 @@ func TestRunWithStoreRingListJSON(t *testing.T) {
 	assertJSONKeys(t, ring, "name", "members", "skills", "description")
 	if ring["name"] != "research" {
 		t.Fatalf("unexpected ring payload: %v", ring)
+	}
+}
+
+func TestRunWithStoreRingContractShowAndJSON(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if result := runCmd(store, "add", "logs", "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	if err := store.SaveRing(registry.Ring{
+		Name:    "observe",
+		Members: []string{"logs"},
+		Contract: &registry.RingContract{
+			Summary:         "Observe production behavior",
+			GoodFor:         []string{"logs", "traces"},
+			NotFor:          []string{"deployments"},
+			RequiredContext: []string{"service", "time window"},
+			OptionalContext: []string{"request id"},
+			ExpectedOutputs: []string{"findings", "next check"},
+		},
+	}); err != nil {
+		t.Fatalf("save ring with contract: %v", err)
+	}
+
+	result := runCmd(store, "ring", "show", "observe")
+	if result.code != 0 {
+		t.Fatalf("ring show failed: %s", result.stderr)
+	}
+	for _, want := range []string{
+		"contract:",
+		"  summary: Observe production behavior",
+		"  good_for:",
+		"    - logs",
+		"  required_context:",
+		"    - time window",
+		"  expected_outputs:",
+		"    - next check",
+	} {
+		if !strings.Contains(result.stdout, want) {
+			t.Fatalf("expected %q in ring show output, got: %s", want, result.stdout)
+		}
+	}
+
+	result = runCmd(store, "ring", "show", "observe", "--json")
+	if result.code != 0 {
+		t.Fatalf("ring show --json failed: %s", result.stderr)
+	}
+	payload := decodeJSONObject(t, result.stdout)
+	ring := payload["ring"].(map[string]any)
+	assertJSONKeys(t, ring, "name", "members", "skills", "description", "contract")
+	contract := ring["contract"].(map[string]any)
+	assertJSONKeys(t, contract, "summary", "good_for", "not_for", "required_context", "optional_context", "expected_outputs")
+	if contract["summary"] != "Observe production behavior" {
+		t.Fatalf("unexpected contract payload: %v", contract)
+	}
+
+	if err := store.SaveRing(registry.Ring{
+		Name:    "minimal",
+		Members: []string{"logs"},
+		Contract: &registry.RingContract{
+			Summary: "Minimal contract",
+		},
+	}); err != nil {
+		t.Fatalf("save minimal ring with contract: %v", err)
+	}
+	result = runCmd(store, "ring", "show", "minimal", "--json")
+	if result.code != 0 {
+		t.Fatalf("minimal ring show --json failed: %s", result.stderr)
+	}
+	payload = decodeJSONObject(t, result.stdout)
+	minimalRing := payload["ring"].(map[string]any)
+	minimalContract := minimalRing["contract"].(map[string]any)
+	assertJSONKeys(t, minimalContract, "summary", "good_for", "not_for", "required_context", "optional_context", "expected_outputs")
+	for _, key := range []string{"good_for", "not_for", "required_context", "optional_context", "expected_outputs"} {
+		values, ok := minimalContract[key].([]any)
+		if !ok || len(values) != 0 {
+			t.Fatalf("expected %s to be an empty array, got: %#v", key, minimalContract[key])
+		}
+	}
+
+	result = runCmd(store, "ring", "list", "--json")
+	if result.code != 0 {
+		t.Fatalf("ring list --json failed: %s", result.stderr)
+	}
+	payload = decodeJSONObject(t, result.stdout)
+	rings := payload["rings"].([]any)
+	listRing := rings[0].(map[string]any)
+	if _, ok := listRing["contract"]; !ok {
+		t.Fatalf("expected contract in ring list JSON: %v", listRing)
+	}
+}
+
+func TestRunWithStoreRingContractFileCommands(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+	if result := runCmd(store, "add", "logs", "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "observe", "--member", "logs"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	contractPayload := `summary = "Observe production behavior"
+good_for = ["logs", "traces"]
+not_for = ["deployments"]
+required_context = ["service", "time window"]
+optional_context = ["request id"]
+expected_outputs = ["findings", "next check"]
+`
+	contractPath := writeTextFile(t, t.TempDir(), "contract.toml", contractPayload)
+	result := runCmd(store, "ring", "contract", "set", "observe", "--file", contractPath)
+	if result.code != 0 {
+		t.Fatalf("ring contract set failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "set contract for ring observe") {
+		t.Fatalf("unexpected set output: %s", result.stdout)
+	}
+
+	ring, err := store.GetRing("observe")
+	if err != nil {
+		t.Fatalf("load observe ring: %v", err)
+	}
+	if ring.Contract == nil || ring.Contract.Summary != "Observe production behavior" {
+		t.Fatalf("expected contract saved, got: %#v", ring.Contract)
+	}
+
+	result = runCmd(store, "ring", "contract", "show", "observe")
+	if result.code != 0 {
+		t.Fatalf("ring contract show failed: %s", result.stderr)
+	}
+	if result.stdout != contractPayload {
+		t.Fatalf("expected standalone contract TOML:\n%s\ngot:\n%s", contractPayload, result.stdout)
+	}
+
+	invalidPath := writeTextFile(t, t.TempDir(), "bad-contract.toml", "[contract]\nsummary = \"wrong shape\"\n")
+	result = runCmd(store, "ring", "contract", "set", "observe", "--file", invalidPath)
+	if result.code == 0 || !strings.Contains(result.stderr, "unknown section") {
+		t.Fatalf("expected invalid contract file error, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+
+	result = runCmd(store, "ring", "contract", "clear", "observe")
+	if result.code != 0 {
+		t.Fatalf("ring contract clear failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "cleared contract for ring observe") {
+		t.Fatalf("unexpected clear output: %s", result.stdout)
+	}
+	ring, err = store.GetRing("observe")
+	if err != nil {
+		t.Fatalf("load observe ring after clear: %v", err)
+	}
+	if ring.Contract != nil {
+		t.Fatalf("expected contract cleared, got: %#v", ring.Contract)
+	}
+	result = runCmd(store, "ring", "contract", "show", "observe")
+	if result.code == 0 || !strings.Contains(result.stderr, `ring "observe" has no contract`) {
+		t.Fatalf("expected no-contract error, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
 	}
 }
 

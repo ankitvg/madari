@@ -12,7 +12,8 @@ const (
 	snapshotVersionV1 = 1
 	snapshotVersionV2 = 2
 	snapshotVersionV3 = 3
-	SnapshotVersion   = 4
+	snapshotVersionV4 = 4
+	SnapshotVersion   = 5
 )
 
 type Snapshot struct {
@@ -294,7 +295,7 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 }
 
 func (s Snapshot) Validate() error {
-	if s.Version != snapshotVersionV1 && s.Version != snapshotVersionV2 && s.Version != snapshotVersionV3 && s.Version != SnapshotVersion {
+	if s.Version != snapshotVersionV1 && s.Version != snapshotVersionV2 && s.Version != snapshotVersionV3 && s.Version != snapshotVersionV4 && s.Version != SnapshotVersion {
 		return fmt.Errorf("unsupported snapshot version %d (supported: %d)", s.Version, SnapshotVersion)
 	}
 	if s.Version == snapshotVersionV1 && len(s.Rings) > 0 {
@@ -303,8 +304,11 @@ func (s Snapshot) Validate() error {
 	if s.Version < snapshotVersionV3 && len(s.Skills) > 0 {
 		return fmt.Errorf("snapshot version %d does not support skills", s.Version)
 	}
-	if s.Version < SnapshotVersion && snapshotHasRingSkills(s) {
+	if s.Version < snapshotVersionV4 && snapshotHasRingSkills(s) {
 		return fmt.Errorf("snapshot version %d does not support ring skills", s.Version)
+	}
+	if s.Version < SnapshotVersion && snapshotHasRingContracts(s) {
+		return fmt.Errorf("snapshot version %d does not support ring contracts", s.Version)
 	}
 
 	seen := map[string]struct{}{}
@@ -427,7 +431,22 @@ func ringsEqual(a, b Ring) bool {
 	}
 	aSkills := normalizedRingSkills(a)
 	bSkills := normalizedRingSkills(b)
-	return slices.Equal(aSkills, bSkills)
+	return slices.Equal(aSkills, bSkills) && ringContractsEqual(a.Contract, b.Contract)
+}
+
+func ringContractsEqual(a, b *RingContract) bool {
+	if a.Empty() && b.Empty() {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return a.Summary == b.Summary &&
+		slices.Equal(a.GoodFor, b.GoodFor) &&
+		slices.Equal(a.NotFor, b.NotFor) &&
+		slices.Equal(a.RequiredContext, b.RequiredContext) &&
+		slices.Equal(a.OptionalContext, b.OptionalContext) &&
+		slices.Equal(a.ExpectedOutputs, b.ExpectedOutputs)
 }
 
 func skillsEqual(a, b SnapshotSkill) bool {
@@ -486,6 +505,15 @@ func normalizedRingSkills(r Ring) []string {
 func snapshotHasRingSkills(snapshot Snapshot) bool {
 	for _, ring := range snapshot.Rings {
 		if len(ring.Skills) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func snapshotHasRingContracts(snapshot Snapshot) bool {
+	for _, ring := range snapshot.Rings {
+		if ring.Contract != nil {
 			return true
 		}
 	}

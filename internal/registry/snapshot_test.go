@@ -31,6 +31,12 @@ func TestSnapshotExportParseRoundTrip(t *testing.T) {
 		Members:     []string{"beta", "alpha"},
 		Skills:      []string{"release"},
 		Description: "Research helpers",
+		Contract: &RingContract{
+			Summary:         "Collect research evidence",
+			GoodFor:         []string{"source review", "fact checking"},
+			RequiredContext: []string{"research question"},
+			ExpectedOutputs: []string{"findings summary"},
+		},
 	}); err != nil {
 		t.Fatalf("save ring: %v", err)
 	}
@@ -73,6 +79,9 @@ func TestSnapshotExportParseRoundTrip(t *testing.T) {
 	if got := strings.Join(parsed.Rings[0].Skills, ","); got != "release" {
 		t.Fatalf("expected deterministic ring skills, got: %s", got)
 	}
+	if parsed.Rings[0].Contract == nil || parsed.Rings[0].Contract.Summary != "Collect research evidence" {
+		t.Fatalf("expected ring contract in parsed snapshot, got: %#v", parsed.Rings[0].Contract)
+	}
 	if len(parsed.Skills) != 1 || parsed.Skills[0].Name != "release" {
 		t.Fatalf("expected release skill in parsed snapshot, got: %#v", parsed.Skills)
 	}
@@ -102,6 +111,14 @@ func TestMarshalSnapshotUsesSnakeCaseKeys(t *testing.T) {
 				Members:     []string{"alpha"},
 				Skills:      []string{"release"},
 				Description: "Research helpers",
+				Contract: &RingContract{
+					Summary:         "Research contract",
+					GoodFor:         []string{"source review"},
+					NotFor:          []string{"deployments"},
+					RequiredContext: []string{"question"},
+					OptionalContext: []string{"time window"},
+					ExpectedOutputs: []string{"findings summary"},
+				},
 			},
 		},
 		Skills: []SnapshotSkill{
@@ -118,7 +135,7 @@ func TestMarshalSnapshotUsesSnakeCaseKeys(t *testing.T) {
 		t.Fatalf("marshal snapshot failed: %v", err)
 	}
 	text := string(payload)
-	for _, key := range []string{`"name"`, `"command"`, `"args"`, `"enabled"`, `"clients"`, `"required_env"`, `"keys"`, `"rings"`, `"members"`, `"skills"`, `"content"`, `"description"`} {
+	for _, key := range []string{`"name"`, `"command"`, `"args"`, `"enabled"`, `"clients"`, `"required_env"`, `"keys"`, `"rings"`, `"members"`, `"skills"`, `"content"`, `"description"`, `"contract"`, `"summary"`, `"good_for"`, `"not_for"`, `"required_context"`, `"optional_context"`, `"expected_outputs"`} {
 		if !strings.Contains(text, key) {
 			t.Fatalf("expected payload to contain key %s, payload=%s", key, text)
 		}
@@ -169,6 +186,14 @@ func TestParseSnapshotV3RejectsRingSkills(t *testing.T) {
 	_, err := ParseSnapshotJSON(payload)
 	if err == nil || !strings.Contains(err.Error(), "does not support ring skills") {
 		t.Fatalf("expected v3 ring-skills error, got: %v", err)
+	}
+}
+
+func TestParseSnapshotV4RejectsRingContracts(t *testing.T) {
+	payload := []byte(`{"version":4,"servers":[],"rings":[{"name":"research","members":["alpha"],"contract":{"summary":"Use me"}}]}`)
+	_, err := ParseSnapshotJSON(payload)
+	if err == nil || !strings.Contains(err.Error(), "does not support ring contracts") {
+		t.Fatalf("expected v4 ring-contract error, got: %v", err)
 	}
 }
 
@@ -374,6 +399,61 @@ func TestImportSnapshotRingsWithSkillsDryRunAndApply(t *testing.T) {
 	}
 	if strings.Join(afterApply.Skills, ",") != "release,review" || afterApply.Description != "new" {
 		t.Fatalf("expected workflow ring skills updated, got: %#v", afterApply)
+	}
+}
+
+func TestImportSnapshotRingsWithContractDryRunAndApply(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "servers"))
+	if err := store.Save(Manifest{Name: "alpha", Command: "/usr/bin/env", Enabled: true, Clients: []string{"claude-desktop"}}); err != nil {
+		t.Fatalf("save alpha manifest: %v", err)
+	}
+	if err := store.SaveRing(Ring{Name: "observe", Members: []string{"alpha"}, Description: "same"}); err != nil {
+		t.Fatalf("save ring: %v", err)
+	}
+
+	contract := &RingContract{
+		Summary:         "Observe runtime behavior",
+		GoodFor:         []string{"logs", "traces"},
+		NotFor:          []string{"deployments"},
+		RequiredContext: []string{"service", "time window"},
+		OptionalContext: []string{"request id"},
+		ExpectedOutputs: []string{"findings", "next check"},
+	}
+	snapshot := Snapshot{
+		Version: SnapshotVersion,
+		Rings: []Ring{
+			{Name: "observe", Members: []string{"alpha"}, Description: "same", Contract: contract},
+		},
+	}
+
+	dryRunResult, err := ImportSnapshot(store, snapshot, false)
+	if err != nil {
+		t.Fatalf("dry-run import failed: %v", err)
+	}
+	if len(dryRunResult.RingsUpdated) != 1 || dryRunResult.RingsUpdated[0] != "observe" {
+		t.Fatalf("expected observe ring updated in dry-run, got: %+v", dryRunResult)
+	}
+	afterDryRun, err := store.GetRing("observe")
+	if err != nil {
+		t.Fatalf("load observe after dry-run: %v", err)
+	}
+	if afterDryRun.Contract != nil {
+		t.Fatalf("expected dry-run not to change ring contract, got: %#v", afterDryRun.Contract)
+	}
+
+	applyResult, err := ImportSnapshot(store, snapshot, true)
+	if err != nil {
+		t.Fatalf("apply import failed: %v", err)
+	}
+	if len(applyResult.RingsUpdated) != 1 || applyResult.RingsUpdated[0] != "observe" {
+		t.Fatalf("expected observe ring updated in apply, got: %+v", applyResult)
+	}
+	afterApply, err := store.GetRing("observe")
+	if err != nil {
+		t.Fatalf("load observe after apply: %v", err)
+	}
+	if !ringContractsEqual(afterApply.Contract, contract) {
+		t.Fatalf("expected observe contract updated, got: %#v", afterApply.Contract)
 	}
 }
 

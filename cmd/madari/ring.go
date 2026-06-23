@@ -5,6 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -16,7 +18,7 @@ import (
 
 func (a cliApp) cmdRing(args []string) error {
 	if len(args) == 0 {
-		return commandUsageError("ring", "madari ring <create|list|show|attach|detach|delete|render|status> [options]")
+		return commandUsageError("ring", "madari ring <create|list|show|contract|attach|detach|delete|render|status> [options]")
 	}
 	if isHelpToken(args[0]) {
 		printRingHelp(a.stdout)
@@ -31,6 +33,8 @@ func (a cliApp) cmdRing(args []string) error {
 		return a.cmdRingList(rest)
 	case "show":
 		return a.cmdRingShow(rest)
+	case "contract":
+		return a.cmdRingContract(rest)
 	case "attach":
 		return a.cmdRingAttach(rest)
 	case "detach":
@@ -42,7 +46,7 @@ func (a cliApp) cmdRing(args []string) error {
 	case "status":
 		return a.cmdRingStatus(rest)
 	default:
-		return commandInputError("ring", fmt.Sprintf("unknown ring subcommand %q (supported: create, list, show, attach, detach, delete, render, status)", sub))
+		return commandInputError("ring", fmt.Sprintf("unknown ring subcommand %q (supported: create, list, show, contract, attach, detach, delete, render, status)", sub))
 	}
 }
 
@@ -1106,7 +1110,195 @@ func (a cliApp) cmdRingShow(args []string) error {
 			fmt.Fprintf(a.stdout, "  - %s\n", skill)
 		}
 	}
+	printRingContract(a.stdout, ring.Contract)
 	return nil
+}
+
+func printRingContract(out io.Writer, contract *registry.RingContract) {
+	if contract.Empty() {
+		return
+	}
+	fmt.Fprintln(out, "contract:")
+	if strings.TrimSpace(contract.Summary) != "" {
+		fmt.Fprintf(out, "  summary: %s\n", contract.Summary)
+	}
+	printContractList(out, "good_for", contract.GoodFor)
+	printContractList(out, "not_for", contract.NotFor)
+	printContractList(out, "required_context", contract.RequiredContext)
+	printContractList(out, "optional_context", contract.OptionalContext)
+	printContractList(out, "expected_outputs", contract.ExpectedOutputs)
+}
+
+func printContractList(out io.Writer, label string, values []string) {
+	if len(values) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "  %s:\n", label)
+	for _, value := range values {
+		fmt.Fprintf(out, "    - %s\n", value)
+	}
+}
+
+func (a cliApp) cmdRingContract(args []string) error {
+	if len(args) == 0 {
+		return commandUsageError("ring contract", "madari ring contract <show|set|clear> <name> [options]")
+	}
+	if isHelpToken(args[0]) {
+		printRingContractHelp(a.stdout)
+		return nil
+	}
+
+	sub, rest := args[0], args[1:]
+	switch sub {
+	case "show":
+		return a.cmdRingContractShow(rest)
+	case "set":
+		return a.cmdRingContractSet(rest)
+	case "clear":
+		return a.cmdRingContractClear(rest)
+	default:
+		return commandInputError("ring contract", fmt.Sprintf("unknown ring contract subcommand %q (supported: show, set, clear)", sub))
+	}
+}
+
+func (a cliApp) cmdRingContractShow(args []string) error {
+	if len(args) == 0 {
+		return commandUsageError("ring contract show", "madari ring contract show <name>")
+	}
+	if isHelpToken(args[0]) {
+		printRingContractShowHelp(a.stdout)
+		return nil
+	}
+	name := strings.TrimSpace(args[0])
+
+	fs := flag.NewFlagSet("ring contract show", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printRingContractShowHelp(a.stdout)
+			return nil
+		}
+		return commandInputError("ring contract show", err.Error())
+	}
+	if fs.NArg() != 0 {
+		return commandUnexpectedArgsError("ring contract show", fs.Args())
+	}
+
+	ring, err := a.store.GetRing(name)
+	if err != nil {
+		if errors.Is(err, registry.ErrRingNotFound) {
+			return fmt.Errorf("ring %q not found", name)
+		}
+		return err
+	}
+	if ring.Contract.Empty() {
+		return fmt.Errorf("ring %q has no contract", name)
+	}
+	payload, err := registry.MarshalRingContract(*ring.Contract)
+	if err != nil {
+		return err
+	}
+	_, err = a.stdout.Write(payload)
+	return err
+}
+
+func (a cliApp) cmdRingContractSet(args []string) error {
+	if len(args) == 0 {
+		return commandUsageError("ring contract set", "madari ring contract set <name> --file <path>")
+	}
+	if isHelpToken(args[0]) {
+		printRingContractSetHelp(a.stdout)
+		return nil
+	}
+	name := strings.TrimSpace(args[0])
+
+	fs := flag.NewFlagSet("ring contract set", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	var filePath string
+	fs.StringVar(&filePath, "file", "", "Standalone contract TOML file to set (required)")
+	if err := fs.Parse(args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printRingContractSetHelp(a.stdout)
+			return nil
+		}
+		return commandInputError("ring contract set", err.Error())
+	}
+	if fs.NArg() != 0 {
+		return commandUnexpectedArgsError("ring contract set", fs.Args())
+	}
+
+	contract, err := readRingContractFile(filePath)
+	if err != nil {
+		return err
+	}
+	ring, err := a.store.GetRing(name)
+	if err != nil {
+		if errors.Is(err, registry.ErrRingNotFound) {
+			return fmt.Errorf("ring %q not found", name)
+		}
+		return err
+	}
+	ring.Contract = &contract
+	if err := a.store.SaveRing(ring); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.stdout, "set contract for ring %s\n", name)
+	return nil
+}
+
+func (a cliApp) cmdRingContractClear(args []string) error {
+	if len(args) == 0 {
+		return commandUsageError("ring contract clear", "madari ring contract clear <name>")
+	}
+	if isHelpToken(args[0]) {
+		printRingContractClearHelp(a.stdout)
+		return nil
+	}
+	name := strings.TrimSpace(args[0])
+
+	fs := flag.NewFlagSet("ring contract clear", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			printRingContractClearHelp(a.stdout)
+			return nil
+		}
+		return commandInputError("ring contract clear", err.Error())
+	}
+	if fs.NArg() != 0 {
+		return commandUnexpectedArgsError("ring contract clear", fs.Args())
+	}
+
+	ring, err := a.store.GetRing(name)
+	if err != nil {
+		if errors.Is(err, registry.ErrRingNotFound) {
+			return fmt.Errorf("ring %q not found", name)
+		}
+		return err
+	}
+	ring.Contract = nil
+	if err := a.store.SaveRing(ring); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.stdout, "cleared contract for ring %s\n", name)
+	return nil
+}
+
+func readRingContractFile(path string) (registry.RingContract, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return registry.RingContract{}, commandInputError("ring contract set", "--file is required")
+	}
+	cleanPath := filepath.Clean(path)
+	payload, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return registry.RingContract{}, fmt.Errorf("read contract file %q: %w", cleanPath, err)
+	}
+	contract, err := registry.ParseRingContract(payload)
+	if err != nil {
+		return registry.RingContract{}, fmt.Errorf("parse contract file %q: %w", cleanPath, err)
+	}
+	return contract, nil
 }
 
 func printRingHelp(out io.Writer) {
@@ -1117,6 +1309,7 @@ func printRingHelp(out io.Writer) {
 	fmt.Fprintln(out, "  create    Create a ring from registry servers and skills")
 	fmt.Fprintln(out, "  list      List configured rings")
 	fmt.Fprintln(out, "  show      Show one ring's members")
+	fmt.Fprintln(out, "  contract  Show, set, or clear a ring contract")
 	fmt.Fprintln(out, "  attach    Attach a ring to a client (materialize members)")
 	fmt.Fprintln(out, "  detach    Detach a ring from a client")
 	fmt.Fprintln(out, "  delete    Delete an unattached ring")
@@ -1210,4 +1403,50 @@ func printRingShowHelp(out io.Writer) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Show one ring's server members, skill members, and description.")
+}
+
+func printRingContractHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari ring contract <show|set|clear> <name> [options]")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Subcommands:")
+	fmt.Fprintln(out, "  show      Print a ring contract as standalone TOML")
+	fmt.Fprintln(out, "  set       Replace a ring contract from a standalone TOML file")
+	fmt.Fprintln(out, "  clear     Remove a ring contract")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  Ring contracts are advisory metadata. These commands operate only on")
+	fmt.Fprintln(out, "  standalone contract files and do not change ring members, skills,")
+	fmt.Fprintln(out, "  attach state, sync behavior, or render output.")
+}
+
+func printRingContractShowHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari ring contract show <name>")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  Print the ring contract as standalone TOML suitable for editing and")
+	fmt.Fprintln(out, "  passing back to `madari ring contract set --file`.")
+}
+
+func printRingContractSetHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari ring contract set <name> --file <path>")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Options:")
+	fmt.Fprintln(out, "  --file <path>              Standalone contract TOML file to set (required)")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  Replace the ring contract with the complete contract in the file.")
+	fmt.Fprintln(out, "  The file contains contract fields directly; do not include a")
+	fmt.Fprintln(out, "  [contract] section or ring name/member fields.")
+}
+
+func printRingContractClearHelp(out io.Writer) {
+	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari ring contract clear <name>")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Description:")
+	fmt.Fprintln(out, "  Remove the advisory contract from a ring. Members, skills, attach state,")
+	fmt.Fprintln(out, "  sync behavior, and render output are unchanged.")
 }

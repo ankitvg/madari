@@ -12,6 +12,14 @@ func TestParseAndMarshalRingRoundTrip(t *testing.T) {
 		Members:     []string{"stewreads", "arxiv"},
 		Skills:      []string{"release", "review"},
 		Description: "Research helpers",
+		Contract: &RingContract{
+			Summary:         "Investigate research context",
+			GoodFor:         []string{"source collection", "evidence review"},
+			NotFor:          []string{"deployments", "database mutation"},
+			RequiredContext: []string{"question", "time window"},
+			OptionalContext: []string{"artifact id", "request id"},
+			ExpectedOutputs: []string{"findings summary", "recommended next check"},
+		},
 	}
 
 	encoded, err := MarshalRing(in)
@@ -32,6 +40,9 @@ func TestParseAndMarshalRingRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(out.Skills, []string{"release", "review"}) {
 		t.Fatalf("expected sorted skills to survive roundtrip, got: %#v", out.Skills)
 	}
+	if !ringContractsEqual(out.Contract, in.Contract) {
+		t.Fatalf("expected contract to survive roundtrip, got: %#v", out.Contract)
+	}
 }
 
 func TestMarshalRingIsDeterministic(t *testing.T) {
@@ -50,6 +61,89 @@ func TestMarshalRingIsDeterministic(t *testing.T) {
 	expected := "name = \"research\"\nmembers = [\"alpha\", \"beta\"]\nskills = [\"audit\", \"release\"]\n"
 	if string(a) != expected {
 		t.Fatalf("expected deterministic output:\n%s\ngot:\n%s", expected, a)
+	}
+}
+
+func TestMarshalRingPreservesContractOrder(t *testing.T) {
+	ring := Ring{
+		Name:    "observe",
+		Members: []string{"logs"},
+		Contract: &RingContract{
+			Summary:         "Observe production behavior",
+			GoodFor:         []string{"logs", "traces"},
+			NotFor:          []string{"deployments", "schema changes"},
+			RequiredContext: []string{"project", "region", "time window"},
+			OptionalContext: []string{"request id", "trace id"},
+			ExpectedOutputs: []string{"findings", "evidence", "next check"},
+		},
+	}
+
+	encoded, err := MarshalRing(ring)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	expected := `name = "observe"
+members = ["logs"]
+
+[contract]
+summary = "Observe production behavior"
+good_for = ["logs", "traces"]
+not_for = ["deployments", "schema changes"]
+required_context = ["project", "region", "time window"]
+optional_context = ["request id", "trace id"]
+expected_outputs = ["findings", "evidence", "next check"]
+`
+	if string(encoded) != expected {
+		t.Fatalf("expected contract order to be preserved:\n%s\ngot:\n%s", expected, encoded)
+	}
+}
+
+func TestMarshalRingOmitsEmptyContract(t *testing.T) {
+	encoded, err := MarshalRing(Ring{Name: "observe", Members: []string{"logs"}, Contract: &RingContract{}})
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	expected := "name = \"observe\"\nmembers = [\"logs\"]\n"
+	if string(encoded) != expected {
+		t.Fatalf("expected empty contract to be omitted:\n%s\ngot:\n%s", expected, encoded)
+	}
+}
+
+func TestParseAndMarshalRingContractFile(t *testing.T) {
+	payload := `summary = "Observe production behavior"
+good_for = ["logs", "traces"]
+not_for = ["deployments", "schema changes"]
+required_context = ["project", "region", "time window"]
+optional_context = ["request id", "trace id"]
+expected_outputs = ["findings", "evidence", "next check"]
+`
+
+	contract, err := ParseRingContract([]byte(payload))
+	if err != nil {
+		t.Fatalf("parse contract failed: %v", err)
+	}
+	if !reflect.DeepEqual(contract.GoodFor, []string{"logs", "traces"}) {
+		t.Fatalf("expected contract array order preserved, got: %#v", contract.GoodFor)
+	}
+
+	encoded, err := MarshalRingContract(contract)
+	if err != nil {
+		t.Fatalf("marshal contract failed: %v", err)
+	}
+	if string(encoded) != payload {
+		t.Fatalf("expected deterministic contract file:\n%s\ngot:\n%s", payload, encoded)
+	}
+}
+
+func TestParseRingContractRejectsUnknownKeysAndSections(t *testing.T) {
+	if _, err := ParseRingContract([]byte(`unknown = "value"`)); err == nil || !strings.Contains(err.Error(), `unknown key "unknown" in contract file`) {
+		t.Fatalf("expected unknown contract file key error, got: %v", err)
+	}
+	if _, err := ParseRingContract([]byte("[contract]\nsummary = \"value\"\n")); err == nil || !strings.Contains(err.Error(), "unknown section") {
+		t.Fatalf("expected contract file section error, got: %v", err)
+	}
+	if _, err := ParseRingContract([]byte("# empty\n")); err == nil || !strings.Contains(err.Error(), "contract file has no fields") {
+		t.Fatalf("expected empty contract file error, got: %v", err)
 	}
 }
 
@@ -74,12 +168,12 @@ command = "/bin/echo"
 	if err == nil {
 		t.Fatalf("expected parse error for unknown key")
 	}
-	if !strings.Contains(err.Error(), "unknown key") {
+	if !strings.Contains(err.Error(), "unknown top-level key") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestParseRingRejectsSections(t *testing.T) {
+func TestParseRingRejectsUnknownSections(t *testing.T) {
 	manifest := `
 name = "research"
 members = ["stewreads"]
@@ -91,7 +185,24 @@ KEY = "value"
 	if err == nil {
 		t.Fatalf("expected parse error for section")
 	}
-	if !strings.Contains(err.Error(), "no sections") {
+	if !strings.Contains(err.Error(), "unknown section") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseRingRejectsUnknownContractKey(t *testing.T) {
+	manifest := `
+name = "research"
+members = ["stewreads"]
+
+[contract]
+unknown = "value"
+`
+	_, err := ParseRing([]byte(manifest))
+	if err == nil {
+		t.Fatalf("expected parse error for unknown contract key")
+	}
+	if !strings.Contains(err.Error(), `unknown key "unknown" in [contract]`) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
