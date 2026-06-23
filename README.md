@@ -30,6 +30,7 @@ Madari knows about it:
 
 ```bash
 madari install @modelcontextprotocol/server-sequential-thinking \
+  --name sequential-thinking \
   --manager npm \
   --command mcp-server-sequential-thinking \
   --client codex \
