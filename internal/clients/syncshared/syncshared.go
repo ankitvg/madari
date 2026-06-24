@@ -146,11 +146,22 @@ func MapKeys[K comparable, V any](m map[K]V) []K {
 }
 
 func BackupFile(path string) (string, error) {
+	return backupFile(path, 0, false)
+}
+
+func BackupFileWithMode(path string, mode os.FileMode) (string, error) {
+	return backupFile(path, mode, true)
+}
+
+func backupFile(path string, overrideMode os.FileMode, useOverrideMode bool) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return "", err
 	}
 	mode := info.Mode().Perm()
+	if useOverrideMode {
+		mode = overrideMode.Perm()
+	}
 
 	source, err := os.Open(path)
 	if err != nil {
@@ -167,7 +178,7 @@ func BackupFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := target.Chmod(mode); err != nil {
+	if err := applyFileMode(backupPath, mode); err != nil {
 		_ = target.Close()
 		return "", err
 	}
@@ -197,11 +208,15 @@ func WriteFileAtomically(path string, payload []byte, mode os.FileMode) error {
 	}
 	defer cleanup()
 
+	if err := prepareFileBeforeWrite(tmpPath, mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
 	if _, err := tmp.Write(payload); err != nil {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(mode); err != nil {
+	if err := applyFileMode(tmpPath, mode); err != nil {
 		_ = tmp.Close()
 		return err
 	}

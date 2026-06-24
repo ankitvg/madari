@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -485,6 +486,56 @@ func TestSyncAllowsSecretEnvAtUserScope(t *testing.T) {
 	servers := readServers(t, configPath)
 	if servers["stewreads"].Env["STEWREADS_API_KEY"] != "shhh" {
 		t.Fatalf("expected secret env value in user-scoped config, got: %#v", servers["stewreads"].Env)
+	}
+	assertFileMode(t, configPath, 0o600)
+}
+
+func TestSyncUserScopeRewritesExistingConfigWithPrivateMode(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "claude.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-user-managed.json")
+
+	original := []byte(`{
+  "mcpServers": {
+    "stewreads": {
+      "command": "stewreads-mcp",
+      "env": {
+        "STEWREADS_API_KEY": "shhh",
+        "STEWREADS_CONFIG_PATH": "~/.config/stewreads/config.toml"
+      }
+    }
+  }
+}
+`)
+	if err := os.WriteFile(configPath, original, 0o644); err != nil {
+		t.Fatalf("write existing user config: %v", err)
+	}
+
+	_, err := Sync([]registry.Manifest{newSecretManifest()}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+		Scope:      clients.ScopeUser,
+	})
+	if err != nil {
+		t.Fatalf("user-scope sync failed: %v", err)
+	}
+
+	assertFileMode(t, configPath, 0o600)
+
+	backups, err := filepath.Glob(configPath + ".bak.*")
+	if err != nil {
+		t.Fatalf("glob backup files: %v", err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("expected one backup file, got %d", len(backups))
+	}
+	assertFileMode(t, backups[0], 0o600)
+	backupPayload, err := os.ReadFile(backups[0])
+	if err != nil {
+		t.Fatalf("read backup file: %v", err)
+	}
+	if string(backupPayload) != string(original) {
+		t.Fatalf("expected backup content to match original config")
 	}
 }
 
@@ -987,6 +1038,20 @@ func readManagedNames(t *testing.T, statePath string) []string {
 	}
 	slices.Sort(names)
 	return names
+}
+
+func assertFileMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("unix mode bits are used in this test")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("expected %s mode %04o, got %04o", path, want, got)
+	}
 }
 
 func assertJSONEqual(t *testing.T, want, got []byte) {
