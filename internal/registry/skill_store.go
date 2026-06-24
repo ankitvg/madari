@@ -19,97 +19,195 @@ func (s *Store) SkillsDir() string {
 
 // AddSkill inserts a new skill; it fails if the skill already exists.
 func (s *Store) AddSkill(skill Skill, content []byte) error {
-	if err := skill.Validate(); err != nil {
+	pkg, err := NewSkillPackageFromContent(skill, content)
+	if err != nil {
 		return err
 	}
-	if err := validateSkillContent(content); err != nil {
-		return err
-	}
-	if _, err := s.GetSkill(skill.Name); err == nil {
-		return fmt.Errorf("skill %q already exists", skill.Name)
-	} else if !errors.Is(err, ErrSkillNotFound) {
-		return err
-	}
-	return s.SaveSkill(skill, content)
+	return s.AddSkillPackage(pkg)
 }
 
 // SaveSkill writes or updates a skill manifest and its managed Markdown body.
 func (s *Store) SaveSkill(skill Skill, content []byte) error {
-	if err := skill.Validate(); err != nil {
+	pkg, err := NewSkillPackageFromContent(skill, content)
+	if err != nil {
 		return err
 	}
-	if err := validateSkillContent(content); err != nil {
+	return s.SaveSkillPackage(pkg)
+}
+
+func (s *Store) AddSkillPackage(pkg SkillPackage) error {
+	if err := pkg.Skill.Validate(); err != nil {
+		return err
+	}
+	if _, err := s.GetSkill(pkg.Skill.Name); err == nil {
+		return fmt.Errorf("skill %q already exists", pkg.Skill.Name)
+	} else if !errors.Is(err, ErrSkillNotFound) {
+		return err
+	}
+	return s.SaveSkillPackage(pkg)
+}
+
+func (s *Store) SaveSkillPackage(pkg SkillPackage) error {
+	normalized, err := NewSkillPackage(pkg.Files, pkg.Skill.Name)
+	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(s.SkillsDir(), 0o755); err != nil {
 		return fmt.Errorf("ensure skills directory: %w", err)
 	}
+	if err := s.writeSkillPackage(normalized); err != nil {
+		return err
+	}
+	_ = os.Remove(s.legacySkillManifestPath(normalized.Skill.Name))
+	_ = os.Remove(s.legacySkillContentPath(normalized.Skill.Name))
+	return nil
+}
 
-	metaPath, err := s.pathForSkill(skill.Name)
+func (s *Store) writeSkillPackage(pkg SkillPackage) error {
+	dest, err := s.SkillPackageDir(pkg.Skill.Name)
 	if err != nil {
 		return err
 	}
-	contentPath, err := s.SkillContentPath(skill.Name)
+	tmp, err := os.MkdirTemp(s.SkillsDir(), "."+pkg.Skill.Name+"-")
 	if err != nil {
-		return err
+		return fmt.Errorf("create temporary skill package: %w", err)
 	}
-	metaPayload, err := MarshalSkill(skill)
-	if err != nil {
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.RemoveAll(tmp)
+		}
+	}()
+
+	for _, file := range pkg.Files {
+		path := filepath.Join(tmp, filepath.FromSlash(file.Path))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return fmt.Errorf("ensure skill package directory: %w", err)
+		}
+		if err := os.WriteFile(path, file.Content, file.Mode); err != nil {
+			return fmt.Errorf("write skill package file %q: %w", file.Path, err)
+		}
+	}
+	if err := replaceSkillPackageDir(dest, tmp); err != nil {
+		return fmt.Errorf("replace skill package %q: %w", pkg.Skill.Name, err)
+	}
+	cleanup = false
+	return nil
+}
+
+func replaceSkillPackageDir(dest, staged string) error {
+	dest = filepath.Clean(dest)
+	parent := filepath.Dir(dest)
+	base := filepath.Base(dest)
+
+	backup := ""
+	if _, err := os.Lstat(dest); err == nil {
+		var backupErr error
+		backup, backupErr = unusedSkillPackageTempPath(parent, "."+base+".bak-*")
+		if backupErr != nil {
+			return backupErr
+		}
+		if err := os.Rename(dest, backup); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 
-	if err := writeFileAtomically(metaPath, metaPayload, 0o644); err != nil {
-		return fmt.Errorf("save skill %q metadata: %w", skill.Name, err)
+	if err := os.Rename(staged, dest); err != nil {
+		if backup != "" {
+			_ = os.Rename(backup, dest)
+		}
+		return err
 	}
-	if err := writeFileAtomically(contentPath, content, 0o644); err != nil {
-		return fmt.Errorf("save skill %q content: %w", skill.Name, err)
+	if backup != "" {
+		_ = os.RemoveAll(backup)
 	}
 	return nil
 }
 
+func unusedSkillPackageTempPath(dir, pattern string) (string, error) {
+	path, err := os.MkdirTemp(dir, pattern)
+	if err != nil {
+		return "", err
+	}
+	if err := os.Remove(path); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 // GetSkill loads one skill manifest by name.
 func (s *Store) GetSkill(name string) (Skill, error) {
-	path, err := s.pathForSkill(name)
+	pkg, err := s.GetSkillPackage(name)
 	if err != nil {
 		return Skill{}, err
 	}
-
-	payload, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return Skill{}, ErrSkillNotFound
-		}
-		return Skill{}, fmt.Errorf("read skill %q: %w", name, err)
-	}
-
-	skill, err := ParseSkill(payload)
-	if err != nil {
-		return Skill{}, fmt.Errorf("parse skill %q: %w", name, err)
-	}
-	if skill.Name != name {
-		return Skill{}, fmt.Errorf("skill %q has mismatched name %q", name, skill.Name)
-	}
-	return skill, nil
+	return pkg.Skill, nil
 }
 
 // GetSkillContent loads one skill's managed Markdown body by name.
 func (s *Store) GetSkillContent(name string) ([]byte, error) {
-	path, err := s.SkillContentPath(name)
+	pkg, err := s.GetSkillPackage(name)
 	if err != nil {
 		return nil, err
 	}
+	return pkg.SkillFileContent()
+}
 
+func (s *Store) GetSkillPackage(name string) (SkillPackage, error) {
+	dir, err := s.SkillPackageDir(name)
+	if err != nil {
+		return SkillPackage{}, err
+	}
+	if _, err := os.Stat(filepath.Join(dir, SkillFileName)); err == nil {
+		pkg, err := NewSkillPackageFromDir(dir)
+		if err != nil {
+			return SkillPackage{}, fmt.Errorf("parse skill package %q: %w", name, err)
+		}
+		return pkg, nil
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return SkillPackage{}, fmt.Errorf("inspect skill package %q: %w", name, err)
+	}
+	return s.getLegacySkillPackage(name)
+}
+
+func (s *Store) getLegacySkillPackage(name string) (SkillPackage, error) {
+	path, err := s.pathForSkill(name)
+	if err != nil {
+		return SkillPackage{}, err
+	}
 	payload, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, ErrSkillNotFound
+			return SkillPackage{}, ErrSkillNotFound
 		}
-		return nil, fmt.Errorf("read skill %q content: %w", name, err)
+		return SkillPackage{}, fmt.Errorf("read skill %q: %w", name, err)
 	}
-	if err := validateSkillContent(payload); err != nil {
-		return nil, fmt.Errorf("read skill %q content: %w", name, err)
+
+	skill, err := ParseSkill(payload)
+	if err != nil {
+		return SkillPackage{}, fmt.Errorf("parse skill %q: %w", name, err)
 	}
-	return payload, nil
+	if skill.Name != name {
+		return SkillPackage{}, fmt.Errorf("skill %q has mismatched name %q", name, skill.Name)
+	}
+	contentPath, err := s.legacySkillContentPathChecked(name)
+	if err != nil {
+		return SkillPackage{}, err
+	}
+	content, err := os.ReadFile(contentPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return SkillPackage{}, ErrSkillNotFound
+		}
+		return SkillPackage{}, fmt.Errorf("read skill %q content: %w", name, err)
+	}
+	pkg, err := NewSkillPackageFromContent(skill, content)
+	if err != nil {
+		return SkillPackage{}, fmt.Errorf("convert legacy skill %q: %w", name, err)
+	}
+	return pkg, nil
 }
 
 // ListSkills returns all skills sorted by name.
@@ -122,12 +220,29 @@ func (s *Store) ListSkills() ([]Skill, error) {
 		return nil, fmt.Errorf("read skills directory: %w", err)
 	}
 
+	seen := map[string]struct{}{}
 	skills := make([]Skill, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".toml" {
+		if entry.IsDir() {
+			name := entry.Name()
+			skill, err := s.GetSkill(name)
+			if err != nil {
+				if !errors.Is(err, ErrSkillNotFound) {
+					return nil, err
+				}
+				skill = Skill{Name: name}
+			}
+			seen[skill.Name] = struct{}{}
+			skills = append(skills, skill)
+			continue
+		}
+		if filepath.Ext(entry.Name()) != ".toml" {
 			continue
 		}
 		name := strings.TrimSuffix(entry.Name(), ".toml")
+		if _, exists := seen[name]; exists {
+			continue
+		}
 		skill, err := s.GetSkill(name)
 		if err != nil {
 			return nil, err
@@ -141,41 +256,61 @@ func (s *Store) ListSkills() ([]Skill, error) {
 	return skills, nil
 }
 
-// RemoveSkill deletes one skill manifest and its managed Markdown body.
+// RemoveSkill deletes one skill package plus any legacy flat files.
 func (s *Store) RemoveSkill(name string) error {
-	metaPath, err := s.pathForSkill(name)
+	if _, err := s.GetSkill(name); err != nil {
+		return err
+	}
+	dir, err := s.SkillPackageDir(name)
 	if err != nil {
 		return err
 	}
-
-	if err := os.Remove(metaPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return ErrSkillNotFound
-		}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("remove skill %q package: %w", name, err)
+	}
+	if err := os.Remove(s.legacySkillManifestPath(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove skill %q metadata: %w", name, err)
 	}
-
-	contentPath, err := s.SkillContentPath(name)
-	if err != nil {
-		return err
-	}
-	if err := os.Remove(contentPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(s.legacySkillContentPath(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove skill %q content: %w", name, err)
 	}
 	return nil
 }
 
-// SkillContentPath returns the managed Markdown file path for a skill.
+// SkillContentPath returns the managed SKILL.md file path for a skill.
 func (s *Store) SkillContentPath(name string) (string, error) {
+	dir, err := s.SkillPackageDir(name)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, SkillFileName), nil
+}
+
+func (s *Store) SkillPackageDir(name string) (string, error) {
 	if err := validateServerName(name); err != nil {
 		return "", err
 	}
-	return filepath.Join(s.SkillsDir(), name+".md"), nil
+	return filepath.Join(s.SkillsDir(), name), nil
 }
 
 func (s *Store) pathForSkill(name string) (string, error) {
 	if err := validateServerName(name); err != nil {
 		return "", err
 	}
-	return filepath.Join(s.SkillsDir(), name+".toml"), nil
+	return s.legacySkillManifestPath(name), nil
+}
+
+func (s *Store) legacySkillManifestPath(name string) string {
+	return filepath.Join(s.SkillsDir(), name+".toml")
+}
+
+func (s *Store) legacySkillContentPathChecked(name string) (string, error) {
+	if err := validateServerName(name); err != nil {
+		return "", err
+	}
+	return s.legacySkillContentPath(name), nil
+}
+
+func (s *Store) legacySkillContentPath(name string) string {
+	return filepath.Join(s.SkillsDir(), name+".md")
 }

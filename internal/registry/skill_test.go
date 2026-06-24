@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -24,7 +25,7 @@ func TestParseAndMarshalSkillRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse failed: %v", err)
 	}
-	if out != in {
+	if !reflect.DeepEqual(out, in) {
 		t.Fatalf("roundtrip mismatch: %#v", out)
 	}
 }

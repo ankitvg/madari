@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -24,14 +25,14 @@ func TestSkillStoreLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get skill: %v", err)
 	}
-	if got != skill {
+	if !reflect.DeepEqual(got, skill) {
 		t.Fatalf("unexpected skill: %#v", got)
 	}
 	gotContent, err := store.GetSkillContent("release")
 	if err != nil {
 		t.Fatalf("get skill content: %v", err)
 	}
-	if string(gotContent) != string(content) {
+	if !strings.Contains(string(gotContent), "name: release") || !strings.Contains(string(gotContent), "Follow the checklist.") {
 		t.Fatalf("unexpected skill content: %q", gotContent)
 	}
 
@@ -80,6 +81,155 @@ func TestSkillStoreRejectsEmptyContent(t *testing.T) {
 	}
 }
 
+func TestSkillPackageFromDirWithBundledFiles(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "release")
+	if err := os.MkdirAll(filepath.Join(root, "references"), 0o755); err != nil {
+		t.Fatalf("mkdir references: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "scripts"), 0o755); err != nil {
+		t.Fatalf("mkdir scripts: %v", err)
+	}
+	skillMD := "---\nname: release\ndescription: Release workflow\nlicense: MIT\ncompatibility: Requires git\nallowed-tools: Bash(git:*) Read\nmetadata:\n  owner: platform\n---\n\n# Release\n"
+	if err := os.WriteFile(filepath.Join(root, SkillFileName), []byte(skillMD), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "references", "CHECKLIST.md"), []byte("checklist\n"), 0o644); err != nil {
+		t.Fatalf("write reference: %v", err)
+	}
+	scriptPath := filepath.Join(root, "scripts", "release.sh")
+	if err := os.WriteFile(scriptPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	pkg, err := NewSkillPackageFromDir(root)
+	if err != nil {
+		t.Fatalf("read skill package: %v", err)
+	}
+	if pkg.Skill.Name != "release" || pkg.Skill.Description != "Release workflow" || pkg.Skill.License != "MIT" || pkg.Skill.Metadata["owner"] != "platform" {
+		t.Fatalf("unexpected package metadata: %+v", pkg.Skill)
+	}
+	if len(pkg.Files) != 3 || pkg.Files[2].Path != "scripts/release.sh" || pkg.Files[2].Mode != 0o755 {
+		t.Fatalf("unexpected package files: %+v", pkg.Files)
+	}
+}
+
+func TestSkillPackageRejectsInvalidInputs(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(string)
+		want  string
+	}{
+		{
+			name: "missing skill file",
+			setup: func(root string) {
+				if err := os.MkdirAll(root, 0o755); err != nil {
+					t.Fatalf("mkdir: %v", err)
+				}
+			},
+			want: "requires SKILL.md",
+		},
+		{
+			name: "invalid name",
+			setup: func(root string) {
+				if err := os.MkdirAll(root, 0o755); err != nil {
+					t.Fatalf("mkdir: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(root, SkillFileName), []byte("---\nname: BadName\ndescription: Bad\n---\n\n# Bad\n"), 0o644); err != nil {
+					t.Fatalf("write skill: %v", err)
+				}
+			},
+			want: "invalid skill",
+		},
+		{
+			name: "unknown frontmatter key",
+			setup: func(root string) {
+				if err := os.MkdirAll(root, 0o755); err != nil {
+					t.Fatalf("mkdir: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(root, SkillFileName), []byte("---\nname: release\ndescription: Release\nextra: nope\n---\n\n# Release\n"), 0o644); err != nil {
+					t.Fatalf("write skill: %v", err)
+				}
+			},
+			want: "unknown SKILL.md frontmatter key",
+		},
+		{
+			name: "missing description",
+			setup: func(root string) {
+				if err := os.MkdirAll(root, 0o755); err != nil {
+					t.Fatalf("mkdir: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(root, SkillFileName), []byte("---\nname: release\n---\n\n# Release\n"), 0o644); err != nil {
+					t.Fatalf("write skill: %v", err)
+				}
+			},
+			want: "requires a description",
+		},
+		{
+			name: "empty body",
+			setup: func(root string) {
+				if err := os.MkdirAll(root, 0o755); err != nil {
+					t.Fatalf("mkdir: %v", err)
+				}
+				if err := os.WriteFile(filepath.Join(root, SkillFileName), []byte("---\nname: release\ndescription: Release\n---\n\n"), 0o644); err != nil {
+					t.Fatalf("write skill: %v", err)
+				}
+			},
+			want: "body is empty",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "release")
+			tt.setup(root)
+			_, err := NewSkillPackageFromDir(root)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected %q error, got: %v", tt.want, err)
+			}
+		})
+	}
+}
+
+func TestSkillPackageRejectsUnsafeFilePaths(t *testing.T) {
+	validSkill := []byte("---\nname: release\ndescription: Release\n---\n\n# Release\n")
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{name: "path escape", path: "../SKILL.md", want: "escapes package root"},
+		{name: "absolute path", path: "/tmp/SKILL.md", want: "must be relative"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewSkillPackage([]SkillPackageFile{{
+				Path:    tt.path,
+				Content: validSkill,
+				Mode:    0o644,
+			}}, "release")
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected %q error, got: %v", tt.want, err)
+			}
+		})
+	}
+}
+
+func TestSkillPackageRejectsSymlink(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "release")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, SkillFileName), []byte("---\nname: release\ndescription: Release\n---\n\n# Release\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.Symlink(SkillFileName, filepath.Join(root, "linked.md")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	_, err := NewSkillPackageFromDir(root)
+	if err == nil || !strings.Contains(err.Error(), "is a symlink") {
+		t.Fatalf("expected symlink rejection, got: %v", err)
+	}
+}
+
 func TestListSkillsEmptyWithoutDirectory(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "servers"))
 	skills, err := store.ListSkills()
@@ -93,14 +243,14 @@ func TestListSkillsEmptyWithoutDirectory(t *testing.T) {
 
 func TestGetSkillRejectsMismatchedName(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "servers"))
-	if err := store.SaveSkill(Skill{Name: "release"}, []byte("# Release\n")); err != nil {
-		t.Fatalf("save skill: %v", err)
+	if err := os.MkdirAll(store.SkillsDir(), 0o755); err != nil {
+		t.Fatalf("mkdir skills dir: %v", err)
 	}
-
-	oldPath := filepath.Join(store.SkillsDir(), "release.toml")
-	newPath := filepath.Join(store.SkillsDir(), "renamed.toml")
-	if err := os.Rename(oldPath, newPath); err != nil {
-		t.Fatalf("rename skill file: %v", err)
+	if err := os.WriteFile(filepath.Join(store.SkillsDir(), "renamed.toml"), []byte("name = \"release\"\n"), 0o644); err != nil {
+		t.Fatalf("write legacy skill metadata: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SkillsDir(), "renamed.md"), []byte("# Release\n"), 0o644); err != nil {
+		t.Fatalf("write legacy skill content: %v", err)
 	}
 
 	_, err := store.GetSkill("renamed")
@@ -118,7 +268,7 @@ func TestSkillsDirIsSiblingOfServersDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("skill content path: %v", err)
 	}
-	if path != filepath.Clean("/tmp/example/skills/release.md") {
+	if path != filepath.Clean("/tmp/example/skills/release/SKILL.md") {
 		t.Fatalf("unexpected content path: %s", path)
 	}
 }

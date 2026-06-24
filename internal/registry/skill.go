@@ -3,21 +3,45 @@ package registry
 import (
 	"bufio"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
 
-// Skill is a standalone instruction primitive. The TOML manifest stores only
-// metadata; the managed Markdown body is stored alongside it by the Store.
+var agentSkillNamePattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+
+// Skill is a standalone Agent Skill package. Package-backed skills store their
+// canonical metadata in SKILL.md frontmatter; the TOML parser below exists only
+// for legacy flat skill reads.
 type Skill struct {
-	Name        string `toml:"name" json:"name"`
-	Description string `toml:"description,omitempty" json:"description,omitempty"`
+	Name          string            `toml:"name" json:"name"`
+	Description   string            `toml:"description,omitempty" json:"description,omitempty"`
+	License       string            `json:"license,omitempty"`
+	Compatibility string            `json:"compatibility,omitempty"`
+	AllowedTools  string            `json:"allowed_tools,omitempty"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
 }
 
 // Validate enforces skill-level invariants.
 func (s Skill) Validate() error {
 	if err := validateServerName(s.Name); err != nil {
 		return fmt.Errorf("invalid skill: %w", err)
+	}
+	return nil
+}
+
+// ValidateAgentSkillName enforces the official Agent Skills naming contract for
+// new package-backed skills. Legacy flat TOML reads still use Validate.
+func ValidateAgentSkillName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("name is required")
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("name must be at most 64 characters")
+	}
+	if !agentSkillNamePattern.MatchString(name) {
+		return fmt.Errorf("name must contain lowercase letters, numbers, and single hyphen separators")
 	}
 	return nil
 }
