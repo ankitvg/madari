@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/ankitvg/madari/internal/clients"
@@ -57,7 +58,11 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 		return SyncResult{}, err
 	}
 
-	result, nextState, writeSet, err := syncshared.PlanSync(existingServers, managedState, entriesForTarget(manifests, userScope), opts.Rings, equalServer, ErrConflict)
+	entries := entriesForTarget(manifests, userScope)
+	if err := rejectRawMismatchedUnmanagedEntries(rawServers, existingServers, managedState, entries); err != nil {
+		return SyncResult{}, err
+	}
+	result, nextState, writeSet, err := syncshared.PlanSync(existingServers, managedState, entries, opts.Rings, equalServer, ErrConflict)
 	if err != nil {
 		return SyncResult{}, err
 	}
@@ -337,6 +342,53 @@ func equalServer(a, b serverConfig) bool {
 		}
 	}
 	return true
+}
+
+func rejectRawMismatchedUnmanagedEntries(
+	rawServers map[string]json.RawMessage,
+	existingServers map[string]serverConfig,
+	managedState map[string][]string,
+	entries map[string]syncshared.Entry[serverConfig],
+) error {
+	var conflicts []string
+	for name, entry := range entries {
+		if !entry.Eligible || len(managedState[name]) > 0 {
+			continue
+		}
+		raw, exists := rawServers[name]
+		if !exists {
+			continue
+		}
+		existing, exists := existingServers[name]
+		if !exists || !equalServer(existing, entry.Value) {
+			continue
+		}
+		if rawMatchesServer(raw, entry.Value) {
+			continue
+		}
+		conflicts = append(conflicts, name)
+	}
+	if len(conflicts) > 0 {
+		sort.Strings(conflicts)
+		return fmt.Errorf("%w: unmanaged entries already exist with different raw JSON: %s", ErrConflict, strings.Join(conflicts, ", "))
+	}
+	return nil
+}
+
+func rawMatchesServer(raw json.RawMessage, server serverConfig) bool {
+	desired, err := json.Marshal(server)
+	if err != nil {
+		return false
+	}
+	var rawCanonical any
+	if err := json.Unmarshal(raw, &rawCanonical); err != nil {
+		return false
+	}
+	rawPayload, err := json.Marshal(rawCanonical)
+	if err != nil {
+		return false
+	}
+	return string(rawPayload) == string(desired)
 }
 
 // loadClaudeCodeConfig returns the config root plus two views of mcpServers:

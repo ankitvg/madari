@@ -506,7 +506,7 @@ func TestSyncPreservesUnmanagedEntryFieldsAndShapes(t *testing.T) {
 	assertPreserved(readRawServerObjects(t, configPath))
 }
 
-func TestSyncKeepsExtraFieldsOnEqualUnmanagedEntry(t *testing.T) {
+func TestSyncConflictsOnRawMismatchedEqualUnmanagedEntry(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "claude_desktop_config.json")
 	statePath := filepath.Join(tmp, "state", "claude-desktop-managed.json")
@@ -528,20 +528,17 @@ func TestSyncKeepsExtraFieldsOnEqualUnmanagedEntry(t *testing.T) {
 		t.Fatalf("write config fixture: %v", err)
 	}
 
-	result, err := Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
+	_, err := Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
 		ConfigPath: configPath,
 		StatePath:  statePath,
 	})
-	if err != nil {
-		t.Fatalf("sync apply failed: %v", err)
-	}
-	if len(result.Unchanged) != 1 || result.Unchanged[0] != "stewreads" {
-		t.Fatalf("expected equal unmanaged entry to be unchanged, got: %+v", result)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected ErrConflict for raw-mismatched equal unmanaged entry, got: %v", err)
 	}
 
 	servers := readRawServerObjects(t, configPath)
 	if servers["stewreads"]["note"] != "mine" {
-		t.Fatalf("expected unadopted equal entry to keep extra fields, got: %#v", servers["stewreads"])
+		t.Fatalf("expected conflicted unmanaged entry to remain untouched, got: %#v", servers["stewreads"])
 	}
 }
 
