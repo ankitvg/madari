@@ -23,9 +23,42 @@ jobs:
           git checkout --detach FETCH_HEAD
 
       - name: Set up Go
+        shell: bash
         run: |
-          GO_VERSION="$(awk '/^go / { print $2; exit }' go.mod)"
-          curl --fail --location --show-error "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" --output go.tar.gz
+          set -euo pipefail
+          GO_DIRECTIVE="$(awk '/^go / { print $2; exit }' go.mod)"
+          curl --fail --location --show-error "https://go.dev/dl/?mode=json&include=all" --output go-releases.json
+          read -r GO_VERSION GO_SHA256 < <(
+            GO_DIRECTIVE="$GO_DIRECTIVE" python3 <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          directive = os.environ["GO_DIRECTIVE"].strip()
+          if re.fullmatch(r"\d+\.\d+", directive):
+              version_pattern = re.compile(rf"^go{re.escape(directive)}(?:\.\d+)?$")
+          elif re.fullmatch(r"\d+\.\d+\.\d+", directive):
+              version_pattern = re.compile(rf"^go{re.escape(directive)}$")
+          else:
+              raise SystemExit(f"unsupported go directive: {directive!r}")
+
+          releases = json.loads(Path("go-releases.json").read_text())
+          for release in releases:
+              version = release.get("version", "")
+              if not version_pattern.fullmatch(version):
+                  continue
+              for file in release.get("files", []):
+                  if file.get("kind") == "archive" and file.get("os") == "linux" and file.get("arch") == "amd64":
+                      print(version, file["sha256"])
+                      raise SystemExit(0)
+
+          raise SystemExit(f"no linux/amd64 archive found for go directive {directive!r}")
+          PY
+          )
+          curl --fail --location --show-error "https://go.dev/dl/${GO_VERSION}.linux-amd64.tar.gz" --output go.tar.gz
+          echo "${GO_SHA256}  go.tar.gz" | sha256sum -c -
           sudo rm -rf /usr/local/go
           sudo tar -C /usr/local -xzf go.tar.gz
           echo "/usr/local/go/bin" >> "$GITHUB_PATH"
@@ -63,14 +96,31 @@ jobs:
           sha256sum *.{zip,tar.gz} > SHA256SUMS
           cd ..
 
-      - name: Create Release and Upload Assets
+      - name: Create or Update Release and Upload Assets
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            ./dist/madari-*.tar.gz \
-            ./dist/madari-*.zip \
-            ./dist/SHA256SUMS \
-            --verify-tag \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes
+          set -euo pipefail
+          assets=(./dist/madari-*.tar.gz ./dist/madari-*.zip ./dist/SHA256SUMS)
+          if [ "${#assets[@]}" -ne 7 ]; then
+            printf 'expected 7 release assets, found %s:\n' "${#assets[@]}"
+            printf '  %s\n' "${assets[@]}"
+            exit 1
+          fi
+
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            release_is_draft="$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft')"
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+            if [ "$release_is_draft" = "true" ]; then
+              gh release edit "$GITHUB_REF_NAME" --draft=false --title "$GITHUB_REF_NAME"
+            else
+              gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME"
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              "${assets[@]}" \
+              --verify-tag \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes
+          fi
