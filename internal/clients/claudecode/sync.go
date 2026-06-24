@@ -380,15 +380,27 @@ func rawMatchesServer(raw json.RawMessage, server serverConfig) bool {
 	if err != nil {
 		return false
 	}
-	var rawCanonical any
-	if err := json.Unmarshal(raw, &rawCanonical); err != nil {
+	rawPayload, ok := canonicalJSON(raw)
+	if !ok {
 		return false
 	}
-	rawPayload, err := json.Marshal(rawCanonical)
+	desiredPayload, ok := canonicalJSON(desired)
+	if !ok {
+		return false
+	}
+	return string(rawPayload) == string(desiredPayload)
+}
+
+func canonicalJSON(payload []byte) ([]byte, bool) {
+	var value any
+	if err := json.Unmarshal(payload, &value); err != nil {
+		return nil, false
+	}
+	canonical, err := json.Marshal(value)
 	if err != nil {
-		return false
+		return nil, false
 	}
-	return string(rawPayload) == string(desired)
+	return canonical, true
 }
 
 // loadClaudeCodeConfig returns the config root plus two views of mcpServers:
