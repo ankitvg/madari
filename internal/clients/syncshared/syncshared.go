@@ -178,7 +178,7 @@ func backupFile(path string, overrideMode os.FileMode, useOverrideMode bool) (st
 	if err != nil {
 		return "", err
 	}
-	if err := target.Chmod(mode); err != nil {
+	if err := applyFileMode(backupPath, mode); err != nil {
 		_ = target.Close()
 		return "", err
 	}
@@ -208,11 +208,15 @@ func WriteFileAtomically(path string, payload []byte, mode os.FileMode) error {
 	}
 	defer cleanup()
 
+	if err := prepareFileBeforeWrite(tmpPath, mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
 	if _, err := tmp.Write(payload); err != nil {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(mode); err != nil {
+	if err := applyFileMode(tmpPath, mode); err != nil {
 		_ = tmp.Close()
 		return err
 	}
