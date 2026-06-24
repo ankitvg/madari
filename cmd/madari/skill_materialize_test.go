@@ -129,11 +129,11 @@ func TestRenderClientSkillRequiresDescriptionAndBody(t *testing.T) {
 
 func TestSkillAttachmentStateRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "codex-skills-managed.json")
-	skillPath := filepath.Join(t.TempDir(), ".agents", "skills", "release", "SKILL.md")
+	skillDir := filepath.Join(t.TempDir(), ".agents", "skills", "release")
 	state := map[string]skillAttachmentEntry{
-		skillAttachmentKey("release", skillPath): {
+		skillAttachmentKey("release", skillDir): {
 			Name:    "release",
-			Path:    skillPath,
+			Path:    skillDir,
 			Hash:    "abc123",
 			Sources: []string{syncshared.RingSource("zeta"), syncshared.SourceStandalone, syncshared.RingSource("alpha"), syncshared.RingSource("zeta")},
 		},
@@ -148,19 +148,19 @@ func TestSkillAttachmentStateRoundTrip(t *testing.T) {
 	}
 	want := skillAttachmentEntry{
 		Name:    "release",
-		Path:    filepath.Clean(skillPath),
+		Path:    filepath.Clean(skillDir),
 		Hash:    "abc123",
 		Sources: []string{syncshared.RingSource("alpha"), syncshared.RingSource("zeta"), syncshared.SourceStandalone},
 	}
-	if !reflect.DeepEqual(got[skillAttachmentKey("release", skillPath)], want) {
-		t.Fatalf("state roundtrip mismatch: got=%+v want=%+v", got[skillAttachmentKey("release", skillPath)], want)
+	if !reflect.DeepEqual(got[skillAttachmentKey("release", skillDir)], want) {
+		t.Fatalf("state roundtrip mismatch: got=%+v want=%+v", got[skillAttachmentKey("release", skillDir)], want)
 	}
 	payload, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read state payload: %v", err)
 	}
 	for _, wantText := range []string{
-		`"version": 3`,
+		`"version": 4`,
 		`"sources": [`,
 		`"ring:alpha"`,
 		`"ring:zeta"`,
@@ -196,11 +196,12 @@ func TestSkillAttachmentStateLoadsV1NameKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load legacy state: %v", err)
 	}
-	entry, ok := got[skillAttachmentKey("release", skillPath)]
+	skillDir := filepath.Dir(skillPath)
+	entry, ok := got[skillAttachmentKey("release", skillDir)]
 	if !ok {
 		t.Fatalf("expected normalized legacy entry, got=%+v", got)
 	}
-	if entry.Name != "release" || entry.Path != filepath.Clean(skillPath) || entry.Hash != "abc123" || !reflect.DeepEqual(entry.Sources, []string{syncshared.SourceStandalone}) {
+	if entry.Name != "release" || entry.Path != filepath.Clean(skillDir) || entry.Hash != "abc123" || !reflect.DeepEqual(entry.Sources, []string{syncshared.SourceStandalone}) {
 		t.Fatalf("unexpected legacy entry: %+v", entry)
 	}
 }
@@ -230,12 +231,118 @@ func TestSkillAttachmentStateLoadsV2ListAsStandalone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load v2 state: %v", err)
 	}
-	entry, ok := got[skillAttachmentKey("release", skillPath)]
+	skillDir := filepath.Dir(skillPath)
+	entry, ok := got[skillAttachmentKey("release", skillDir)]
 	if !ok {
 		t.Fatalf("expected normalized v2 entry, got=%+v", got)
 	}
-	if entry.Name != "release" || entry.Path != filepath.Clean(skillPath) || entry.Hash != "abc123" || !reflect.DeepEqual(entry.Sources, []string{syncshared.SourceStandalone}) {
+	if entry.Name != "release" || entry.Path != filepath.Clean(skillDir) || entry.Hash != "abc123" || !reflect.DeepEqual(entry.Sources, []string{syncshared.SourceStandalone}) {
 		t.Fatalf("unexpected v2 entry: %+v", entry)
+	}
+}
+
+func TestAttachSkillSourceMigratesLegacyFileHash(t *testing.T) {
+	root := t.TempDir()
+	store := registry.NewStore(filepath.Join(root, "servers"))
+	app := cliApp{store: store}
+	if err := store.SaveSkill(registry.Skill{Name: "release", Description: "Release workflow"}, []byte("# Release\n")); err != nil {
+		t.Fatalf("save skill: %v", err)
+	}
+	pkg, err := store.GetSkillPackage("release")
+	if err != nil {
+		t.Fatalf("get package: %v", err)
+	}
+	skillContent, err := pkg.SkillFileContent()
+	if err != nil {
+		t.Fatalf("skill content: %v", err)
+	}
+	skillsDir := filepath.Join(root, "skills")
+	skillDir := filepath.Join(skillsDir, "release")
+	if err := writeMaterializedSkillPackage(skillDir, pkg.Files); err != nil {
+		t.Fatalf("write materialized skill: %v", err)
+	}
+	statePath := app.skillAttachmentStatePath("codex", "")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+	payload := `{
+  "version": 3,
+  "skills": [
+    {
+      "name": "release",
+      "path": "` + filepath.ToSlash(filepath.Join(skillDir, registry.SkillFileName)) + `",
+      "hash": "` + skillContentHash(skillContent) + `",
+      "sources": ["standalone"]
+    }
+  ]
+}
+`
+	if err := os.WriteFile(statePath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write legacy state: %v", err)
+	}
+
+	result, err := app.attachSkillSource("release", "codex", "", skillsDir, syncshared.SourceStandalone, false)
+	if err != nil {
+		t.Fatalf("attach with legacy hash: %v", err)
+	}
+	if len(result.Unchanged) != 1 || result.Unchanged[0] != "release" {
+		t.Fatalf("expected unchanged attach, got: %+v", result)
+	}
+	state, err := loadSkillAttachmentState(statePath)
+	if err != nil {
+		t.Fatalf("load migrated state: %v", err)
+	}
+	entry := state[skillAttachmentKey("release", skillDir)]
+	if entry.Hash != pkg.Hash() {
+		t.Fatalf("expected package hash migrated, got %q want %q", entry.Hash, pkg.Hash())
+	}
+}
+
+func TestDetachSkillSourceAcceptsLegacyFileHash(t *testing.T) {
+	root := t.TempDir()
+	store := registry.NewStore(filepath.Join(root, "servers"))
+	app := cliApp{store: store}
+	if err := store.SaveSkill(registry.Skill{Name: "release", Description: "Release workflow"}, []byte("# Release\n")); err != nil {
+		t.Fatalf("save skill: %v", err)
+	}
+	pkg, err := store.GetSkillPackage("release")
+	if err != nil {
+		t.Fatalf("get package: %v", err)
+	}
+	skillContent, err := pkg.SkillFileContent()
+	if err != nil {
+		t.Fatalf("skill content: %v", err)
+	}
+	skillsDir := filepath.Join(root, "skills")
+	skillDir := filepath.Join(skillsDir, "release")
+	if err := writeMaterializedSkillPackage(skillDir, pkg.Files); err != nil {
+		t.Fatalf("write materialized skill: %v", err)
+	}
+	statePath := app.skillAttachmentStatePath("codex", "")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+	payload := `{
+  "version": 3,
+  "skills": [
+    {
+      "name": "release",
+      "path": "` + filepath.ToSlash(filepath.Join(skillDir, registry.SkillFileName)) + `",
+      "hash": "` + skillContentHash(skillContent) + `",
+      "sources": ["standalone"]
+    }
+  ]
+}
+`
+	if err := os.WriteFile(statePath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write legacy state: %v", err)
+	}
+
+	if _, err := app.detachSkillSource("release", "codex", "", skillsDir, syncshared.SourceStandalone, false); err != nil {
+		t.Fatalf("detach with legacy hash: %v", err)
+	}
+	if _, err := os.Stat(skillDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected skill dir removed, got: %v", err)
 	}
 }
 
@@ -263,11 +370,15 @@ func TestDetachSkillSourceAllRemovesRingOwnedFile(t *testing.T) {
 	if err := os.WriteFile(skillPath, content, 0o644); err != nil {
 		t.Fatalf("write skill file: %v", err)
 	}
+	pkg, err := registry.NewSkillPackageFromDir(filepath.Dir(skillPath))
+	if err != nil {
+		t.Fatalf("read skill package: %v", err)
+	}
 	state := map[string]skillAttachmentEntry{
-		skillAttachmentKey("release", skillPath): {
+		skillAttachmentKey("release", filepath.Dir(skillPath)): {
 			Name:    "release",
-			Path:    skillPath,
-			Hash:    skillContentHash(content),
+			Path:    filepath.Dir(skillPath),
+			Hash:    pkg.Hash(),
 			Sources: []string{syncshared.RingSource("research")},
 		},
 	}
@@ -305,11 +416,15 @@ func TestDetachSkillSourceAllPreservesOtherSources(t *testing.T) {
 	if err := os.WriteFile(skillPath, content, 0o644); err != nil {
 		t.Fatalf("write skill file: %v", err)
 	}
+	pkg, err := registry.NewSkillPackageFromDir(filepath.Dir(skillPath))
+	if err != nil {
+		t.Fatalf("read skill package: %v", err)
+	}
 	state := map[string]skillAttachmentEntry{
-		skillAttachmentKey("release", skillPath): {
+		skillAttachmentKey("release", filepath.Dir(skillPath)): {
 			Name:    "release",
-			Path:    skillPath,
-			Hash:    skillContentHash(content),
+			Path:    filepath.Dir(skillPath),
+			Hash:    pkg.Hash(),
 			Sources: []string{syncshared.SourceStandalone, syncshared.RingSource("research")},
 		},
 	}
@@ -331,7 +446,7 @@ func TestDetachSkillSourceAllPreservesOtherSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load state: %v", err)
 	}
-	entry := got[skillAttachmentKey("release", skillPath)]
+	entry := got[skillAttachmentKey("release", filepath.Dir(skillPath))]
 	if !reflect.DeepEqual(entry.Sources, []string{syncshared.SourceStandalone}) {
 		t.Fatalf("expected standalone source preserved, got: %+v", entry)
 	}

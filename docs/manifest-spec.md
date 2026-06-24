@@ -130,26 +130,42 @@ optional_context = ["time window", "known source URLs"]
 expected_outputs = ["findings summary", "sources inspected", "recommended next check"]
 ```
 
-## Skill Files
+## Skill Packages
 
-Skills are standalone Markdown instruction primitives. Madari stores skill
-metadata at `<config-root>/skills/<name>.toml` and the managed Markdown body
-at `<config-root>/skills/<name>.md`.
+Skills are official Agent Skill packages. Madari stores each managed skill at
+`<config-root>/skills/<name>/`, with a required `SKILL.md` plus optional files
+such as `references/`, `scripts/`, and `assets/`.
 
-- `name` (string, required): stable skill ID; same pattern as server names.
-- `description` (string, optional): friendly description.
+`SKILL.md` must contain YAML frontmatter followed by a non-empty Markdown body.
+Madari validates these frontmatter fields:
 
-Skill manifests have no sections; unknown keys are rejected. The Markdown
-body is arbitrary text, but it must be non-empty. Plain `skill render` emits
-that managed body exactly. Client-native render/attach synthesize a `SKILL.md`
-frontmatter block from the manifest metadata and the managed body. Skills can
-be referenced by rings and materialized through `ring attach` for supported
-skill targets. Skills are not written into MCP client configs and are not
+- `name` (string, required): lowercase letters, numbers, and single hyphen
+  separators; max 64 characters; must match the package directory name.
+- `description` (string, required): non-empty; max 1024 characters.
+- `license` (string, optional).
+- `compatibility` (string, optional): max 500 characters.
+- `metadata` (map of string keys to string values, optional).
+- `allowed-tools` (string, optional).
+
+Unknown top-level frontmatter keys are rejected; custom data belongs under
+`metadata`. Package files must be regular files under the package root; symlinks,
+absolute paths, and `..` escapes are rejected.
+
+`skill render` prints the managed `SKILL.md` exactly. `skill attach` and ring
+attach materialize the full package directory for supported skill targets.
+Skills can be referenced by rings, but rings store only skill names and never
+embed package files. Skills are not written into MCP client configs and are not
 consumed by `run`.
+
+Madari still reads legacy flat skills from `<config-root>/skills/<name>.toml`
+and `<config-root>/skills/<name>.md`; the next save, update, or import migrates
+them into the package directory shape.
 
 ### Example
 
-```toml
-name = "release"
-description = "Release workflow"
+```text
+release/
+  SKILL.md
+  references/CHECKLIST.md
+  scripts/release.sh
 ```

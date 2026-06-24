@@ -14,33 +14,34 @@ Madari keeps four concepts separate:
   client metadata.
 - Ring: a named capability grouping with optional advisory contract metadata.
   Persisted rings can contain server members and skill members by name; the
-  referenced server manifests and skill files remain the source of truth.
+  referenced server manifests and skill packages remain the source of truth.
 - Skill: procedural or domain instructions for how an agent should use
-  capabilities. Skills are standalone Markdown primitives with their own
-  metadata, managed content, and render surface.
+  capabilities. Skills are official Agent Skill package directories with
+  `SKILL.md` metadata, bundled files, and a render surface.
 - Run: ephemeral execution that combines a task, selected capabilities, client
   target, optional skills/context, and result capture. Run is not implemented
   yet and should not be modeled as persistent client sync.
 
 Current behavior follows this boundary: `sync` and `ring attach` persist MCP
 server config, `ring attach` also materializes ring skill members as native
-skill files for supported targets, `ring render` emits MCP config only, plain
-`skill render` emits managed Markdown only, and `skill attach` materializes
-client-native `SKILL.md` files without changing MCP client configs. Skills are
-not run inputs yet.
+skill package directories for supported targets, `ring render` emits MCP config
+only, plain `skill render` emits managed `SKILL.md` only, and `skill attach`
+materializes client-native skill packages without changing MCP client configs.
+Skills are not run inputs yet.
 
 ## Components
 
 1. Registry
 - Path: `<os.UserConfigDir()>/madari/servers/*.toml` (or `$MADARI_CONFIG_DIR/servers/*.toml`)
 - One file per server entry; rings live alongside as `rings/<name>.toml`;
-  skills live alongside as `skills/<name>.toml` plus managed Markdown content
-  at `skills/<name>.md`.
+  skills live alongside as official Agent Skill packages under
+  `skills/<name>/`.
 - Human-readable and versionable.
 - Snapshots (`export`/`import`) carry servers, rings, and skills as versioned
   JSON; export refuses rings that would not round-trip, import validates
   everything before writing anything and never attaches or syncs. Snapshot
-  version 4 added ring skill membership; version 5 adds ring contract metadata.
+  version 4 added ring skill membership, version 5 added ring contract metadata,
+  and version 6 stores full skill package files.
 
 2. Client Targets and Adapters
 - The command layer keeps a single client target registry for target-level
@@ -90,7 +91,7 @@ not run inputs yet.
   there. Attach records the source on every server and skill member,
   materializes eligible servers into MCP config, and materializes skills into
   native skill directories for supported targets. Detach releases the source by
-  name (no ring file required), and an entry or skill file leaves the client
+  name (no ring file required), and an entry or skill package leaves the client
   only when its last source goes. Overlapping rings resolve by refcount in any
   order.
 - Every sync/attach/detach runs a reconciliation pass: recorded ring sources
@@ -111,19 +112,19 @@ not run inputs yet.
   ownership source, and never edits client configs or managed state.
 
 6. Skills
-- Standalone instruction primitives stored as metadata plus managed Markdown:
-  `skills/<name>.toml` and `skills/<name>.md`.
-- `skill add` copies a non-empty Markdown file into Madari; `skill update`
-  replaces that managed copy and preserves description unless a new one is
-  provided.
-- Plain `skill render` prints the managed Markdown exactly to stdout. With
-  `--client`, render synthesizes native `SKILL.md` frontmatter without writing
-  files.
-- `skill attach` writes Madari-owned `SKILL.md` files into supported native
-  skill directories and records separate source-aware skill attachment state.
-  Direct attach owns the `standalone` source; ring attach owns `ring:<name>`.
-  It refuses to overwrite unmanaged files or remove files modified after
-  Madari wrote them.
+- Standalone Agent Skill packages stored at `skills/<name>/` with `SKILL.md`
+  frontmatter plus optional bundled files such as `references/`, `scripts/`,
+  and `assets/`.
+- `skill add --dir` copies a complete package into Madari. The legacy
+  `--file` form converts one Markdown file into package-backed `SKILL.md`;
+  legacy flat store files are still read and migrate on the next save/import.
+- Plain `skill render` prints the managed `SKILL.md` exactly to stdout. With
+  `--client`, render validates target support and prints the same file.
+- `skill attach` writes Madari-owned package directories into supported native
+  skill roots and records separate source-aware skill attachment state
+  (current: version 4). Direct attach owns the `standalone` source; ring attach
+  owns `ring:<name>`. It refuses to overwrite unmanaged package directories or
+  remove packages modified after Madari wrote them.
 - Skills are exported/imported in snapshots and can be consumed by rings. They
   are not written into MCP config files and are not consumed by run execution.
 

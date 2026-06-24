@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"encoding/base64"
 	"errors"
 	"os"
 	"path/filepath"
@@ -85,8 +86,15 @@ func TestSnapshotExportParseRoundTrip(t *testing.T) {
 	if len(parsed.Skills) != 1 || parsed.Skills[0].Name != "release" {
 		t.Fatalf("expected release skill in parsed snapshot, got: %#v", parsed.Skills)
 	}
-	if parsed.Skills[0].Content != "# Release\n\nCut a patch release.\n" {
-		t.Fatalf("unexpected skill content: %q", parsed.Skills[0].Content)
+	if len(parsed.Skills[0].Files) != 1 || parsed.Skills[0].Files[0].Path != SkillFileName {
+		t.Fatalf("expected one SKILL.md file in parsed snapshot, got: %#v", parsed.Skills[0].Files)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(parsed.Skills[0].Files[0].Content)
+	if err != nil {
+		t.Fatalf("decode skill file: %v", err)
+	}
+	if !strings.Contains(string(decoded), "Cut a patch release.") {
+		t.Fatalf("unexpected skill file content: %q", decoded)
 	}
 }
 
@@ -125,7 +133,9 @@ func TestMarshalSnapshotUsesSnakeCaseKeys(t *testing.T) {
 			{
 				Name:        "release",
 				Description: "Release workflow",
-				Content:     "# Release\n",
+				Files: []SnapshotSkillFile{
+					{Path: SkillFileName, Content: base64.StdEncoding.EncodeToString([]byte("---\nname: release\ndescription: Release workflow\n---\n\n# Release\n")), Mode: "0644"},
+				},
 			},
 		},
 	}
@@ -135,7 +145,7 @@ func TestMarshalSnapshotUsesSnakeCaseKeys(t *testing.T) {
 		t.Fatalf("marshal snapshot failed: %v", err)
 	}
 	text := string(payload)
-	for _, key := range []string{`"name"`, `"command"`, `"args"`, `"enabled"`, `"clients"`, `"required_env"`, `"keys"`, `"rings"`, `"members"`, `"skills"`, `"content"`, `"description"`, `"contract"`, `"summary"`, `"good_for"`, `"not_for"`, `"required_context"`, `"optional_context"`, `"expected_outputs"`} {
+	for _, key := range []string{`"name"`, `"command"`, `"args"`, `"enabled"`, `"clients"`, `"required_env"`, `"keys"`, `"rings"`, `"members"`, `"skills"`, `"files"`, `"path"`, `"content"`, `"mode"`, `"description"`, `"contract"`, `"summary"`, `"good_for"`, `"not_for"`, `"required_context"`, `"optional_context"`, `"expected_outputs"`} {
 		if !strings.Contains(text, key) {
 			t.Fatalf("expected payload to contain key %s, payload=%s", key, text)
 		}
@@ -524,7 +534,9 @@ func TestImportSnapshotSkillsDryRunAndApply(t *testing.T) {
 		t.Fatalf("load release content after apply: %v", err)
 	}
 	if string(releaseContent) != "# Release\n" {
-		t.Fatalf("expected release content updated, got: %q", releaseContent)
+		if !strings.Contains(string(releaseContent), "# Release\n") || !strings.Contains(string(releaseContent), "description: new") {
+			t.Fatalf("expected release content updated, got: %q", releaseContent)
+		}
 	}
 	if _, err := store.GetSkill("new-skill"); err != nil {
 		t.Fatalf("expected new skill to exist after apply: %v", err)
@@ -601,7 +613,9 @@ func TestImportSnapshotCanRepairBrokenLocalSkillContent(t *testing.T) {
 		t.Fatalf("load repaired skill content: %v", err)
 	}
 	if string(content) != "# Release\n" {
-		t.Fatalf("expected repaired content, got: %q", content)
+		if !strings.Contains(string(content), "# Release\n") || !strings.Contains(string(content), "description: new") {
+			t.Fatalf("expected repaired content, got: %q", content)
+		}
 	}
 }
 
