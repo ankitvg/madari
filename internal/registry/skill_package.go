@@ -43,10 +43,11 @@ type skillPackageFileView struct {
 }
 
 func NewSkillPackageFromDir(path string) (SkillPackage, error) {
-	root := filepath.Clean(strings.TrimSpace(path))
-	if root == "." || root == "" {
+	path = strings.TrimSpace(path)
+	if path == "" {
 		return SkillPackage{}, fmt.Errorf("skill directory is required")
 	}
+	root := filepath.Clean(path)
 	info, err := os.Stat(root)
 	if err != nil {
 		return SkillPackage{}, fmt.Errorf("inspect skill directory %q: %w", root, err)
@@ -97,7 +98,11 @@ func NewSkillPackageFromDir(path string) (SkillPackage, error) {
 	}); err != nil {
 		return SkillPackage{}, fmt.Errorf("read skill package %q: %w", root, err)
 	}
-	return NewSkillPackage(files, filepath.Base(root))
+	parentName, err := skillPackageDirName(root)
+	if err != nil {
+		return SkillPackage{}, err
+	}
+	return NewSkillPackage(files, parentName)
 }
 
 func NewSkillPackage(files []SkillPackageFile, parentName string) (SkillPackage, error) {
@@ -183,9 +188,6 @@ func RenderSkillFile(skill Skill, content []byte) ([]byte, error) {
 	if err := skill.Validate(); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(skill.Description) == "" {
-		skill.Description = skill.Name
-	}
 	if strings.TrimSpace(string(content)) == "" {
 		return nil, fmt.Errorf("skill content is required")
 	}
@@ -208,10 +210,15 @@ func RenderSkillFile(skill Skill, content []byte) ([]byte, error) {
 		if len(skill.Metadata) == 0 {
 			skill.Metadata = sourceSkill.Metadata
 		}
-		if skill.Name == sourceSkill.Name {
+		if strings.TrimSpace(skill.Description) == "" {
+			skill.Description = skill.Name
+		}
+		if skillsHaveSameFrontmatter(skill, sourceSkill) {
 			return content, nil
 		}
 		content = body
+	} else if strings.TrimSpace(skill.Description) == "" {
+		skill.Description = skill.Name
 	}
 	return marshalSkillFile(skill, content)
 }
@@ -235,13 +242,46 @@ func marshalSkillFile(skill Skill, body []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal %s frontmatter: %w", SkillFileName, err)
 	}
-	fmPayload = bytes.ReplaceAll(fmPayload, []byte("allowedtools:"), []byte("allowed-tools:"))
 	var out bytes.Buffer
 	out.WriteString("---\n")
 	out.Write(fmPayload)
 	out.WriteString("---\n\n")
 	out.Write(bytes.TrimLeft(body, "\r\n"))
 	return out.Bytes(), nil
+}
+
+func skillPackageDirName(root string) (string, error) {
+	if filepath.Clean(root) != "." {
+		return filepath.Base(root), nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("resolve skill directory: %w", err)
+	}
+	return filepath.Base(cwd), nil
+}
+
+func skillsHaveSameFrontmatter(a, b Skill) bool {
+	return strings.TrimSpace(a.Name) == strings.TrimSpace(b.Name) &&
+		strings.TrimSpace(a.Description) == strings.TrimSpace(b.Description) &&
+		strings.TrimSpace(a.License) == strings.TrimSpace(b.License) &&
+		strings.TrimSpace(a.Compatibility) == strings.TrimSpace(b.Compatibility) &&
+		strings.TrimSpace(a.AllowedTools) == strings.TrimSpace(b.AllowedTools) &&
+		skillMetadataEqual(a.Metadata, b.Metadata)
+}
+
+func skillMetadataEqual(a, b map[string]string) bool {
+	a = normalizeSkillMetadata(a)
+	b = normalizeSkillMetadata(b)
+	if len(a) != len(b) {
+		return false
+	}
+	for key, value := range a {
+		if b[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func splitCanonicalSkillFrontmatter(content []byte) ([]byte, []byte, bool) {

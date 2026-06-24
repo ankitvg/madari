@@ -241,6 +241,111 @@ func TestSkillAttachmentStateLoadsV2ListAsStandalone(t *testing.T) {
 	}
 }
 
+func TestAttachSkillSourceMigratesLegacyFileHash(t *testing.T) {
+	root := t.TempDir()
+	store := registry.NewStore(filepath.Join(root, "servers"))
+	app := cliApp{store: store}
+	if err := store.SaveSkill(registry.Skill{Name: "release", Description: "Release workflow"}, []byte("# Release\n")); err != nil {
+		t.Fatalf("save skill: %v", err)
+	}
+	pkg, err := store.GetSkillPackage("release")
+	if err != nil {
+		t.Fatalf("get package: %v", err)
+	}
+	skillContent, err := pkg.SkillFileContent()
+	if err != nil {
+		t.Fatalf("skill content: %v", err)
+	}
+	skillsDir := filepath.Join(root, "skills")
+	skillDir := filepath.Join(skillsDir, "release")
+	if err := writeMaterializedSkillPackage(skillDir, pkg.Files); err != nil {
+		t.Fatalf("write materialized skill: %v", err)
+	}
+	statePath := app.skillAttachmentStatePath("codex", "")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+	payload := `{
+  "version": 3,
+  "skills": [
+    {
+      "name": "release",
+      "path": "` + filepath.ToSlash(filepath.Join(skillDir, registry.SkillFileName)) + `",
+      "hash": "` + skillContentHash(skillContent) + `",
+      "sources": ["standalone"]
+    }
+  ]
+}
+`
+	if err := os.WriteFile(statePath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write legacy state: %v", err)
+	}
+
+	result, err := app.attachSkillSource("release", "codex", "", skillsDir, syncshared.SourceStandalone, false)
+	if err != nil {
+		t.Fatalf("attach with legacy hash: %v", err)
+	}
+	if len(result.Unchanged) != 1 || result.Unchanged[0] != "release" {
+		t.Fatalf("expected unchanged attach, got: %+v", result)
+	}
+	state, err := loadSkillAttachmentState(statePath)
+	if err != nil {
+		t.Fatalf("load migrated state: %v", err)
+	}
+	entry := state[skillAttachmentKey("release", skillDir)]
+	if entry.Hash != pkg.Hash() {
+		t.Fatalf("expected package hash migrated, got %q want %q", entry.Hash, pkg.Hash())
+	}
+}
+
+func TestDetachSkillSourceAcceptsLegacyFileHash(t *testing.T) {
+	root := t.TempDir()
+	store := registry.NewStore(filepath.Join(root, "servers"))
+	app := cliApp{store: store}
+	if err := store.SaveSkill(registry.Skill{Name: "release", Description: "Release workflow"}, []byte("# Release\n")); err != nil {
+		t.Fatalf("save skill: %v", err)
+	}
+	pkg, err := store.GetSkillPackage("release")
+	if err != nil {
+		t.Fatalf("get package: %v", err)
+	}
+	skillContent, err := pkg.SkillFileContent()
+	if err != nil {
+		t.Fatalf("skill content: %v", err)
+	}
+	skillsDir := filepath.Join(root, "skills")
+	skillDir := filepath.Join(skillsDir, "release")
+	if err := writeMaterializedSkillPackage(skillDir, pkg.Files); err != nil {
+		t.Fatalf("write materialized skill: %v", err)
+	}
+	statePath := app.skillAttachmentStatePath("codex", "")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+	payload := `{
+  "version": 3,
+  "skills": [
+    {
+      "name": "release",
+      "path": "` + filepath.ToSlash(filepath.Join(skillDir, registry.SkillFileName)) + `",
+      "hash": "` + skillContentHash(skillContent) + `",
+      "sources": ["standalone"]
+    }
+  ]
+}
+`
+	if err := os.WriteFile(statePath, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write legacy state: %v", err)
+	}
+
+	if _, err := app.detachSkillSource("release", "codex", "", skillsDir, syncshared.SourceStandalone, false); err != nil {
+		t.Fatalf("detach with legacy hash: %v", err)
+	}
+	if _, err := os.Stat(skillDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected skill dir removed, got: %v", err)
+	}
+}
+
 func TestSkillAttachmentStateRejectsUnknownVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "codex-skills-managed.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

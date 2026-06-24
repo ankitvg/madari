@@ -556,6 +556,36 @@ Cut a patch release.
 	}
 }
 
+func TestRunWithStoreSkillUpdateFileFrontmatterDescriptionOverride(t *testing.T) {
+	store := newTestStore(t)
+	initial := writeSkillFile(t, t.TempDir(), "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", initial, "--description", "Initial workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+
+	source := `---
+name: release
+description: Source workflow
+allowed-tools: Read
+---
+
+# Release
+Updated instructions.
+`
+	updated := writeSkillFile(t, t.TempDir(), "release-updated.md", source)
+	result := runCmd(store, "skill", "update", "release", "--file", updated, "--description", "Override workflow")
+	if result.code != 0 {
+		t.Fatalf("skill update failed: %s", result.stderr)
+	}
+	rendered := runCmd(store, "skill", "render", "release")
+	if rendered.code != 0 {
+		t.Fatalf("skill render failed: %s", rendered.stderr)
+	}
+	if !strings.Contains(rendered.stdout, "description: Override workflow") || strings.Contains(rendered.stdout, "Source workflow") {
+		t.Fatalf("expected description override to be rendered, got:\n%s", rendered.stdout)
+	}
+}
+
 func TestRunWithStoreSkillAttachDryRunWritesNothing(t *testing.T) {
 	store := newTestStore(t)
 	path := writeSkillFile(t, t.TempDir(), "release.md", "# Release\n")

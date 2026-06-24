@@ -219,20 +219,25 @@ func (a cliApp) attachSkillSource(name, target, scope, skillsDir, source string,
 	var previousFiles []registry.SkillPackageFile
 	hadPreviousPackage := false
 	needsPackageWrite := false
+	needsStateWrite := false
 	if owned {
-		currentHash, currentFiles, readErr := readMaterializedSkillPackage(skillDir)
+		currentHash, currentSkillFileHash, currentFiles, readErr := readMaterializedSkillPackage(skillDir)
 		switch {
 		case readErr == nil:
 			previousFiles = currentFiles
 			hadPreviousPackage = true
-			if currentHash != entry.Hash {
+			hashMatches := skillAttachmentHashMatches(entry.Hash, currentHash, currentSkillFileHash)
+			if !hashMatches {
 				return skillAttachResult{}, fmt.Errorf("refusing to update modified skill package %s; detach or restore it manually", skillDir)
+			}
+			if currentHash != entry.Hash {
+				needsStateWrite = true
 			}
 			hasSource := skillAttachmentHasSource(entry, source)
 			switch {
-			case desiredHash == entry.Hash && hasSource:
+			case desiredHash == currentHash && hasSource:
 				result.Unchanged = []string{name}
-			case desiredHash == entry.Hash:
+			case desiredHash == currentHash:
 				result.Updated = []string{name}
 			default:
 				result.Updated = []string{name}
@@ -254,7 +259,7 @@ func (a cliApp) attachSkillSource(name, target, scope, skillsDir, source string,
 		needsPackageWrite = true
 	}
 
-	if dryRun || len(result.Unchanged) > 0 {
+	if dryRun || (len(result.Unchanged) > 0 && !needsStateWrite) {
 		return result, nil
 	}
 	if needsPackageWrite {
@@ -341,10 +346,10 @@ func (a cliApp) detachSkillSource(name, target, scope, skillsDir, source string,
 		Removed:   []string{name},
 	}
 
-	currentHash, _, readErr := readMaterializedSkillPackage(skillDir)
+	currentHash, currentSkillFileHash, _, readErr := readMaterializedSkillPackage(skillDir)
 	switch {
 	case readErr == nil:
-		if currentHash != entry.Hash {
+		if !skillAttachmentHashMatches(entry.Hash, currentHash, currentSkillFileHash) {
 			return skillAttachResult{}, fmt.Errorf("refusing to remove modified skill package %s; remove it manually if desired", skillDir)
 		}
 	case errors.Is(readErr, os.ErrNotExist):
@@ -365,6 +370,9 @@ func (a cliApp) detachSkillSource(name, target, scope, skillsDir, source string,
 		delete(state, stateKey)
 	} else {
 		entry.Sources = remainingSources
+		if readErr == nil {
+			entry.Hash = currentHash
+		}
 		state[stateKey] = entry
 	}
 	if err := saveSkillAttachmentStateFunc(statePath, state); err != nil {
@@ -422,6 +430,7 @@ func (a cliApp) detachSkillSourceWhere(target, scope, source string, dryRun bool
 		key              string
 		entry            skillAttachmentEntry
 		skillPath        string
+		currentHash      string
 		readErr          error
 		remainingSources []string
 	}
@@ -433,10 +442,10 @@ func (a cliApp) detachSkillSourceWhere(target, scope, source string, dryRun bool
 		}
 		skillDir := filepath.Clean(entry.Path)
 		skillPath := filepath.Join(skillDir, registry.SkillFileName)
-		currentHash, _, readErr := readMaterializedSkillPackage(skillDir)
+		currentHash, currentSkillFileHash, _, readErr := readMaterializedSkillPackage(skillDir)
 		switch {
 		case readErr == nil:
-			if currentHash != entry.Hash {
+			if !skillAttachmentHashMatches(entry.Hash, currentHash, currentSkillFileHash) {
 				return skillAttachResult{}, fmt.Errorf("refusing to remove modified skill package %s; remove it manually if desired", skillDir)
 			}
 		case errors.Is(readErr, os.ErrNotExist):
@@ -452,6 +461,7 @@ func (a cliApp) detachSkillSourceWhere(target, scope, source string, dryRun bool
 			key:              key,
 			entry:            entry,
 			skillPath:        skillPath,
+			currentHash:      currentHash,
 			readErr:          readErr,
 			remainingSources: remainingSources,
 		})
@@ -471,6 +481,9 @@ func (a cliApp) detachSkillSourceWhere(target, scope, source string, dryRun bool
 			delete(state, candidate.key)
 		} else {
 			candidate.entry.Sources = candidate.remainingSources
+			if candidate.readErr == nil {
+				candidate.entry.Hash = candidate.currentHash
+			}
 			state[candidate.key] = candidate.entry
 		}
 	}
@@ -958,15 +971,24 @@ func skillAttachmentsByName(state map[string]skillAttachmentEntry, name string) 
 	return matches
 }
 
-func readMaterializedSkillPackage(path string) (string, []registry.SkillPackageFile, error) {
+func readMaterializedSkillPackage(path string) (string, string, []registry.SkillPackageFile, error) {
 	if _, err := os.Stat(path); err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 	pkg, err := registry.NewSkillPackageFromDir(path)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
-	return pkg.Hash(), pkg.Files, nil
+	skillContent, err := pkg.SkillFileContent()
+	if err != nil {
+		return "", "", nil, err
+	}
+	return pkg.Hash(), skillContentHash(skillContent), pkg.Files, nil
+}
+
+func skillAttachmentHashMatches(storedHash, packageHash, legacySkillFileHash string) bool {
+	storedHash = strings.TrimSpace(storedHash)
+	return storedHash != "" && (storedHash == packageHash || storedHash == legacySkillFileHash)
 }
 
 func writeMaterializedSkillPackage(path string, files []registry.SkillPackageFile) error {

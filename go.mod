@@ -4,4 +4,4 @@ go 1.26
 
 require github.com/pelletier/go-toml/v2 v2.3.1
 
-require gopkg.in/yaml.v3 v3.0.1 // indirect
+require gopkg.in/yaml.v3 v3.0.1

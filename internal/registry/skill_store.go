@@ -139,20 +139,53 @@ func unusedSkillPackageTempPath(dir, pattern string) (string, error) {
 
 // GetSkill loads one skill manifest by name.
 func (s *Store) GetSkill(name string) (Skill, error) {
-	pkg, err := s.GetSkillPackage(name)
+	dir, err := s.SkillPackageDir(name)
 	if err != nil {
 		return Skill{}, err
 	}
-	return pkg.Skill, nil
+	if _, err := os.Stat(filepath.Join(dir, SkillFileName)); err == nil {
+		pkg, err := NewSkillPackageFromDir(dir)
+		if err != nil {
+			return Skill{}, fmt.Errorf("parse skill package %q: %w", name, err)
+		}
+		return pkg.Skill, nil
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return Skill{}, fmt.Errorf("inspect skill package %q: %w", name, err)
+	}
+	return s.getLegacySkill(name)
 }
 
 // GetSkillContent loads one skill's managed Markdown body by name.
 func (s *Store) GetSkillContent(name string) ([]byte, error) {
-	pkg, err := s.GetSkillPackage(name)
+	dir, err := s.SkillPackageDir(name)
 	if err != nil {
 		return nil, err
 	}
-	return pkg.SkillFileContent()
+	if _, err := os.Stat(filepath.Join(dir, SkillFileName)); err == nil {
+		pkg, err := NewSkillPackageFromDir(dir)
+		if err != nil {
+			return nil, fmt.Errorf("parse skill package %q: %w", name, err)
+		}
+		return pkg.SkillFileContent()
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("inspect skill package %q: %w", name, err)
+	}
+
+	if _, err := s.getLegacySkill(name); err != nil {
+		return nil, err
+	}
+	contentPath, err := s.legacySkillContentPathChecked(name)
+	if err != nil {
+		return nil, err
+	}
+	content, err := os.ReadFile(contentPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, ErrSkillNotFound
+		}
+		return nil, fmt.Errorf("read skill %q content: %w", name, err)
+	}
+	return content, nil
 }
 
 func (s *Store) GetSkillPackage(name string) (SkillPackage, error) {
@@ -173,24 +206,9 @@ func (s *Store) GetSkillPackage(name string) (SkillPackage, error) {
 }
 
 func (s *Store) getLegacySkillPackage(name string) (SkillPackage, error) {
-	path, err := s.pathForSkill(name)
+	skill, err := s.getLegacySkill(name)
 	if err != nil {
 		return SkillPackage{}, err
-	}
-	payload, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return SkillPackage{}, ErrSkillNotFound
-		}
-		return SkillPackage{}, fmt.Errorf("read skill %q: %w", name, err)
-	}
-
-	skill, err := ParseSkill(payload)
-	if err != nil {
-		return SkillPackage{}, fmt.Errorf("parse skill %q: %w", name, err)
-	}
-	if skill.Name != name {
-		return SkillPackage{}, fmt.Errorf("skill %q has mismatched name %q", name, skill.Name)
 	}
 	contentPath, err := s.legacySkillContentPathChecked(name)
 	if err != nil {
@@ -210,6 +228,29 @@ func (s *Store) getLegacySkillPackage(name string) (SkillPackage, error) {
 	return pkg, nil
 }
 
+func (s *Store) getLegacySkill(name string) (Skill, error) {
+	path, err := s.pathForSkill(name)
+	if err != nil {
+		return Skill{}, err
+	}
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Skill{}, ErrSkillNotFound
+		}
+		return Skill{}, fmt.Errorf("read skill %q: %w", name, err)
+	}
+
+	skill, err := ParseSkill(payload)
+	if err != nil {
+		return Skill{}, fmt.Errorf("parse skill %q: %w", name, err)
+	}
+	if skill.Name != name {
+		return Skill{}, fmt.Errorf("skill %q has mismatched name %q", name, skill.Name)
+	}
+	return skill, nil
+}
+
 // ListSkills returns all skills sorted by name.
 func (s *Store) ListSkills() ([]Skill, error) {
 	entries, err := os.ReadDir(s.SkillsDir())
@@ -225,6 +266,12 @@ func (s *Store) ListSkills() ([]Skill, error) {
 	for _, entry := range entries {
 		if entry.IsDir() {
 			name := entry.Name()
+			if strings.HasPrefix(name, ".") {
+				continue
+			}
+			if err := ValidateAgentSkillName(name); err != nil {
+				continue
+			}
 			skill, err := s.GetSkill(name)
 			if err != nil {
 				if !errors.Is(err, ErrSkillNotFound) {
@@ -281,6 +328,20 @@ func (s *Store) RemoveSkill(name string) error {
 func (s *Store) SkillContentPath(name string) (string, error) {
 	dir, err := s.SkillPackageDir(name)
 	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(filepath.Join(dir, SkillFileName)); err == nil {
+		return filepath.Join(dir, SkillFileName), nil
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	legacyPath, err := s.legacySkillContentPathChecked(name)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(legacyPath); err == nil {
+		return legacyPath, nil
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
 	return filepath.Join(dir, SkillFileName), nil
