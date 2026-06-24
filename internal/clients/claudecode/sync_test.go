@@ -486,6 +486,29 @@ func TestSyncAllowsSecretEnvAtUserScope(t *testing.T) {
 	if servers["stewreads"].Env["STEWREADS_API_KEY"] != "shhh" {
 		t.Fatalf("expected secret env value in user-scoped config, got: %#v", servers["stewreads"].Env)
 	}
+	assertFileMode(t, configPath, 0o600)
+}
+
+func TestSyncUserScopeRewritesExistingConfigWithPrivateMode(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "claude.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-user-managed.json")
+
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{}}
+`), 0o644); err != nil {
+		t.Fatalf("write existing user config: %v", err)
+	}
+
+	_, err := Sync([]registry.Manifest{newSecretManifest()}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+		Scope:      clients.ScopeUser,
+	})
+	if err != nil {
+		t.Fatalf("user-scope sync failed: %v", err)
+	}
+
+	assertFileMode(t, configPath, 0o600)
 }
 
 func TestSyncSecretKeysWithoutValuesAllowedAtProjectScope(t *testing.T) {
@@ -987,6 +1010,17 @@ func readManagedNames(t *testing.T, statePath string) []string {
 	}
 	slices.Sort(names)
 	return names
+}
+
+func assertFileMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != want {
+		t.Fatalf("expected %s mode %04o, got %04o", path, want, got)
+	}
 }
 
 func assertJSONEqual(t *testing.T, want, got []byte) {

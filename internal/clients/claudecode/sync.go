@@ -68,7 +68,7 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 		return result, nil
 	}
 
-	if err := applyPlan(configPath, statePath, root, rawServers, configExists, result.Removed, writeSet, nextState); err != nil {
+	if err := applyPlan(configPath, statePath, userScope, root, rawServers, configExists, result.Removed, writeSet, nextState); err != nil {
 		return SyncResult{}, err
 	}
 	return result, nil
@@ -111,7 +111,7 @@ func AttachRing(ring registry.Ring, manifests []registry.Manifest, opts SyncOpti
 	if opts.DryRun {
 		return result, nil
 	}
-	if err := applyPlan(configPath, statePath, root, rawServers, configExists, result.Removed, writeSet, nextState); err != nil {
+	if err := applyPlan(configPath, statePath, userScope, root, rawServers, configExists, result.Removed, writeSet, nextState); err != nil {
 		return SyncResult{}, err
 	}
 	return result, nil
@@ -150,7 +150,7 @@ func DetachRing(ringName string, opts SyncOptions) (SyncResult, error) {
 	if opts.DryRun {
 		return result, nil
 	}
-	if err := applyPlan(configPath, statePath, root, rawServers, configExists, result.Removed, nil, nextState); err != nil {
+	if err := applyPlan(configPath, statePath, userScope, root, rawServers, configExists, result.Removed, nil, nextState); err != nil {
 		return SyncResult{}, err
 	}
 	return result, nil
@@ -161,6 +161,7 @@ func DetachRing(ringName string, opts SyncOptions) (SyncResult, error) {
 // write set; pre-existing unmanaged entries are never serialized.
 func applyPlan(
 	configPath, statePath string,
+	userScope bool,
 	root, rawServers map[string]json.RawMessage,
 	configExists bool,
 	removed []string,
@@ -203,7 +204,11 @@ func applyPlan(
 			return fmt.Errorf("backup Claude Code config: %w", err)
 		}
 	}
-	if err := syncshared.WriteFileAtomically(configPath, payload, 0o644); err != nil {
+	configMode := os.FileMode(0o644)
+	if userScope {
+		configMode = 0o600
+	}
+	if err := syncshared.WriteFileAtomically(configPath, payload, configMode); err != nil {
 		return fmt.Errorf("write Claude Code config: %w", err)
 	}
 
