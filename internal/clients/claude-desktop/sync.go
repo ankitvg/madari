@@ -340,7 +340,7 @@ func rawMatchesServer(raw json.RawMessage, server serverConfig) bool {
 }
 
 func canonicalServerJSON(payload []byte) ([]byte, bool) {
-	var object map[string]json.RawMessage
+	var object map[string]any
 	if err := json.Unmarshal(payload, &object); err != nil {
 		return nil, false
 	}
@@ -354,19 +354,19 @@ func canonicalServerJSON(payload []byte) ([]byte, bool) {
 	return canonical, true
 }
 
-func stripEmptyModeledServerFields(object map[string]json.RawMessage) bool {
-	if raw, exists := object["args"]; exists {
-		var args []string
-		if err := json.Unmarshal(raw, &args); err != nil {
+func stripEmptyModeledServerFields(object map[string]any) bool {
+	if value, exists := object["args"]; exists {
+		args, ok := value.([]any)
+		if !ok {
 			return false
 		}
 		if len(args) == 0 {
 			delete(object, "args")
 		}
 	}
-	if raw, exists := object["env"]; exists {
-		var env map[string]string
-		if err := json.Unmarshal(raw, &env); err != nil {
+	if value, exists := object["env"]; exists {
+		env, ok := value.(map[string]any)
+		if !ok {
 			return false
 		}
 		if len(env) == 0 {

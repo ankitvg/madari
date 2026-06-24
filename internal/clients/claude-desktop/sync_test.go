@@ -622,6 +622,49 @@ func TestSyncAllowsRawMatchedEqualUnmanagedEntryWithEmptyOptionalFields(t *testi
 	}
 }
 
+func TestSyncAllowsRawMatchedEqualUnmanagedEntryWithUnsortedEnv(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "claude_desktop_config.json")
+	statePath := filepath.Join(tmp, "state", "claude-desktop-managed.json")
+
+	config := []byte(`{
+  "mcpServers": {
+    "runner": {
+      "command": "npx",
+      "env": {
+        "B": "2",
+        "A": "1"
+      }
+    }
+  }
+}
+`)
+	if err := os.WriteFile(configPath, config, 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	manifest := newStewreadsManifest()
+	manifest.Name = "runner"
+	manifest.Command = "npx"
+	manifest.Args = nil
+	manifest.Env = map[string]string{"A": "1", "B": "2"}
+
+	result, err := Sync([]registry.Manifest{manifest}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("expected raw-matched unmanaged entry with unsorted env to sync unchanged, got: %v", err)
+	}
+	if len(result.Unchanged) != 1 || result.Unchanged[0] != "runner" {
+		t.Fatalf("expected runner unchanged, got: %+v", result)
+	}
+	servers := readRawServerObjects(t, configPath)
+	if env, ok := servers["runner"]["env"].(map[string]any); !ok || env["A"] != "1" || env["B"] != "2" {
+		t.Fatalf("expected env to remain preserved, got: %#v", servers["runner"]["env"])
+	}
+}
+
 func readRawServerObjects(t *testing.T, configPath string) map[string]map[string]any {
 	t.Helper()
 	root := readRoot(t, configPath)
