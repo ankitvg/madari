@@ -46,22 +46,26 @@ func (a cliApp) cmdSkill(args []string) error {
 }
 
 func (a cliApp) cmdSkillAdd(args []string) error {
-	if len(args) == 0 {
-		return commandUsageError("skill add", "madari skill add <name> --file <path> [--description <text>]")
-	}
-	if isHelpToken(args[0]) {
+	if len(args) == 1 && isHelpToken(args[0]) {
 		printSkillAddHelp(a.stdout)
 		return nil
 	}
-	name := strings.TrimSpace(args[0])
+	name := ""
+	parseArgs := args
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		name = strings.TrimSpace(args[0])
+		parseArgs = args[1:]
+	}
 
 	fs := flag.NewFlagSet("skill add", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var filePath string
+	var dirPath string
 	var description string
-	fs.StringVar(&filePath, "file", "", "Markdown skill file to copy into Madari (required)")
+	fs.StringVar(&filePath, "file", "", "Markdown skill file to copy into Madari")
+	fs.StringVar(&dirPath, "dir", "", "Agent Skill package directory to copy into Madari")
 	fs.StringVar(&description, "description", "", "Skill description")
-	if err := fs.Parse(args[1:]); err != nil {
+	if err := fs.Parse(parseArgs); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printSkillAddHelp(a.stdout)
 			return nil
@@ -71,21 +75,20 @@ func (a cliApp) cmdSkillAdd(args []string) error {
 	if fs.NArg() != 0 {
 		return commandUnexpectedArgsError("skill add", fs.Args())
 	}
-
-	content, err := readSkillSourceFile(filePath)
+	pkg, err := a.skillPackageFromInput("skill add", name, filePath, dirPath, description, flagWasProvided(fs, "description"), nil)
 	if err != nil {
 		return err
 	}
-	if err := a.store.AddSkill(registry.Skill{Name: name, Description: description}, content); err != nil {
+	if err := a.store.AddSkillPackage(pkg); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.stdout, "added skill %s\n", name)
+	fmt.Fprintf(a.stdout, "added skill %s\n", pkg.Skill.Name)
 	return nil
 }
 
 func (a cliApp) cmdSkillUpdate(args []string) error {
 	if len(args) == 0 {
-		return commandUsageError("skill update", "madari skill update <name> --file <path> [--description <text>]")
+		return commandUsageError("skill update", "madari skill update <name> (--dir <path>|--file <path>) [--description <text>]")
 	}
 	if isHelpToken(args[0]) {
 		printSkillUpdateHelp(a.stdout)
@@ -96,8 +99,10 @@ func (a cliApp) cmdSkillUpdate(args []string) error {
 	fs := flag.NewFlagSet("skill update", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var filePath string
+	var dirPath string
 	var description string
-	fs.StringVar(&filePath, "file", "", "Markdown skill file to copy into Madari (required)")
+	fs.StringVar(&filePath, "file", "", "Markdown skill file to copy into Madari")
+	fs.StringVar(&dirPath, "dir", "", "Agent Skill package directory to copy into Madari")
 	fs.StringVar(&description, "description", "", "Skill description")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -110,24 +115,21 @@ func (a cliApp) cmdSkillUpdate(args []string) error {
 		return commandUnexpectedArgsError("skill update", fs.Args())
 	}
 
-	skill, err := a.store.GetSkill(name)
+	existing, err := a.store.GetSkill(name)
 	if err != nil {
 		if errors.Is(err, registry.ErrSkillNotFound) {
 			return fmt.Errorf("skill %q not found", name)
 		}
 		return err
 	}
-	if flagWasProvided(fs, "description") {
-		skill.Description = description
-	}
-	content, err := readSkillSourceFile(filePath)
+	pkg, err := a.skillPackageFromInput("skill update", name, filePath, dirPath, description, flagWasProvided(fs, "description"), &existing)
 	if err != nil {
 		return err
 	}
-	if err := a.store.SaveSkill(skill, content); err != nil {
+	if err := a.store.SaveSkillPackage(pkg); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.stdout, "updated skill %s\n", name)
+	fmt.Fprintf(a.stdout, "updated skill %s\n", pkg.Skill.Name)
 	return nil
 }
 
@@ -195,7 +197,8 @@ func (a cliApp) cmdSkillList(args []string) error {
 			Skills:        make([]skillJSON, 0, len(skills)),
 		}
 		for _, skill := range skills {
-			payload.Skills = append(payload.Skills, skillToJSON(skill, ""))
+			packagePath, _ := a.store.SkillPackageDir(skill.Name)
+			payload.Skills = append(payload.Skills, skillToJSON(skill, "", packagePath))
 		}
 		return writeJSON(a.stdout, payload)
 	}
@@ -247,12 +250,16 @@ func (a cliApp) cmdSkillShow(args []string) error {
 	if err != nil {
 		return err
 	}
+	packagePath, err := a.store.SkillPackageDir(skill.Name)
+	if err != nil {
+		return err
+	}
 
 	if jsonOut {
 		return writeJSON(a.stdout, skillShowJSON{
 			SchemaVersion: jsonSchemaVersion,
 			Command:       "skill show",
-			Skill:         skillToJSON(skill, contentPath),
+			Skill:         skillToJSON(skill, contentPath, packagePath),
 		})
 	}
 
@@ -260,6 +267,7 @@ func (a cliApp) cmdSkillShow(args []string) error {
 	if strings.TrimSpace(skill.Description) != "" {
 		fmt.Fprintf(a.stdout, "description: %s\n", skill.Description)
 	}
+	fmt.Fprintf(a.stdout, "package: %s\n", packagePath)
 	fmt.Fprintf(a.stdout, "content: %s\n", contentPath)
 	return nil
 }
@@ -277,7 +285,7 @@ func (a cliApp) cmdSkillRender(args []string) error {
 	fs := flag.NewFlagSet("skill render", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	var target string
-	fs.StringVar(&target, "client", "", "Render native SKILL.md for target client")
+	fs.StringVar(&target, "client", "", "Validate target support before rendering")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printSkillRenderHelp(a.stdout)
@@ -289,31 +297,17 @@ func (a cliApp) cmdSkillRender(args []string) error {
 		return commandUnexpectedArgsError("skill render", fs.Args())
 	}
 
-	skill, err := a.store.GetSkill(name)
+	content, err := a.store.GetSkillContent(name)
 	if err != nil {
 		if errors.Is(err, registry.ErrSkillNotFound) {
 			return fmt.Errorf("skill %q not found", name)
 		}
 		return err
 	}
-	content, err := a.store.GetSkillContent(name)
-	if err != nil {
-		if errors.Is(err, registry.ErrSkillNotFound) {
-			return fmt.Errorf("skill %q content not found", name)
-		}
-		return err
-	}
-	target = strings.TrimSpace(target)
-	if target != "" {
+	if target = strings.TrimSpace(target); target != "" {
 		if _, err := skillTargetByName(target); err != nil {
 			return err
 		}
-		rendered, err := renderClientSkill(skill, content)
-		if err != nil {
-			return err
-		}
-		_, err = a.stdout.Write(rendered.Content)
-		return err
 	}
 	_, err = a.stdout.Write(content)
 	return err
@@ -417,6 +411,57 @@ func readSkillSourceFile(path string) ([]byte, error) {
 	return content, nil
 }
 
+func (a cliApp) skillPackageFromInput(command, name, filePath, dirPath, description string, descriptionProvided bool, existing *registry.Skill) (registry.SkillPackage, error) {
+	filePath = strings.TrimSpace(filePath)
+	dirPath = strings.TrimSpace(dirPath)
+	if filePath == "" && dirPath == "" {
+		if command == "skill add" {
+			return registry.SkillPackage{}, commandUsageError(command, "madari skill add [<name>] (--dir <path>|--file <path>) [--description <text>]")
+		}
+		return registry.SkillPackage{}, commandUsageError(command, "madari skill update <name> (--dir <path>|--file <path>) [--description <text>]")
+	}
+	if filePath != "" && dirPath != "" {
+		return registry.SkillPackage{}, commandInputError(command, "use either --dir or --file, not both")
+	}
+	if dirPath != "" {
+		pkg, err := registry.NewSkillPackageFromDir(dirPath)
+		if err != nil {
+			return registry.SkillPackage{}, err
+		}
+		if strings.TrimSpace(name) != "" && pkg.Skill.Name != strings.TrimSpace(name) {
+			return registry.SkillPackage{}, fmt.Errorf("skill %q does not match package name %q", name, pkg.Skill.Name)
+		}
+		return pkg, nil
+	}
+
+	if strings.TrimSpace(name) == "" {
+		return registry.SkillPackage{}, commandUsageError(command, "madari skill add <name> --file <path> [--description <text>]")
+	}
+	content, err := readSkillSourceFile(filePath)
+	if err != nil {
+		return registry.SkillPackage{}, err
+	}
+	skill := registry.Skill{Name: strings.TrimSpace(name)}
+	if existing != nil {
+		skill = *existing
+	}
+	if parsed, _, parseErr := registry.ParseSkillFile(content); parseErr == nil {
+		if parsed.Name != skill.Name {
+			return registry.SkillPackage{}, fmt.Errorf("skill %q does not match source %s name %q", skill.Name, registry.SkillFileName, parsed.Name)
+		}
+		if existing == nil {
+			skill = parsed
+		}
+	}
+	if descriptionProvided {
+		skill.Description = description
+	}
+	if strings.TrimSpace(skill.Description) == "" {
+		return registry.SkillPackage{}, fmt.Errorf("skill %q requires a description for %s", skill.Name, registry.SkillFileName)
+	}
+	return registry.NewSkillPackageFromContent(skill, content)
+}
+
 func flagWasProvided(fs *flag.FlagSet, name string) bool {
 	provided := false
 	fs.Visit(func(f *flag.Flag) {
@@ -432,8 +477,8 @@ func printSkillHelp(out io.Writer) {
 	fmt.Fprintln(out, "  madari skill <subcommand> [options]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Subcommands:")
-	fmt.Fprintln(out, "  add       Add a managed skill from a Markdown file")
-	fmt.Fprintln(out, "  update    Replace a managed skill's Markdown content")
+	fmt.Fprintln(out, "  add       Add a managed Agent Skill package")
+	fmt.Fprintln(out, "  update    Replace a managed Agent Skill package")
 	fmt.Fprintln(out, "  remove    Remove a managed skill")
 	fmt.Fprintln(out, "  list      List configured skills")
 	fmt.Fprintln(out, "  show      Show one skill's metadata")
@@ -442,37 +487,42 @@ func printSkillHelp(out io.Writer) {
 	fmt.Fprintln(out, "  detach    Remove a materialized Madari-owned client skill")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Skills are standalone Markdown instructions that teach a model about")
-	fmt.Fprintln(out, "  a domain or workflow. Generic render prints the managed Markdown exactly;")
-	fmt.Fprintln(out, "  client render and attach synthesize native SKILL.md frontmatter.")
+	fmt.Fprintln(out, "  Skills are official Agent Skill directories with SKILL.md metadata and")
+	fmt.Fprintln(out, "  optional bundled resources. Render prints the managed SKILL.md exactly;")
+	fmt.Fprintln(out, "  attach materializes the full package into supported client skill roots.")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Run `madari skill <subcommand> --help` for subcommand help.")
 }
 
 func printSkillAddHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari skill add --dir <path>")
 	fmt.Fprintln(out, "  madari skill add <name> --file <path> [--description <text>]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
-	fmt.Fprintln(out, "  --file <path>              Markdown skill file to copy into Madari (required)")
+	fmt.Fprintln(out, "  --dir <path>               Agent Skill package directory to copy")
+	fmt.Fprintln(out, "  --file <path>              Legacy Markdown skill file to convert")
 	fmt.Fprintln(out, "  --description <text>       Skill description")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Add a standalone skill by copying a non-empty Markdown file into")
-	fmt.Fprintln(out, "  Madari's managed skills directory.")
+	fmt.Fprintln(out, "  Add an official Agent Skill package. The legacy --file form is converted")
+	fmt.Fprintln(out, "  into a package-backed SKILL.md and requires a description unless the")
+	fmt.Fprintln(out, "  source file already has valid SKILL.md frontmatter.")
 }
 
 func printSkillUpdateHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
+	fmt.Fprintln(out, "  madari skill update <name> --dir <path>")
 	fmt.Fprintln(out, "  madari skill update <name> --file <path> [--description <text>]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
-	fmt.Fprintln(out, "  --file <path>              Markdown skill file to copy into Madari (required)")
+	fmt.Fprintln(out, "  --dir <path>               Agent Skill package directory to copy")
+	fmt.Fprintln(out, "  --file <path>              Legacy Markdown skill file to convert")
 	fmt.Fprintln(out, "  --description <text>       Replace the skill description")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Replace the managed Markdown content for an existing skill. The")
-	fmt.Fprintln(out, "  current description is preserved unless --description is passed.")
+	fmt.Fprintln(out, "  Replace the managed package for an existing skill. The legacy --file")
+	fmt.Fprintln(out, "  form preserves the current description unless --description is passed.")
 }
 
 func printSkillRemoveHelp(out io.Writer) {
@@ -503,7 +553,7 @@ func printSkillShowHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --json                     Emit JSON instead of text")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Show one skill's metadata and managed Markdown file path.")
+	fmt.Fprintln(out, "  Show one skill's metadata, package path, and SKILL.md path.")
 }
 
 func printSkillRenderHelp(out io.Writer) {
@@ -511,13 +561,12 @@ func printSkillRenderHelp(out io.Writer) {
 	fmt.Fprintln(out, "  madari skill render <name> [--client <target>]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
-	fmt.Fprintln(out, "  --client <target>          Render native SKILL.md for a client")
+	fmt.Fprintln(out, "  --client <target>          Validate target support before rendering")
 	fmt.Fprintf(out, "                            Supported skill targets: %s\n", strings.Join(supportedSkillTargets(), ", "))
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Print the managed Markdown instructions for a standalone skill to")
-	fmt.Fprintln(out, "  stdout exactly. With --client, synthesize native SKILL.md frontmatter")
-	fmt.Fprintln(out, "  for preview or piping. Render mutates no state and writes no client files.")
+	fmt.Fprintln(out, "  Print the managed package SKILL.md to stdout exactly. With --client,")
+	fmt.Fprintln(out, "  validate the target first. Render mutates no state and writes no files.")
 }
 
 func printSkillAttachHelp(out io.Writer) {
@@ -531,8 +580,8 @@ func printSkillAttachHelp(out io.Writer) {
 	fmt.Fprintf(out, "                            Supported skill targets: %s\n", strings.Join(supportedSkillTargets(), ", "))
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Materialize a managed skill as <skills-dir>/<name>/SKILL.md using")
-	fmt.Fprintln(out, "  client-native YAML frontmatter. Refuses to overwrite unmanaged files.")
+	fmt.Fprintln(out, "  Materialize a managed skill package as <skills-dir>/<name>.")
+	fmt.Fprintln(out, "  Refuses to overwrite unmanaged package directories.")
 }
 
 func printSkillDetachHelp(out io.Writer) {
@@ -546,6 +595,6 @@ func printSkillDetachHelp(out io.Writer) {
 	fmt.Fprintf(out, "                            Supported skill targets: %s\n", strings.Join(supportedSkillTargets(), ", "))
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Remove a Madari-owned materialized SKILL.md. Detach refuses to delete")
-	fmt.Fprintln(out, "  files modified since Madari last wrote them.")
+	fmt.Fprintln(out, "  Remove a Madari-owned materialized skill package. Detach refuses to")
+	fmt.Fprintln(out, "  delete packages modified since Madari last wrote them.")
 }

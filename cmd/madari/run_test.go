@@ -346,7 +346,7 @@ func TestRunWithStoreSkillLifecycleCommands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected skill content to exist: %v", err)
 	}
-	if string(storedContent) != content {
+	if !strings.Contains(string(storedContent), "name: release") || !strings.Contains(string(storedContent), "Cut a patch release.") {
 		t.Fatalf("expected managed copy to match source, got: %q", storedContent)
 	}
 
@@ -370,7 +370,7 @@ func TestRunWithStoreSkillLifecycleCommands(t *testing.T) {
 	if result.code != 0 {
 		t.Fatalf("skill render failed: %s", result.stderr)
 	}
-	if result.stdout != content {
+	if !strings.Contains(result.stdout, "description: Release workflow") || !strings.Contains(result.stdout, content) {
 		t.Fatalf("expected exact render content %q, got %q", content, result.stdout)
 	}
 
@@ -402,7 +402,7 @@ func TestRunWithStoreSkillLifecycleCommands(t *testing.T) {
 	if result.code != 0 {
 		t.Fatalf("skill render after update failed: %s", result.stderr)
 	}
-	if result.stdout != updatedContent {
+	if !strings.Contains(result.stdout, "description: Updated workflow") || !strings.Contains(result.stdout, updatedContent) {
 		t.Fatalf("expected updated render content %q, got %q", updatedContent, result.stdout)
 	}
 
@@ -437,7 +437,7 @@ func TestRunWithStoreSkillJSONOutputs(t *testing.T) {
 	if listPayload.SchemaVersion != jsonSchemaVersion || listPayload.Command != "skill list" {
 		t.Fatalf("unexpected list json envelope: %+v", listPayload)
 	}
-	if len(listPayload.Skills) != 1 || listPayload.Skills[0].Name != "release" || listPayload.Skills[0].ContentPath != "" {
+	if len(listPayload.Skills) != 1 || listPayload.Skills[0].Name != "release" || listPayload.Skills[0].ContentPath != "" || !strings.HasSuffix(listPayload.Skills[0].PackagePath, filepath.Join("skills", "release")) {
 		t.Fatalf("unexpected skill list json: %+v", listPayload.Skills)
 	}
 
@@ -454,18 +454,71 @@ func TestRunWithStoreSkillJSONOutputs(t *testing.T) {
 	}
 	if showPayload.Skill.Name != "release" ||
 		showPayload.Skill.Description != "Release workflow" ||
-		!strings.HasSuffix(showPayload.Skill.ContentPath, filepath.Join("skills", "release.md")) {
+		!strings.HasSuffix(showPayload.Skill.ContentPath, filepath.Join("skills", "release", "SKILL.md")) ||
+		!strings.HasSuffix(showPayload.Skill.PackagePath, filepath.Join("skills", "release")) ||
+		showPayload.Skill.SkillPath != showPayload.Skill.ContentPath {
 		t.Fatalf("unexpected skill show json: %+v", showPayload.Skill)
+	}
+}
+
+func TestRunWithStoreSkillAddDirAndAttachCopiesPackageFiles(t *testing.T) {
+	store := newTestStore(t)
+	tmp := t.TempDir()
+	sourceDir := filepath.Join(tmp, "release")
+	if err := os.MkdirAll(filepath.Join(sourceDir, "references"), 0o755); err != nil {
+		t.Fatalf("mkdir references: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(sourceDir, "scripts"), 0o755); err != nil {
+		t.Fatalf("mkdir scripts: %v", err)
+	}
+	writeTextFile(t, sourceDir, "SKILL.md", "---\nname: release\ndescription: Release workflow\nmetadata:\n  owner: platform\n---\n\n# Release\n")
+	writeTextFile(t, filepath.Join(sourceDir, "references"), "CHECKLIST.md", "checklist\n")
+	scriptPath := writeTextFile(t, filepath.Join(sourceDir, "scripts"), "release.sh", "#!/bin/sh\n")
+	if err := os.Chmod(scriptPath, 0o755); err != nil {
+		t.Fatalf("chmod script: %v", err)
+	}
+
+	result := runCmd(store, "skill", "add", "--dir", sourceDir)
+	if result.code != 0 {
+		t.Fatalf("skill add --dir failed: %s", result.stderr)
+	}
+	skill, err := store.GetSkill("release")
+	if err != nil {
+		t.Fatalf("load package skill: %v", err)
+	}
+	if skill.Metadata["owner"] != "platform" {
+		t.Fatalf("expected metadata preserved, got: %+v", skill.Metadata)
+	}
+
+	skillsDir := filepath.Join(tmp, "attached")
+	result = runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", skillsDir)
+	if result.code != 0 {
+		t.Fatalf("skill attach failed: %s", result.stderr)
+	}
+	for _, path := range []string{
+		filepath.Join(skillsDir, "release", "SKILL.md"),
+		filepath.Join(skillsDir, "release", "references", "CHECKLIST.md"),
+		filepath.Join(skillsDir, "release", "scripts", "release.sh"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected attached package file %s: %v", path, err)
+		}
+	}
+	info, err := os.Stat(filepath.Join(skillsDir, "release", "scripts", "release.sh"))
+	if err != nil {
+		t.Fatalf("stat attached script: %v", err)
+	}
+	if info.Mode().Perm() != 0o755 {
+		t.Fatalf("expected executable script mode, got: %v", info.Mode().Perm())
 	}
 }
 
 func TestRunWithStoreSkillClientRenderNormalizesFrontmatter(t *testing.T) {
 	store := newTestStore(t)
 	source := `---
-name: old-release
+name: release
 description: Source release workflow
-allowed-tools:
-  - Read
+allowed-tools: Read
 ---
 
 # Release
@@ -481,25 +534,25 @@ Cut a patch release.
 		t.Fatalf("skill render --client failed: %s", result.stderr)
 	}
 	for _, want := range []string{
-		`name: "release"`,
-		`description: "Source release workflow"`,
-		"allowed-tools:\n  - Read",
+		`name: release`,
+		`description: Source release workflow`,
+		"allowed-tools: Read",
 		"# Release\nCut a patch release.",
 	} {
 		if !strings.Contains(result.stdout, want) {
 			t.Fatalf("expected %q in client render:\n%s", want, result.stdout)
 		}
 	}
-	if strings.Contains(result.stdout, "old-release") || strings.Count(result.stdout, "description:") != 1 {
-		t.Fatalf("expected normalized frontmatter, got:\n%s", result.stdout)
+	if strings.Count(result.stdout, "description:") != 1 {
+		t.Fatalf("expected canonical frontmatter, got:\n%s", result.stdout)
 	}
 
 	generic := runCmd(store, "skill", "render", "release")
 	if generic.code != 0 {
 		t.Fatalf("generic render failed: %s", generic.stderr)
 	}
-	if generic.stdout != source {
-		t.Fatalf("generic render should remain exact, got:\n%s", generic.stdout)
+	if generic.stdout != result.stdout {
+		t.Fatalf("generic render should match client-validated render, got:\n%s", generic.stdout)
 	}
 }
 
@@ -547,7 +600,7 @@ func TestRunWithStoreSkillAttachLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected attached skill file: %v", err)
 	}
-	if !strings.Contains(string(payload), `name: "release"`) || !strings.Contains(string(payload), "# Release") {
+	if !strings.Contains(string(payload), `name: release`) || !strings.Contains(string(payload), "# Release") {
 		t.Fatalf("unexpected attached skill file:\n%s", payload)
 	}
 
@@ -583,7 +636,8 @@ func TestRunWithStoreSkillAttachLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load skill attachment state: %v", err)
 	}
-	entry, ok := state[skillAttachmentKey("release", skillPath)]
+	skillDir := filepath.Join(skillsDir, "release")
+	entry, ok := state[skillAttachmentKey("release", skillDir)]
 	if !ok {
 		t.Fatalf("expected attached skill state, got: %+v", state)
 	}
@@ -642,12 +696,12 @@ func TestRunWithStoreSkillAttachAddsStandaloneToExistingRingOwnedSkill(t *testin
 		t.Fatalf("skill attach failed: %s", result.stderr)
 	}
 	statePath := filepath.Join(filepath.Dir(store.ServersDir()), "state", "codex-skills-managed.json")
-	skillPath := filepath.Join(skillsDir, "release", "SKILL.md")
+	skillDir := filepath.Join(skillsDir, "release")
 	state, err := loadSkillAttachmentState(statePath)
 	if err != nil {
 		t.Fatalf("load skill attachment state: %v", err)
 	}
-	key := skillAttachmentKey("release", skillPath)
+	key := skillAttachmentKey("release", skillDir)
 	entry := state[key]
 	entry.Sources = []string{syncshared.RingSource("research")}
 	state[key] = entry
@@ -684,12 +738,13 @@ func TestRunWithStoreSkillDetachPreservesRingOwnedSkill(t *testing.T) {
 		t.Fatalf("skill attach failed: %s", result.stderr)
 	}
 	statePath := filepath.Join(filepath.Dir(store.ServersDir()), "state", "codex-skills-managed.json")
-	skillPath := filepath.Join(skillsDir, "release", "SKILL.md")
+	skillDir := filepath.Join(skillsDir, "release")
+	skillPath := filepath.Join(skillDir, "SKILL.md")
 	state, err := loadSkillAttachmentState(statePath)
 	if err != nil {
 		t.Fatalf("load skill attachment state: %v", err)
 	}
-	key := skillAttachmentKey("release", skillPath)
+	key := skillAttachmentKey("release", skillDir)
 	entry := state[key]
 	entry.Sources = []string{syncshared.SourceStandalone, syncshared.RingSource("research")}
 	state[key] = entry
@@ -829,7 +884,7 @@ func TestRunWithStoreSkillAttachRefusesUnmanagedFile(t *testing.T) {
 		t.Fatalf("write unmanaged skill: %v", err)
 	}
 	result := runCmd(store, "skill", "attach", "release", "codex", "--skills-dir", skillsDir)
-	if result.code == 0 || !strings.Contains(result.stderr, "refusing to overwrite unmanaged skill file") {
+	if result.code == 0 || !strings.Contains(result.stderr, "refusing to overwrite unmanaged skill package") {
 		t.Fatalf("expected unmanaged conflict, code=%d stderr=%s", result.code, result.stderr)
 	}
 }
@@ -847,10 +902,6 @@ func TestRunWithStoreSkillDetachRemovesOwnedFileOnly(t *testing.T) {
 	}
 	skillDir := filepath.Join(skillsDir, "release")
 	skillPath := filepath.Join(skillDir, "SKILL.md")
-	assetPath := filepath.Join(skillDir, "reference.md")
-	if err := os.WriteFile(assetPath, []byte("supporting file\n"), 0o644); err != nil {
-		t.Fatalf("write supporting file: %v", err)
-	}
 
 	result := runCmd(store, "skill", "detach", "release", "codex", "--skills-dir", skillsDir)
 	if result.code != 0 {
@@ -862,8 +913,8 @@ func TestRunWithStoreSkillDetachRemovesOwnedFileOnly(t *testing.T) {
 	if _, err := os.Stat(skillPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected SKILL.md removed, stat err=%v", err)
 	}
-	if _, err := os.Stat(assetPath); err != nil {
-		t.Fatalf("supporting file should remain: %v", err)
+	if _, err := os.Stat(skillDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected package directory removed, stat err=%v", err)
 	}
 
 	result = runCmd(store, "skill", "detach", "release", "codex", "--skills-dir", skillsDir)
@@ -889,7 +940,7 @@ func TestRunWithStoreSkillDetachRefusesModifiedFile(t *testing.T) {
 	}
 
 	result := runCmd(store, "skill", "detach", "release", "codex", "--skills-dir", skillsDir)
-	if result.code == 0 || !strings.Contains(result.stderr, "refusing to remove modified skill file") {
+	if result.code == 0 || !strings.Contains(result.stderr, "refusing to remove modified skill package") {
 		t.Fatalf("expected modified-file refusal, code=%d stderr=%s", result.code, result.stderr)
 	}
 }
@@ -922,12 +973,12 @@ func TestRunWithStoreSkillRemoveRefusesRingOwnedSkill(t *testing.T) {
 		t.Fatalf("skill attach failed: %s", result.stderr)
 	}
 	statePath := filepath.Join(filepath.Dir(store.ServersDir()), "state", "codex-skills-managed.json")
-	skillPath := filepath.Join(skillsDir, "release", "SKILL.md")
+	skillDir := filepath.Join(skillsDir, "release")
 	state, err := loadSkillAttachmentState(statePath)
 	if err != nil {
 		t.Fatalf("load skill attachment state: %v", err)
 	}
-	key := skillAttachmentKey("release", skillPath)
+	key := skillAttachmentKey("release", skillDir)
 	entry := state[key]
 	entry.Sources = []string{syncshared.RingSource("research")}
 	state[key] = entry
@@ -947,7 +998,7 @@ func TestRunWithStoreSkillValidatesInputs(t *testing.T) {
 	path := writeSkillFile(t, tmp, "release.md", "# Release\n")
 	emptyPath := writeSkillFile(t, tmp, "empty.md", "  \n")
 
-	if result := runCmd(store, "skill", "add", "release", "--file", path); result.code != 0 {
+	if result := runCmd(store, "skill", "add", "release", "--file", path, "--description", "Release workflow"); result.code != 0 {
 		t.Fatalf("setup skill add failed: %s", result.stderr)
 	}
 
@@ -958,7 +1009,7 @@ func TestRunWithStoreSkillValidatesInputs(t *testing.T) {
 	}{
 		{
 			name:     "duplicate add",
-			args:     []string{"skill", "add", "release", "--file", path},
+			args:     []string{"skill", "add", "release", "--file", path, "--description", "Release workflow"},
 			expected: "already exists",
 		},
 		{
@@ -974,7 +1025,7 @@ func TestRunWithStoreSkillValidatesInputs(t *testing.T) {
 		{
 			name:     "add missing file flag",
 			args:     []string{"skill", "add", "nofile"},
-			expected: "--file is required",
+			expected: "madari skill add",
 		},
 		{
 			name:     "render missing skill",
@@ -1981,7 +2032,7 @@ func TestRunWithStoreImportDryRunAndApply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected release skill content after apply: %v", err)
 	}
-	if string(releaseContent) != "# Release\n" {
+	if !strings.Contains(string(releaseContent), "# Release\n") || !strings.Contains(string(releaseContent), "description: Release workflow") {
 		t.Fatalf("unexpected release skill content: %q", releaseContent)
 	}
 }
@@ -3378,7 +3429,7 @@ func TestRunWithStoreRingAttachDetachWithSkills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read materialized skill: %v", err)
 	}
-	if !strings.Contains(string(materialized), `name: "release"`) || !strings.Contains(string(materialized), "# Release") {
+	if !strings.Contains(string(materialized), `name: release`) || !strings.Contains(string(materialized), "# Release") {
 		t.Fatalf("expected native skill file, got:\n%s", materialized)
 	}
 	app := cliApp{store: store}
@@ -3386,7 +3437,7 @@ func TestRunWithStoreRingAttachDetachWithSkills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load skill attachment state: %v", err)
 	}
-	entry := state[skillAttachmentKey("release", skillPath)]
+	entry := state[skillAttachmentKey("release", filepath.Dir(skillPath))]
 	if !reflect.DeepEqual(entry.Sources, []string{syncshared.RingSource("research")}) {
 		t.Fatalf("expected ring source in skill state, got: %+v", entry)
 	}
@@ -3595,7 +3646,7 @@ func TestRunWithStoreRingDetachPreflightsModifiedSkillsBeforeServerDetach(t *tes
 	}
 
 	result := runCmd(store, "ring", "detach", "research", "gemini", "--config-path", configPath)
-	if result.code == 0 || !strings.Contains(result.stderr, "refusing to remove modified skill file") {
+	if result.code == 0 || !strings.Contains(result.stderr, "refusing to remove modified skill package") {
 		t.Fatalf("expected modified-skill refusal, got code=%d stderr=%s", result.code, result.stderr)
 	}
 	if _, err := os.Stat(releasePath); err != nil {
