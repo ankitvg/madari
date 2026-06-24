@@ -142,11 +142,13 @@ not run inputs yet.
 - Entries Madari does not manage keep their JSON value, including fields and
   server shapes Madari does not model (e.g. `type`/`url` remote entries);
   only managed or newly added entries are serialized from manifests. The
-  enclosing document is reformatted on write. If an unmanaged entry has the
-  same name as a desired manifest, Madari only treats it as an exact match
-  when its canonical raw JSON equals the manifest materialization; extra or
-  unmodeled fields are reported as a conflict instead of being silently
-  preserved under a trusted manifest name.
+  enclosing document is reformatted on write. For adapters with raw-match
+  validation (currently Claude Code and Claude Desktop), if an unmanaged entry
+  has the same name as a desired manifest, Madari only treats it as an exact
+  match when its canonical raw JSON, after normalizing empty modeled optional
+  fields, equals the manifest materialization; extra or unmodeled fields are
+  reported as a conflict instead of being silently preserved under a trusted
+  manifest name.
 - Keep managed entries isolated via per-target managed state tracking files
   (per scope for clients with both repo- and user-scoped configs).
 - Never adopt pre-existing entries Madari did not create, even when their

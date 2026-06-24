@@ -328,27 +328,52 @@ func rawMatchesServer(raw json.RawMessage, server serverConfig) bool {
 	if err != nil {
 		return false
 	}
-	rawPayload, ok := canonicalJSON(raw)
+	rawPayload, ok := canonicalServerJSON(raw)
 	if !ok {
 		return false
 	}
-	desiredPayload, ok := canonicalJSON(desired)
+	desiredPayload, ok := canonicalServerJSON(desired)
 	if !ok {
 		return false
 	}
 	return string(rawPayload) == string(desiredPayload)
 }
 
-func canonicalJSON(payload []byte) ([]byte, bool) {
-	var value any
-	if err := json.Unmarshal(payload, &value); err != nil {
+func canonicalServerJSON(payload []byte) ([]byte, bool) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &object); err != nil {
 		return nil, false
 	}
-	canonical, err := json.Marshal(value)
+	if !stripEmptyModeledServerFields(object) {
+		return nil, false
+	}
+	canonical, err := json.Marshal(object)
 	if err != nil {
 		return nil, false
 	}
 	return canonical, true
+}
+
+func stripEmptyModeledServerFields(object map[string]json.RawMessage) bool {
+	if raw, exists := object["args"]; exists {
+		var args []string
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return false
+		}
+		if len(args) == 0 {
+			delete(object, "args")
+		}
+	}
+	if raw, exists := object["env"]; exists {
+		var env map[string]string
+		if err := json.Unmarshal(raw, &env); err != nil {
+			return false
+		}
+		if len(env) == 0 {
+			delete(object, "env")
+		}
+	}
+	return true
 }
 
 // loadClaudeConfig returns the config root plus two views of mcpServers:
