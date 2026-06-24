@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -494,8 +495,19 @@ func TestSyncUserScopeRewritesExistingConfigWithPrivateMode(t *testing.T) {
 	configPath := filepath.Join(tmp, "claude.json")
 	statePath := filepath.Join(tmp, "state", "claude-code-user-managed.json")
 
-	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{}}
-`), 0o644); err != nil {
+	original := []byte(`{
+  "mcpServers": {
+    "stewreads": {
+      "command": "stewreads-mcp",
+      "env": {
+        "STEWREADS_API_KEY": "shhh",
+        "STEWREADS_CONFIG_PATH": "~/.config/stewreads/config.toml"
+      }
+    }
+  }
+}
+`)
+	if err := os.WriteFile(configPath, original, 0o644); err != nil {
 		t.Fatalf("write existing user config: %v", err)
 	}
 
@@ -509,6 +521,22 @@ func TestSyncUserScopeRewritesExistingConfigWithPrivateMode(t *testing.T) {
 	}
 
 	assertFileMode(t, configPath, 0o600)
+
+	backups, err := filepath.Glob(configPath + ".bak.*")
+	if err != nil {
+		t.Fatalf("glob backup files: %v", err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("expected one backup file, got %d", len(backups))
+	}
+	assertFileMode(t, backups[0], 0o600)
+	backupPayload, err := os.ReadFile(backups[0])
+	if err != nil {
+		t.Fatalf("read backup file: %v", err)
+	}
+	if string(backupPayload) != string(original) {
+		t.Fatalf("expected backup content to match original config")
+	}
 }
 
 func TestSyncSecretKeysWithoutValuesAllowedAtProjectScope(t *testing.T) {
@@ -1014,6 +1042,9 @@ func readManagedNames(t *testing.T, statePath string) []string {
 
 func assertFileMode(t *testing.T, path string, want os.FileMode) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("unix mode bits are used in this test")
+	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat %s: %v", path, err)

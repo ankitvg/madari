@@ -146,11 +146,22 @@ func MapKeys[K comparable, V any](m map[K]V) []K {
 }
 
 func BackupFile(path string) (string, error) {
+	return backupFile(path, 0, false)
+}
+
+func BackupFileWithMode(path string, mode os.FileMode) (string, error) {
+	return backupFile(path, mode, true)
+}
+
+func backupFile(path string, overrideMode os.FileMode, useOverrideMode bool) (string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return "", err
 	}
 	mode := info.Mode().Perm()
+	if useOverrideMode {
+		mode = overrideMode.Perm()
+	}
 
 	source, err := os.Open(path)
 	if err != nil {

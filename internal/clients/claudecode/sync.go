@@ -199,14 +199,20 @@ func applyPlan(
 	}
 	payload = append(payload, '\n')
 
-	if configExists {
-		if _, err := syncshared.BackupFile(configPath); err != nil {
-			return fmt.Errorf("backup Claude Code config: %w", err)
-		}
-	}
 	configMode := os.FileMode(0o644)
 	if userScope {
 		configMode = 0o600
+	}
+	if configExists {
+		var err error
+		if userScope {
+			_, err = syncshared.BackupFileWithMode(configPath, configMode)
+		} else {
+			_, err = syncshared.BackupFile(configPath)
+		}
+		if err != nil {
+			return fmt.Errorf("backup Claude Code config: %w", err)
+		}
 	}
 	if err := syncshared.WriteFileAtomically(configPath, payload, configMode); err != nil {
 		return fmt.Errorf("write Claude Code config: %w", err)

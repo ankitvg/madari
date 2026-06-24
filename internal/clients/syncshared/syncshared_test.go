@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -158,5 +159,37 @@ func TestSaveThenLoadManagedStateRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(loaded, expected) {
 		t.Fatalf("expected round-trip state %#v, got %#v", expected, loaded)
+	}
+}
+
+func TestBackupFileWithModeOverridesMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix mode bits are used in this test")
+	}
+	path := filepath.Join(t.TempDir(), "config.json")
+	payload := []byte(`{"mcpServers":{}}
+`)
+	if err := os.WriteFile(path, payload, 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	backupPath, err := BackupFileWithMode(path, 0o600)
+	if err != nil {
+		t.Fatalf("backup file: %v", err)
+	}
+
+	info, err := os.Stat(backupPath)
+	if err != nil {
+		t.Fatalf("stat backup: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("expected backup mode 0600, got %04o", got)
+	}
+	backupPayload, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if string(backupPayload) != string(payload) {
+		t.Fatalf("expected backup content to match source")
 	}
 }
