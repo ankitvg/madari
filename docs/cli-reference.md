@@ -105,16 +105,16 @@ expected_outputs = ["findings summary", "sources inspected"]
 
 Attach records a `ring:<name>` ownership source for every server and skill
 member. Eligible servers are materialized into MCP client config; skill members
-are materialized as native `SKILL.md` files for `claude-code`, `codex`,
-`gemini`, and `vibe`. Rings containing skills cannot attach to
+are materialized as native skill package directories for `claude-code`,
+`codex`, `gemini`, and `vibe`. Rings containing skills cannot attach to
 `claude-desktop`. Detach releases the source, and a server config entry or
-skill file leaves the client only when no source owns it. Ownership is
+skill package leaves the client only when no source owns it. Ownership is
 reference-counted: overlapping rings and standalone+ring combinations resolve
 in any attach/detach order. Disabled, secret-refused, or missing server
 members stay owned but absent until they become eligible. Ring membership
 edits (including snapshot imports) reconcile on the next sync, attach, or
-detach. Attaching onto an entry or skill file madari does not manage is
-refused, even when values match.
+detach. Attaching onto an entry or skill package directory madari does not
+manage is refused, even when values match.
 
 `ring delete` removes the ring definition only after every target/scope has
 released its `ring:<name>` ownership source. If the ring is still attached,
@@ -153,7 +153,9 @@ server member = warning).
 ## Skills
 
 ```bash
+madari skill add --dir ./release
 madari skill add release --file ./SKILL.md --description "Release workflow"
+madari skill update release --dir ./release
 madari skill update release --file ./SKILL.md
 madari skill update release --file ./SKILL.md --description "Updated workflow"
 madari skill list
@@ -166,26 +168,27 @@ madari skill detach release codex
 madari skill remove release
 ```
 
-Skills are standalone Markdown instructions stored as managed local copies:
-metadata lives at `<config-root>/skills/<name>.toml`, and content lives at
-`<config-root>/skills/<name>.md`. `skill add` fails if the skill exists;
-`skill update` fails if it does not. Updating preserves the existing
-description unless `--description` is passed.
+Skills are official Agent Skill packages stored as managed local copies at
+`<config-root>/skills/<name>/`. Each package has a required `SKILL.md` with
+YAML frontmatter and may include bundled files such as `references/`,
+`scripts/`, and `assets/`. `skill add --dir` copies a complete package;
+the legacy `--file` form converts one Markdown file into package-backed
+`SKILL.md` and requires a description unless the source already has valid
+frontmatter. `skill update` fails if the skill does not exist.
 
-Plain `skill render` prints the managed Markdown bytes exactly to stdout and
-mutates nothing. `skill render --client <target>` synthesizes a native
-`SKILL.md` with YAML frontmatter for `claude-code`, `codex`, `gemini`, or
-`vibe`; it still writes no files.
+Plain `skill render` prints the managed `SKILL.md` bytes exactly to stdout and
+mutates nothing. `skill render --client <target>` validates target support and
+prints the same managed `SKILL.md`.
 
-Direct `skill attach` writes `<skills-dir>/<name>/SKILL.md` and records
-`standalone` ownership in Madari state. Project scope is the default; user scope
-writes to the target's user skill root. `--skills-dir` overrides the root.
-Attach refuses to overwrite unmanaged files. `skill detach` releases direct
-ownership and removes the `SKILL.md` only when no source owns it anymore; it
-refuses to delete files modified since Madari last wrote them. Ring attach uses
-the same native skill materialization state with `ring:<name>` ownership
-sources. Skills are not written into MCP client configs and are not consumed by
-`run`.
+Direct `skill attach` writes the full package to `<skills-dir>/<name>/` and
+records `standalone` ownership in Madari state. Project scope is the default;
+user scope writes to the target's user skill root. `--skills-dir` overrides the
+root. Attach refuses to overwrite unmanaged package directories. `skill detach`
+releases direct ownership and removes the package only when no source owns it
+anymore; it refuses to delete packages modified since Madari last wrote them.
+Ring attach uses the same native skill materialization state with
+`ring:<name>` ownership sources. Skills are not written into MCP client configs
+and are not consumed by `run`.
 
 ## Diagnostics
 
@@ -205,10 +208,14 @@ madari import --file madari-snapshot.json --apply
 ```
 
 Snapshots are versioned JSON documents containing server manifests, ring
-definitions, and skill content. Export writes the current snapshot version
-with `servers`, `rings`, and `skills`. Import is a dry-run by default;
-`--apply` adds or updates listed servers, rings, and skills, never deletes
-entries absent from the snapshot, and never attaches or syncs imported rings.
+definitions, and skill packages. Export writes the current snapshot version
+with `servers`, `rings`, and `skills`. Snapshot version 6 stores skills as
+deterministic package file entries with relative paths, base64 content, and
+file modes; older snapshots with a single skill `content` string remain
+importable and are converted to package-backed `SKILL.md`. Import is a dry-run
+by default; `--apply` adds or updates listed servers, rings, and skills, never
+deletes entries absent from the snapshot, and never attaches or syncs imported
+rings.
 Ring membership changes converge through the normal reconciliation pass on
 the next sync, attach, or detach.
 
@@ -434,14 +441,15 @@ itself.
   "skills": [
     {
       "name": "release",
-      "description": "Release workflow"
+      "description": "Release workflow",
+      "package_path": "/path/to/madari/skills/release"
     }
   ]
 }
 ```
 
 `madari skill show <name> --json` wraps one skill object and includes the
-managed content path:
+managed package and `SKILL.md` paths:
 
 ```json
 {
@@ -450,7 +458,9 @@ managed content path:
   "skill": {
     "name": "release",
     "description": "Release workflow",
-    "content_path": "/path/to/madari/skills/release.md"
+    "content_path": "/path/to/madari/skills/release/SKILL.md",
+    "package_path": "/path/to/madari/skills/release",
+    "skill_path": "/path/to/madari/skills/release/SKILL.md"
   }
 }
 ```

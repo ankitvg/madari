@@ -259,16 +259,28 @@ type skillShowJSON struct {
 }
 
 type skillJSON struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	ContentPath string `json:"content_path,omitempty"`
+	Name          string            `json:"name"`
+	Description   string            `json:"description"`
+	ContentPath   string            `json:"content_path,omitempty"`
+	PackagePath   string            `json:"package_path,omitempty"`
+	SkillPath     string            `json:"skill_path,omitempty"`
+	License       string            `json:"license,omitempty"`
+	Compatibility string            `json:"compatibility,omitempty"`
+	AllowedTools  string            `json:"allowed_tools,omitempty"`
+	Metadata      map[string]string `json:"metadata,omitempty"`
 }
 
-func skillToJSON(skill registry.Skill, contentPath string) skillJSON {
+func skillToJSON(skill registry.Skill, contentPath, packagePath string) skillJSON {
 	return skillJSON{
-		Name:        skill.Name,
-		Description: skill.Description,
-		ContentPath: contentPath,
+		Name:          skill.Name,
+		Description:   skill.Description,
+		ContentPath:   contentPath,
+		PackagePath:   packagePath,
+		SkillPath:     contentPath,
+		License:       skill.License,
+		Compatibility: skill.Compatibility,
+		AllowedTools:  skill.AllowedTools,
+		Metadata:      skill.Metadata,
 	}
 }
 

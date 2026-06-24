@@ -168,7 +168,7 @@ func (a cliApp) ensureSkillNotAttached(name string) error {
 			command += " --scope user"
 		}
 		if holder.path != "" && holder.source == syncshared.SourceStandalone {
-			command += fmt.Sprintf(" --skills-dir %s", filepath.Dir(filepath.Dir(holder.path)))
+			command += fmt.Sprintf(" --skills-dir %s", filepath.Dir(holder.path))
 		}
 		guidance = append(guidance, command)
 	}
@@ -188,19 +188,11 @@ func (a cliApp) attachSkillSource(name, target, scope, skillsDir, source string,
 	if source == "" {
 		return skillAttachResult{}, fmt.Errorf("skill attachment source is required")
 	}
-	skill, err := a.store.GetSkill(name)
+	pkg, err := a.store.GetSkillPackage(name)
 	if err != nil {
 		if errors.Is(err, registry.ErrSkillNotFound) {
 			return skillAttachResult{}, fmt.Errorf("skill %q not found", name)
 		}
-		return skillAttachResult{}, err
-	}
-	content, err := a.store.GetSkillContent(name)
-	if err != nil {
-		return skillAttachResult{}, err
-	}
-	rendered, err := renderClientSkill(skill, content)
-	if err != nil {
 		return skillAttachResult{}, err
 	}
 	root, err := ct.skillRoots.resolve(scope, skillsDir)
@@ -208,76 +200,82 @@ func (a cliApp) attachSkillSource(name, target, scope, skillsDir, source string,
 		return skillAttachResult{}, err
 	}
 	root = filepath.Clean(root)
-	skillPath := filepath.Join(root, name, "SKILL.md")
+	skillDir := filepath.Join(root, name)
+	skillPath := filepath.Join(skillDir, registry.SkillFileName)
 	statePath := a.skillAttachmentStatePath(target, scope)
 	state, err := loadSkillAttachmentState(statePath)
 	if err != nil {
 		return skillAttachResult{}, err
 	}
 
-	desiredHash := skillContentHash(rendered.Content)
+	desiredHash := pkg.Hash()
 	result := skillAttachResult{
 		SkillPath: skillPath,
 		SkillsDir: root,
 		DryRun:    dryRun,
 	}
 
-	stateKey, entry, owned := findSkillAttachment(state, name, skillPath)
-	var previousContent []byte
-	hadPreviousContent := false
-	needsFileWrite := false
+	stateKey, entry, owned := findSkillAttachment(state, name, skillDir)
+	var previousFiles []registry.SkillPackageFile
+	hadPreviousPackage := false
+	needsPackageWrite := false
+	needsStateWrite := false
 	if owned {
-		current, readErr := os.ReadFile(skillPath)
+		currentHash, currentSkillFileHash, currentFiles, readErr := readMaterializedSkillPackage(skillDir)
 		switch {
 		case readErr == nil:
-			previousContent = append([]byte(nil), current...)
-			hadPreviousContent = true
-			if skillContentHash(current) != entry.Hash {
-				return skillAttachResult{}, fmt.Errorf("refusing to update modified skill file %s; detach or restore it manually", skillPath)
+			previousFiles = currentFiles
+			hadPreviousPackage = true
+			hashMatches := skillAttachmentHashMatches(entry.Hash, currentHash, currentSkillFileHash)
+			if !hashMatches {
+				return skillAttachResult{}, fmt.Errorf("refusing to update modified skill package %s; detach or restore it manually", skillDir)
+			}
+			if currentHash != entry.Hash {
+				needsStateWrite = true
 			}
 			hasSource := skillAttachmentHasSource(entry, source)
 			switch {
-			case desiredHash == entry.Hash && hasSource:
+			case desiredHash == currentHash && hasSource:
 				result.Unchanged = []string{name}
-			case desiredHash == entry.Hash:
+			case desiredHash == currentHash:
 				result.Updated = []string{name}
 			default:
 				result.Updated = []string{name}
-				needsFileWrite = true
+				needsPackageWrite = true
 			}
 		case errors.Is(readErr, os.ErrNotExist):
 			result.Added = []string{name}
-			needsFileWrite = true
+			needsPackageWrite = true
 		default:
-			return skillAttachResult{}, fmt.Errorf("read skill file %s: %w", skillPath, readErr)
+			return skillAttachResult{}, fmt.Errorf("refusing to update modified skill package %s; detach or restore it manually", skillDir)
 		}
 	} else {
-		if _, statErr := os.Stat(skillPath); statErr == nil {
-			return skillAttachResult{}, fmt.Errorf("refusing to overwrite unmanaged skill file %s", skillPath)
+		if _, statErr := os.Stat(skillDir); statErr == nil {
+			return skillAttachResult{}, fmt.Errorf("refusing to overwrite unmanaged skill package %s", skillDir)
 		} else if !errors.Is(statErr, os.ErrNotExist) {
-			return skillAttachResult{}, fmt.Errorf("inspect skill file %s: %w", skillPath, statErr)
+			return skillAttachResult{}, fmt.Errorf("inspect skill package %s: %w", skillDir, statErr)
 		}
 		result.Added = []string{name}
-		needsFileWrite = true
+		needsPackageWrite = true
 	}
 
-	if dryRun || len(result.Unchanged) > 0 {
+	if dryRun || (len(result.Unchanged) > 0 && !needsStateWrite) {
 		return result, nil
 	}
-	if needsFileWrite {
-		if err := syncshared.WriteFileAtomically(skillPath, rendered.Content, 0o644); err != nil {
-			return skillAttachResult{}, fmt.Errorf("write skill file %s: %w", skillPath, err)
+	if needsPackageWrite {
+		if err := writeMaterializedSkillPackage(skillDir, pkg.Files); err != nil {
+			return skillAttachResult{}, fmt.Errorf("write skill package %s: %w", skillDir, err)
 		}
 	}
 	entry.Name = name
-	entry.Path = skillPath
+	entry.Path = skillDir
 	entry.Hash = desiredHash
 	entry.Sources = skillAttachmentSourcesWith(entry.Sources, source)
 	state[stateKey] = entry
 	if err := saveSkillAttachmentStateFunc(statePath, state); err != nil {
-		if needsFileWrite {
-			if rollbackErr := rollbackSkillFileWrite(skillPath, previousContent, hadPreviousContent); rollbackErr != nil {
-				return skillAttachResult{}, fmt.Errorf("write skill attachment state: %w; rollback skill file %s: %v", err, skillPath, rollbackErr)
+		if needsPackageWrite {
+			if rollbackErr := rollbackSkillPackageWrite(skillDir, previousFiles, hadPreviousPackage); rollbackErr != nil {
+				return skillAttachResult{}, fmt.Errorf("write skill attachment state: %w; rollback skill package %s: %v", err, skillDir, rollbackErr)
 			}
 		}
 		return skillAttachResult{}, fmt.Errorf("write skill attachment state: %w", err)
@@ -309,16 +307,17 @@ func (a cliApp) detachSkillSource(name, target, scope, skillsDir, source string,
 		return skillAttachResult{}, rootErr
 	}
 	root = filepath.Clean(root)
-	expectedSkillPath := filepath.Join(root, name, "SKILL.md")
+	expectedSkillDir := filepath.Join(root, name)
+	expectedSkillPath := filepath.Join(expectedSkillDir, registry.SkillFileName)
 
-	stateKey, entry, owned := findSkillAttachment(state, name, expectedSkillPath)
+	stateKey, entry, owned := findSkillAttachment(state, name, expectedSkillDir)
 	if !owned {
 		if matches := skillAttachmentsByName(state, name); len(matches) > 0 {
 			locations := make([]string, 0, len(matches))
 			for _, match := range matches {
 				locations = append(locations, match.Path)
 			}
-			return skillAttachResult{}, fmt.Errorf("skill %q is attached to %s, but not at %s; attached paths: %s", name, target, expectedSkillPath, strings.Join(locations, ", "))
+			return skillAttachResult{}, fmt.Errorf("skill %q is attached to %s, but not at %s; attached paths: %s", name, target, expectedSkillDir, strings.Join(locations, ", "))
 		}
 		return skillAttachResult{
 			SkillPath: expectedSkillPath,
@@ -336,8 +335,9 @@ func (a cliApp) detachSkillSource(name, target, scope, skillsDir, source string,
 		}, nil
 	}
 
-	skillPath := filepath.Clean(entry.Path)
-	root = filepath.Dir(filepath.Dir(skillPath))
+	skillDir := filepath.Clean(entry.Path)
+	skillPath := filepath.Join(skillDir, registry.SkillFileName)
+	root = filepath.Dir(skillDir)
 	remainingSources := skillAttachmentSourcesWithout(entry.Sources, source)
 	result := skillAttachResult{
 		SkillPath: skillPath,
@@ -346,33 +346,33 @@ func (a cliApp) detachSkillSource(name, target, scope, skillsDir, source string,
 		Removed:   []string{name},
 	}
 
-	current, readErr := os.ReadFile(skillPath)
+	currentHash, currentSkillFileHash, _, readErr := readMaterializedSkillPackage(skillDir)
 	switch {
 	case readErr == nil:
-		if skillContentHash(current) != entry.Hash {
-			return skillAttachResult{}, fmt.Errorf("refusing to remove modified skill file %s; remove it manually if desired", skillPath)
+		if !skillAttachmentHashMatches(entry.Hash, currentHash, currentSkillFileHash) {
+			return skillAttachResult{}, fmt.Errorf("refusing to remove modified skill package %s; remove it manually if desired", skillDir)
 		}
 	case errors.Is(readErr, os.ErrNotExist):
 		// Clear stale ownership state below.
 	default:
-		return skillAttachResult{}, fmt.Errorf("read skill file %s: %w", skillPath, readErr)
+		return skillAttachResult{}, fmt.Errorf("refusing to remove modified skill package %s; remove it manually if desired", skillDir)
 	}
 
 	if dryRun {
 		return result, nil
 	}
 	if len(remainingSources) == 0 && readErr == nil {
-		if err := os.Remove(skillPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return skillAttachResult{}, fmt.Errorf("remove skill file %s: %w", skillPath, err)
-		}
-		if err := os.Remove(filepath.Dir(skillPath)); err != nil && !errors.Is(err, os.ErrNotExist) && !isDirectoryNotEmpty(err) {
-			return skillAttachResult{}, fmt.Errorf("remove empty skill directory %s: %w", filepath.Dir(skillPath), err)
+		if err := os.RemoveAll(skillDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return skillAttachResult{}, fmt.Errorf("remove skill package %s: %w", skillDir, err)
 		}
 	}
 	if len(remainingSources) == 0 {
 		delete(state, stateKey)
 	} else {
 		entry.Sources = remainingSources
+		if readErr == nil {
+			entry.Hash = currentHash
+		}
 		state[stateKey] = entry
 	}
 	if err := saveSkillAttachmentStateFunc(statePath, state); err != nil {
@@ -430,6 +430,7 @@ func (a cliApp) detachSkillSourceWhere(target, scope, source string, dryRun bool
 		key              string
 		entry            skillAttachmentEntry
 		skillPath        string
+		currentHash      string
 		readErr          error
 		remainingSources []string
 	}
@@ -439,26 +440,28 @@ func (a cliApp) detachSkillSourceWhere(target, scope, source string, dryRun bool
 		if !skillAttachmentHasSource(entry, source) || (include != nil && !include(entry)) {
 			continue
 		}
-		skillPath := filepath.Clean(entry.Path)
-		current, readErr := os.ReadFile(skillPath)
+		skillDir := filepath.Clean(entry.Path)
+		skillPath := filepath.Join(skillDir, registry.SkillFileName)
+		currentHash, currentSkillFileHash, _, readErr := readMaterializedSkillPackage(skillDir)
 		switch {
 		case readErr == nil:
-			if skillContentHash(current) != entry.Hash {
-				return skillAttachResult{}, fmt.Errorf("refusing to remove modified skill file %s; remove it manually if desired", skillPath)
+			if !skillAttachmentHashMatches(entry.Hash, currentHash, currentSkillFileHash) {
+				return skillAttachResult{}, fmt.Errorf("refusing to remove modified skill package %s; remove it manually if desired", skillDir)
 			}
 		case errors.Is(readErr, os.ErrNotExist):
 			// Clear stale ownership state below.
 		default:
-			return skillAttachResult{}, fmt.Errorf("read skill file %s: %w", skillPath, readErr)
+			return skillAttachResult{}, fmt.Errorf("refusing to remove modified skill package %s; remove it manually if desired", skillDir)
 		}
 
-		result.SkillsDir = filepath.Dir(filepath.Dir(skillPath))
+		result.SkillsDir = filepath.Dir(skillDir)
 		result.Removed = appendUniqueName(result.Removed, entry.Name)
 		remainingSources := skillAttachmentSourcesWithout(entry.Sources, source)
 		candidates = append(candidates, detachCandidate{
 			key:              key,
 			entry:            entry,
 			skillPath:        skillPath,
+			currentHash:      currentHash,
 			readErr:          readErr,
 			remainingSources: remainingSources,
 		})
@@ -469,17 +472,18 @@ func (a cliApp) detachSkillSourceWhere(target, scope, source string, dryRun bool
 	}
 	for _, candidate := range candidates {
 		if len(candidate.remainingSources) == 0 && candidate.readErr == nil {
-			if err := os.Remove(candidate.skillPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return skillAttachResult{}, fmt.Errorf("remove skill file %s: %w", candidate.skillPath, err)
-			}
-			if err := os.Remove(filepath.Dir(candidate.skillPath)); err != nil && !errors.Is(err, os.ErrNotExist) && !isDirectoryNotEmpty(err) {
-				return skillAttachResult{}, fmt.Errorf("remove empty skill directory %s: %w", filepath.Dir(candidate.skillPath), err)
+			skillDir := filepath.Dir(candidate.skillPath)
+			if err := os.RemoveAll(skillDir); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return skillAttachResult{}, fmt.Errorf("remove skill package %s: %w", skillDir, err)
 			}
 		}
 		if len(candidate.remainingSources) == 0 {
 			delete(state, candidate.key)
 		} else {
 			candidate.entry.Sources = candidate.remainingSources
+			if candidate.readErr == nil {
+				candidate.entry.Hash = candidate.currentHash
+			}
 			state[candidate.key] = candidate.entry
 		}
 	}
@@ -753,7 +757,7 @@ func strconvUnquote(value string) (string, error) {
 	return out.String(), nil
 }
 
-const skillAttachmentStateVersion = 3
+const skillAttachmentStateVersion = 4
 
 var saveSkillAttachmentStateFunc = saveSkillAttachmentState
 
@@ -803,11 +807,19 @@ func loadSkillAttachmentState(path string) (map[string]skillAttachmentEntry, err
 			}
 		}
 		return normalizeSkillAttachmentEntries(entries, []string{syncshared.SourceStandalone}), nil
-	case skillAttachmentStateVersion:
+	case 3:
 		entries := []skillAttachmentEntry{}
 		if len(probe.Skills) > 0 {
 			if err := json.Unmarshal(probe.Skills, &entries); err != nil {
 				return nil, fmt.Errorf("parse skill attachment state v3 entries: %w", err)
+			}
+		}
+		return normalizeSkillAttachmentEntries(entries, nil), nil
+	case skillAttachmentStateVersion:
+		entries := []skillAttachmentEntry{}
+		if len(probe.Skills) > 0 {
+			if err := json.Unmarshal(probe.Skills, &entries); err != nil {
+				return nil, fmt.Errorf("parse skill attachment state v4 entries: %w", err)
 			}
 		}
 		return normalizeSkillAttachmentEntries(entries, nil), nil
@@ -859,6 +871,9 @@ func normalizeSkillAttachmentEntries(entries []skillAttachmentEntry, defaultSour
 func normalizeSkillAttachmentEntry(entry skillAttachmentEntry, defaultSources []string) (skillAttachmentEntry, bool) {
 	entry.Name = strings.TrimSpace(entry.Name)
 	entry.Path = filepath.Clean(strings.TrimSpace(entry.Path))
+	if filepath.Base(entry.Path) == registry.SkillFileName {
+		entry.Path = filepath.Dir(entry.Path)
+	}
 	entry.Hash = strings.TrimSpace(entry.Hash)
 	entry.Sources = normalizeSkillAttachmentSources(entry.Sources)
 	if len(entry.Sources) == 0 {
@@ -954,6 +969,97 @@ func skillAttachmentsByName(state map[string]skillAttachmentEntry, name string) 
 		return matches[i].Path < matches[j].Path
 	})
 	return matches
+}
+
+func readMaterializedSkillPackage(path string) (string, string, []registry.SkillPackageFile, error) {
+	if _, err := os.Stat(path); err != nil {
+		return "", "", nil, err
+	}
+	pkg, err := registry.NewSkillPackageFromDir(path)
+	if err != nil {
+		return "", "", nil, err
+	}
+	skillContent, err := pkg.SkillFileContent()
+	if err != nil {
+		return "", "", nil, err
+	}
+	return pkg.Hash(), skillContentHash(skillContent), pkg.Files, nil
+}
+
+func skillAttachmentHashMatches(storedHash, packageHash, legacySkillFileHash string) bool {
+	storedHash = strings.TrimSpace(storedHash)
+	return storedHash != "" && (storedHash == packageHash || storedHash == legacySkillFileHash)
+}
+
+func writeMaterializedSkillPackage(path string, files []registry.SkillPackageFile) error {
+	path = filepath.Clean(path)
+	parent := filepath.Dir(path)
+	base := filepath.Base(path)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return err
+	}
+
+	tmp, err := os.MkdirTemp(parent, "."+base+".tmp-*")
+	if err != nil {
+		return err
+	}
+	cleanupTmp := true
+	defer func() {
+		if cleanupTmp {
+			_ = os.RemoveAll(tmp)
+		}
+	}()
+
+	for _, file := range files {
+		target := filepath.Join(tmp, filepath.FromSlash(file.Path))
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		if err := syncshared.WriteFileAtomically(target, file.Content, file.Mode); err != nil {
+			return err
+		}
+	}
+	backup := ""
+	if _, err := os.Lstat(path); err == nil {
+		backup, err = unusedTempPath(parent, "."+base+".bak-*")
+		if err != nil {
+			return err
+		}
+		if err := os.Rename(path, backup); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		if backup != "" {
+			_ = os.Rename(backup, path)
+		}
+		return err
+	}
+	cleanupTmp = false
+	if backup != "" {
+		_ = os.RemoveAll(backup)
+	}
+	return nil
+}
+
+func rollbackSkillPackageWrite(path string, previous []registry.SkillPackageFile, hadPrevious bool) error {
+	if hadPrevious {
+		return writeMaterializedSkillPackage(path, previous)
+	}
+	return os.RemoveAll(path)
+}
+
+func unusedTempPath(dir, pattern string) (string, error) {
+	path, err := os.MkdirTemp(dir, pattern)
+	if err != nil {
+		return "", err
+	}
+	if err := os.Remove(path); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 func rollbackSkillFileWrite(path string, previous []byte, hadPrevious bool) error {

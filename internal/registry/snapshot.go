@@ -1,8 +1,10 @@
 package registry
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -13,7 +15,8 @@ const (
 	snapshotVersionV2 = 2
 	snapshotVersionV3 = 3
 	snapshotVersionV4 = 4
-	SnapshotVersion   = 5
+	snapshotVersionV5 = 5
+	SnapshotVersion   = 6
 )
 
 type Snapshot struct {
@@ -24,9 +27,16 @@ type Snapshot struct {
 }
 
 type SnapshotSkill struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Content     string `json:"content"`
+	Name        string              `json:"name"`
+	Description string              `json:"description,omitempty"`
+	Content     string              `json:"content,omitempty"`
+	Files       []SnapshotSkillFile `json:"files,omitempty"`
+}
+
+type SnapshotSkillFile struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+	Mode    string `json:"mode"`
 }
 
 type ImportResult struct {
@@ -264,19 +274,20 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 		if !exists {
 			result.SkillsAdded = append(result.SkillsAdded, incoming.Name)
 			if apply {
-				if err := store.SaveSkill(incoming.toSkill(), []byte(incoming.Content)); err != nil {
+				pkg, err := incoming.toPackage()
+				if err != nil {
+					return ImportResult{}, fmt.Errorf("parse imported skill %q: %w", incoming.Name, err)
+				}
+				if err := store.SaveSkillPackage(pkg); err != nil {
 					return ImportResult{}, fmt.Errorf("save imported skill %q: %w", incoming.Name, err)
 				}
 			}
 			continue
 		}
 
-		existingSnapshot := SnapshotSkill{
-			Name:        existingSkill.Name,
-			Description: existingSkill.Description,
-		}
-		if content, err := store.GetSkillContent(incoming.Name); err == nil {
-			existingSnapshot.Content = string(content)
+		existingSnapshot := SnapshotSkill{Name: existingSkill.Name, Description: existingSkill.Description}
+		if pkg, err := store.GetSkillPackage(incoming.Name); err == nil {
+			existingSnapshot = snapshotSkillFromPackage(pkg)
 		}
 		if skillsEqual(existingSnapshot, incoming) {
 			result.SkillsUnchanged = append(result.SkillsUnchanged, incoming.Name)
@@ -285,7 +296,11 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 
 		result.SkillsUpdated = append(result.SkillsUpdated, incoming.Name)
 		if apply {
-			if err := store.SaveSkill(incoming.toSkill(), []byte(incoming.Content)); err != nil {
+			pkg, err := incoming.toPackage()
+			if err != nil {
+				return ImportResult{}, fmt.Errorf("parse imported skill %q: %w", incoming.Name, err)
+			}
+			if err := store.SaveSkillPackage(pkg); err != nil {
 				return ImportResult{}, fmt.Errorf("update imported skill %q: %w", incoming.Name, err)
 			}
 		}
@@ -295,7 +310,7 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 }
 
 func (s Snapshot) Validate() error {
-	if s.Version != snapshotVersionV1 && s.Version != snapshotVersionV2 && s.Version != snapshotVersionV3 && s.Version != snapshotVersionV4 && s.Version != SnapshotVersion {
+	if s.Version != snapshotVersionV1 && s.Version != snapshotVersionV2 && s.Version != snapshotVersionV3 && s.Version != snapshotVersionV4 && s.Version != snapshotVersionV5 && s.Version != SnapshotVersion {
 		return fmt.Errorf("unsupported snapshot version %d (supported: %d)", s.Version, SnapshotVersion)
 	}
 	if s.Version == snapshotVersionV1 && len(s.Rings) > 0 {
@@ -307,7 +322,7 @@ func (s Snapshot) Validate() error {
 	if s.Version < snapshotVersionV4 && snapshotHasRingSkills(s) {
 		return fmt.Errorf("snapshot version %d does not support ring skills", s.Version)
 	}
-	if s.Version < SnapshotVersion && snapshotHasRingContracts(s) {
+	if s.Version < snapshotVersionV5 && snapshotHasRingContracts(s) {
 		return fmt.Errorf("snapshot version %d does not support ring contracts", s.Version)
 	}
 
@@ -450,7 +465,14 @@ func ringContractsEqual(a, b *RingContract) bool {
 }
 
 func skillsEqual(a, b SnapshotSkill) bool {
-	return a.Name == b.Name && a.Description == b.Description && a.Content == b.Content
+	aPkg, aErr := a.toPackage()
+	bPkg, bErr := b.toPackage()
+	if aErr != nil || bErr != nil {
+		return a.Name == b.Name && a.Description == b.Description && a.Content == b.Content && slices.Equal(a.Files, b.Files)
+	}
+	return aPkg.Skill.Name == bPkg.Skill.Name &&
+		aPkg.Skill.Description == bPkg.Skill.Description &&
+		aPkg.Hash() == bPkg.Hash()
 }
 
 func snapshotSkillsFromStore(store *Store) ([]SnapshotSkill, error) {
@@ -460,28 +482,80 @@ func snapshotSkillsFromStore(store *Store) ([]SnapshotSkill, error) {
 	}
 	out := make([]SnapshotSkill, 0, len(skills))
 	for _, skill := range skills {
-		content, err := store.GetSkillContent(skill.Name)
+		pkg, err := store.GetSkillPackage(skill.Name)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, SnapshotSkill{
-			Name:        skill.Name,
-			Description: skill.Description,
-			Content:     string(content),
-		})
+		out = append(out, snapshotSkillFromPackage(pkg))
 	}
 	return out, nil
 }
 
 func (s SnapshotSkill) Validate() error {
-	if err := s.toSkill().Validate(); err != nil {
-		return err
-	}
-	return validateSkillContent([]byte(s.Content))
+	_, err := s.toPackage()
+	return err
 }
 
 func (s SnapshotSkill) toSkill() Skill {
 	return Skill{Name: s.Name, Description: s.Description}
+}
+
+func (s SnapshotSkill) toPackage() (SkillPackage, error) {
+	if len(s.Files) == 0 {
+		return NewSkillPackageFromContent(s.toSkill(), []byte(s.Content))
+	}
+	files := make([]SkillPackageFile, 0, len(s.Files))
+	for _, file := range s.Files {
+		path, err := normalizeSkillPackagePath(file.Path)
+		if err != nil {
+			return SkillPackage{}, err
+		}
+		content, err := base64.StdEncoding.DecodeString(file.Content)
+		if err != nil {
+			return SkillPackage{}, fmt.Errorf("decode skill file %q: %w", file.Path, err)
+		}
+		mode, err := parseSnapshotSkillMode(file.Mode)
+		if err != nil {
+			return SkillPackage{}, fmt.Errorf("invalid mode for skill file %q: %w", file.Path, err)
+		}
+		files = append(files, SkillPackageFile{Path: path, Content: content, Mode: mode})
+	}
+	pkg, err := NewSkillPackage(files, s.Name)
+	if err != nil {
+		return SkillPackage{}, err
+	}
+	if strings.TrimSpace(s.Description) != "" && s.Description != pkg.Skill.Description {
+		return SkillPackage{}, fmt.Errorf("skill %q description does not match %s frontmatter", s.Name, SkillFileName)
+	}
+	return pkg, nil
+}
+
+func snapshotSkillFromPackage(pkg SkillPackage) SnapshotSkill {
+	files := make([]SnapshotSkillFile, 0, len(pkg.Files))
+	for _, file := range pkg.Files {
+		files = append(files, SnapshotSkillFile{
+			Path:    file.Path,
+			Content: base64.StdEncoding.EncodeToString(file.Content),
+			Mode:    fmt.Sprintf("%04o", file.Mode.Perm()),
+		})
+	}
+	return SnapshotSkill{
+		Name:        pkg.Skill.Name,
+		Description: pkg.Skill.Description,
+		Files:       files,
+	}
+}
+
+func parseSnapshotSkillMode(value string) (os.FileMode, error) {
+	value = strings.TrimSpace(value)
+	switch value {
+	case "", "0644":
+		return 0o644, nil
+	case "0755":
+		return 0o755, nil
+	default:
+		return 0, fmt.Errorf("expected 0644 or 0755")
+	}
 }
 
 func normalizedRingMembers(r Ring) []string {

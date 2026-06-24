@@ -51,7 +51,7 @@ madari sync codex
 Create a ring when a few capabilities belong together:
 
 ```bash
-madari skill add release --file ./SKILL.md --description "Release workflow"
+madari skill add --dir ./release
 madari ring create research \
   --member sequential-thinking \
   --skill release \
@@ -77,9 +77,10 @@ syntax.
 **Servers** are executable MCP servers. Madari stores their command, arguments,
 environment metadata, supported clients, and ownership state.
 
-**Skills** are managed Markdown instructions. They can be attached directly to
-supported clients or included in rings, where Madari materializes native
-`SKILL.md` files for the target.
+**Skills** are official Agent Skill packages: directories with `SKILL.md`
+frontmatter and optional bundled files such as `references/`, `scripts/`, and
+`assets/`. They can be attached directly to supported clients or included in
+rings, where Madari materializes the full package for the target.
 
 **Rings** are named capability sets. A ring can contain server members and skill
 members, then attach to a client as one unit. Rings can also carry an advisory
