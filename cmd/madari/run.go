@@ -320,20 +320,30 @@ func (a cliApp) cmdAdd(args []string) error {
 	fs.SetOutput(io.Discard)
 
 	var command string
+	var transport string
+	var url string
+	var oauthResource string
 	var description string
 	var disabled bool
+	var timeoutMS int
 	var cmdArgs stringList
 	var clients stringList
 	var envPairs stringList
+	var headerPairs stringList
 	var requiredEnv stringList
 	var secretEnv stringList
 
 	fs.StringVar(&command, "command", "", "Server command")
+	fs.StringVar(&transport, "transport", "", "Server transport (stdio, http, or sse; default: stdio)")
+	fs.StringVar(&url, "url", "", "Remote MCP server URL for http/sse transports")
+	fs.StringVar(&oauthResource, "oauth-resource", "", "OAuth resource for remote MCP clients that support it")
 	fs.StringVar(&description, "description", "", "Server description")
+	fs.IntVar(&timeoutMS, "timeout-ms", 0, "Remote MCP timeout in milliseconds")
 	fs.BoolVar(&disabled, "disabled", false, "Create server in disabled state")
 	fs.Var(&cmdArgs, "arg", "Command argument (repeatable)")
 	fs.Var(&clients, "client", "Client id (repeatable)")
 	fs.Var(&envPairs, "env", "Environment variable KEY=VALUE (repeatable)")
+	fs.Var(&headerPairs, "header", "HTTP header KEY=VALUE for remote transports (repeatable)")
 	fs.Var(&requiredEnv, "required-env", "Required environment key (repeatable)")
 	fs.Var(&secretEnv, "secret-env", "Secret env key barred from repo-scoped configs (repeatable)")
 
@@ -347,9 +357,6 @@ func (a cliApp) cmdAdd(args []string) error {
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	if strings.TrimSpace(command) == "" {
-		return fmt.Errorf("--command is required")
-	}
 	if len(clients) == 0 {
 		return fmt.Errorf("at least one --client is required")
 	}
@@ -358,21 +365,42 @@ func (a cliApp) cmdAdd(args []string) error {
 	if err != nil {
 		return err
 	}
-	resolvedCommand, err := resolveCommandPath(command)
+	headers, err := parseHeaderPairs(headerPairs)
 	if err != nil {
 		return err
 	}
 
+	transport = strings.TrimSpace(strings.ToLower(transport))
+	if transport == "" {
+		transport = registry.TransportStdio
+	}
+
+	resolvedCommand := strings.TrimSpace(command)
+	if transport == registry.TransportStdio {
+		if resolvedCommand == "" {
+			return fmt.Errorf("--command is required")
+		}
+		resolvedCommand, err = resolveCommandPath(command)
+		if err != nil {
+			return err
+		}
+	}
+
 	manifest := registry.Manifest{
-		Name:        name,
-		Command:     resolvedCommand,
-		Args:        append([]string(nil), cmdArgs...),
-		Enabled:     !disabled,
-		Clients:     append([]string(nil), clients...),
-		Description: description,
-		Env:         env,
-		RequiredEnv: registry.RequiredEnv{Keys: append([]string(nil), requiredEnv...)},
-		SecretEnv:   registry.SecretEnv{Keys: append([]string(nil), secretEnv...)},
+		Name:          name,
+		Transport:     transport,
+		Command:       resolvedCommand,
+		Args:          append([]string(nil), cmdArgs...),
+		URL:           strings.TrimSpace(url),
+		Headers:       headers,
+		TimeoutMS:     timeoutMS,
+		OAuthResource: strings.TrimSpace(oauthResource),
+		Enabled:       !disabled,
+		Clients:       append([]string(nil), clients...),
+		Description:   description,
+		Env:           env,
+		RequiredEnv:   registry.RequiredEnv{Keys: append([]string(nil), requiredEnv...)},
+		SecretEnv:     registry.SecretEnv{Keys: append([]string(nil), secretEnv...)},
 	}
 
 	if err := a.store.Add(manifest); err != nil {
@@ -1332,11 +1360,31 @@ func parseEnvPairs(pairs []string) (map[string]string, error) {
 	return env, nil
 }
 
+func parseHeaderPairs(pairs []string) (map[string]string, error) {
+	headers := map[string]string{}
+	for _, pair := range pairs {
+		key, value, ok := strings.Cut(pair, "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			return nil, fmt.Errorf("invalid header assignment %q, expected KEY=VALUE", pair)
+		}
+		if _, exists := headers[key]; exists {
+			return nil, fmt.Errorf("duplicate header key %q", key)
+		}
+		headers[key] = value
+	}
+	return headers, nil
+}
+
 func filterSyncableManifests(manifests []registry.Manifest, target string) ([]registry.Manifest, []string) {
 	out := make([]registry.Manifest, 0, len(manifests))
 	var skipped []string
 	for _, manifest := range manifests {
 		if !manifest.Enabled || !manifest.HasClient(target) {
+			out = append(out, manifest)
+			continue
+		}
+		if manifest.IsRemote() {
 			out = append(out, manifest)
 			continue
 		}
@@ -1606,9 +1654,15 @@ func printVersionHelp(out io.Writer) {
 func printAddHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
 	fmt.Fprintln(out, "  madari add <name> --command <cmd> --client <client> [options]")
+	fmt.Fprintln(out, "  madari add <name> --transport http --url <url> --client <client> [options]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
-	fmt.Fprintln(out, "  --command <cmd>            Server command (required)")
+	fmt.Fprintln(out, "  --command <cmd>            Server command (required for stdio)")
+	fmt.Fprintln(out, "  --transport <transport>    Server transport: stdio, http, or sse (default: stdio)")
+	fmt.Fprintln(out, "  --url <url>                Remote MCP server URL for http/sse transports")
+	fmt.Fprintln(out, "  --header KEY=VALUE         HTTP header for remote transports (repeatable)")
+	fmt.Fprintln(out, "  --timeout-ms <ms>          Remote MCP timeout in milliseconds")
+	fmt.Fprintln(out, "  --oauth-resource <url>     OAuth resource for remote clients that support it")
 	fmt.Fprintln(out, "  --client <client>          Target client id (required, repeatable)")
 	fmt.Fprintln(out, "  --arg <value>              Command argument (repeatable)")
 	fmt.Fprintln(out, "  --env KEY=VALUE            Environment variable (repeatable)")
@@ -1620,6 +1674,7 @@ func printAddHelp(out io.Writer) {
 	fmt.Fprintln(out, "Examples:")
 	fmt.Fprintln(out, "  madari add stewreads --command stewreads-mcp --client claude-desktop")
 	fmt.Fprintln(out, "  madari add mailer --command ./bin/mailer --client claude-desktop --required-env SMTP_PASSWORD")
+	fmt.Fprintln(out, "  madari add cloud-sql --transport http --url https://sqladmin.googleapis.com/mcp --client codex --oauth-resource https://sqladmin.googleapis.com/")
 }
 
 func printInstallHelp(out io.Writer) {

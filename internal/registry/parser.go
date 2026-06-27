@@ -11,6 +11,7 @@ import (
 const (
 	sectionTop         = ""
 	sectionEnv         = "env"
+	sectionHeaders     = "headers"
 	sectionRequiredEnv = "required_env"
 	sectionSecretEnv   = "secret_env"
 )
@@ -46,7 +47,7 @@ func ParseManifest(data []byte) (Manifest, error) {
 			}
 			name := strings.TrimSpace(line[1 : len(line)-1])
 			switch name {
-			case sectionEnv, sectionRequiredEnv, sectionSecretEnv:
+			case sectionEnv, sectionHeaders, sectionRequiredEnv, sectionSecretEnv:
 				section = name
 			default:
 				return Manifest{}, fmt.Errorf("line %d: unknown section %q", lineNo, name)
@@ -70,6 +71,15 @@ func ParseManifest(data []byte) (Manifest, error) {
 				return Manifest{}, fmt.Errorf("line %d: invalid env value for %q: %w", lineNo, key, err)
 			}
 			m.Env[key] = sv
+		case sectionHeaders:
+			sv, err := parseString(value)
+			if err != nil {
+				return Manifest{}, fmt.Errorf("line %d: invalid header value for %q: %w", lineNo, key, err)
+			}
+			if m.Headers == nil {
+				m.Headers = map[string]string{}
+			}
+			m.Headers[key] = sv
 		case sectionRequiredEnv:
 			if key != "keys" {
 				return Manifest{}, fmt.Errorf("line %d: unknown key %q in [required_env]", lineNo, key)
@@ -112,12 +122,35 @@ func MarshalManifest(m Manifest) ([]byte, error) {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "name = %s\n", strconv.Quote(m.Name))
-	fmt.Fprintf(&b, "command = %s\n", strconv.Quote(m.Command))
-	fmt.Fprintf(&b, "args = %s\n", formatStringArray(m.Args))
+	if m.TransportType() != TransportStdio {
+		fmt.Fprintf(&b, "transport = %s\n", strconv.Quote(m.TransportType()))
+		fmt.Fprintf(&b, "url = %s\n", strconv.Quote(m.URL))
+		if m.TimeoutMS > 0 {
+			fmt.Fprintf(&b, "timeout_ms = %d\n", m.TimeoutMS)
+		}
+		if strings.TrimSpace(m.OAuthResource) != "" {
+			fmt.Fprintf(&b, "oauth_resource = %s\n", strconv.Quote(m.OAuthResource))
+		}
+	} else {
+		fmt.Fprintf(&b, "command = %s\n", strconv.Quote(m.Command))
+		fmt.Fprintf(&b, "args = %s\n", formatStringArray(m.Args))
+	}
 	fmt.Fprintf(&b, "enabled = %t\n", m.Enabled)
 	fmt.Fprintf(&b, "clients = %s\n", formatStringArray(m.Clients))
 	if strings.TrimSpace(m.Description) != "" {
 		fmt.Fprintf(&b, "description = %s\n", strconv.Quote(m.Description))
+	}
+
+	if len(m.Headers) > 0 {
+		keys := make([]string, 0, len(m.Headers))
+		for key := range m.Headers {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		b.WriteString("\n[headers]\n")
+		for _, key := range keys {
+			fmt.Fprintf(&b, "%s = %s\n", key, strconv.Quote(m.Headers[key]))
+		}
 	}
 
 	if len(m.Env) > 0 {
@@ -163,6 +196,30 @@ func parseTopLevel(m *Manifest, key, value string) error {
 			return fmt.Errorf("invalid command: %w", err)
 		}
 		m.Command = sv
+	case "transport":
+		sv, err := parseString(value)
+		if err != nil {
+			return fmt.Errorf("invalid transport: %w", err)
+		}
+		m.Transport = sv
+	case "url":
+		sv, err := parseString(value)
+		if err != nil {
+			return fmt.Errorf("invalid url: %w", err)
+		}
+		m.URL = sv
+	case "oauth_resource":
+		sv, err := parseString(value)
+		if err != nil {
+			return fmt.Errorf("invalid oauth_resource: %w", err)
+		}
+		m.OAuthResource = sv
+	case "timeout_ms":
+		iv, err := parseInt(value)
+		if err != nil {
+			return fmt.Errorf("invalid timeout_ms: %w", err)
+		}
+		m.TimeoutMS = iv
 	case "description":
 		sv, err := parseString(value)
 		if err != nil {
@@ -230,6 +287,15 @@ func parseBool(raw string) (bool, error) {
 	default:
 		return false, fmt.Errorf("expected true or false")
 	}
+}
+
+func parseInt(raw string) (int, error) {
+	value := strings.TrimSpace(raw)
+	iv, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("expected integer")
+	}
+	return iv, nil
 }
 
 func parseStringArray(raw string) ([]string, error) {

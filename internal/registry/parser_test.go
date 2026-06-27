@@ -57,6 +57,59 @@ func TestParseAndMarshalManifestRoundTrip(t *testing.T) {
 	if out.Env["STEWREADS_CONFIG_PATH"] == "" {
 		t.Fatalf("expected env value to survive roundtrip")
 	}
+	if out.TransportType() != TransportStdio {
+		t.Fatalf("expected legacy manifest to default to stdio, got: %q", out.TransportType())
+	}
+	if strings.Contains(string(encoded), "transport") {
+		t.Fatalf("expected stdio manifest to omit default transport, got:\n%s", encoded)
+	}
+}
+
+func TestParseAndMarshalRemoteManifestRoundTrip(t *testing.T) {
+	in := Manifest{
+		Name:          "cloud-sql",
+		Transport:     TransportHTTP,
+		URL:           "https://sqladmin.googleapis.com/mcp",
+		TimeoutMS:     30000,
+		OAuthResource: "https://sqladmin.googleapis.com/",
+		Enabled:       true,
+		Clients:       []string{"codex"},
+		Description:   "Cloud SQL remote MCP",
+		Headers: map[string]string{
+			"x-goog-user-project": "example-project",
+		},
+	}
+
+	encoded, err := MarshalManifest(in)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	for _, want := range []string{
+		`transport = "http"`,
+		`url = "https://sqladmin.googleapis.com/mcp"`,
+		`timeout_ms = 30000`,
+		`oauth_resource = "https://sqladmin.googleapis.com/"`,
+		"[headers]",
+		`x-goog-user-project = "example-project"`,
+	} {
+		if !strings.Contains(string(encoded), want) {
+			t.Fatalf("expected encoded manifest to contain %q, got:\n%s", want, encoded)
+		}
+	}
+	if strings.Contains(string(encoded), "command") {
+		t.Fatalf("expected remote manifest to omit command, got:\n%s", encoded)
+	}
+
+	out, err := ParseManifest(encoded)
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if out.TransportType() != TransportHTTP || out.URL != in.URL || out.OAuthResource != in.OAuthResource {
+		t.Fatalf("remote roundtrip mismatch: got %#v", out)
+	}
+	if out.Headers["x-goog-user-project"] != "example-project" {
+		t.Fatalf("expected headers to survive roundtrip, got: %#v", out.Headers)
+	}
 }
 
 func TestParseManifestRejectsUnknownSection(t *testing.T) {
@@ -122,11 +175,11 @@ unexpected = ["MISSING_KEY"]
 
 func TestParseManifestSecretEnvRoundTrip(t *testing.T) {
 	in := Manifest{
-		Name:        "stewreads",
-		Command:     "stewreads-mcp",
-		Args:        []string{},
-		Enabled:     true,
-		Clients:     []string{"claude-desktop"},
+		Name:    "stewreads",
+		Command: "stewreads-mcp",
+		Args:    []string{},
+		Enabled: true,
+		Clients: []string{"claude-desktop"},
 		Env: map[string]string{
 			"STEWREADS_API_KEY": "shhh",
 		},
@@ -170,6 +223,27 @@ unexpected = ["STEWREADS_API_KEY"]
 		t.Fatalf("expected parse error for unknown secret_env key")
 	}
 	if !strings.Contains(err.Error(), "unknown key") || !strings.Contains(err.Error(), "[secret_env]") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseManifestRejectsUnknownHeadersValue(t *testing.T) {
+	manifest := `
+name = "cloud-sql"
+transport = "http"
+url = "https://sqladmin.googleapis.com/mcp"
+enabled = true
+clients = ["codex"]
+
+[headers]
+x-goog-user-project = 123
+`
+
+	_, err := ParseManifest([]byte(manifest))
+	if err == nil {
+		t.Fatalf("expected parse error for non-string header value")
+	}
+	if !strings.Contains(err.Error(), "invalid header value") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

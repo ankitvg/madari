@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -11,17 +12,28 @@ var (
 	envKeyPattern       = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 )
 
+const (
+	TransportStdio = "stdio"
+	TransportHTTP  = "http"
+	TransportSSE   = "sse"
+)
+
 // Manifest is the canonical configuration for one local MCP server.
 type Manifest struct {
-	Name        string            `toml:"name" json:"name"`
-	Command     string            `toml:"command" json:"command"`
-	Args        []string          `toml:"args" json:"args"`
-	Enabled     bool              `toml:"enabled" json:"enabled"`
-	Clients     []string          `toml:"clients" json:"clients"`
-	Description string            `toml:"description,omitempty" json:"description,omitempty"`
-	Env         map[string]string `toml:"env,omitempty" json:"env,omitempty"`
-	RequiredEnv RequiredEnv       `toml:"required_env,omitempty" json:"required_env,omitempty"`
-	SecretEnv   SecretEnv         `toml:"secret_env,omitempty" json:"secret_env,omitempty"`
+	Name          string            `toml:"name" json:"name"`
+	Transport     string            `toml:"transport,omitempty" json:"transport,omitempty"`
+	Command       string            `toml:"command" json:"command"`
+	Args          []string          `toml:"args" json:"args"`
+	URL           string            `toml:"url,omitempty" json:"url,omitempty"`
+	Headers       map[string]string `toml:"headers,omitempty" json:"headers,omitempty"`
+	TimeoutMS     int               `toml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
+	OAuthResource string            `toml:"oauth_resource,omitempty" json:"oauth_resource,omitempty"`
+	Enabled       bool              `toml:"enabled" json:"enabled"`
+	Clients       []string          `toml:"clients" json:"clients"`
+	Description   string            `toml:"description,omitempty" json:"description,omitempty"`
+	Env           map[string]string `toml:"env,omitempty" json:"env,omitempty"`
+	RequiredEnv   RequiredEnv       `toml:"required_env,omitempty" json:"required_env,omitempty"`
+	SecretEnv     SecretEnv         `toml:"secret_env,omitempty" json:"secret_env,omitempty"`
 }
 
 // RequiredEnv describes environment variables that must be present at runtime.
@@ -60,6 +72,25 @@ func (m Manifest) HasClient(target string) bool {
 	return false
 }
 
+// TransportType returns the effective transport. An empty transport preserves
+// legacy manifests and means stdio.
+func (m Manifest) TransportType() string {
+	transport := strings.TrimSpace(strings.ToLower(m.Transport))
+	if transport == "" {
+		return TransportStdio
+	}
+	return transport
+}
+
+func (m Manifest) IsRemote() bool {
+	switch m.TransportType() {
+	case TransportHTTP, TransportSSE:
+		return true
+	default:
+		return false
+	}
+}
+
 // Validate enforces manifest-level invariants.
 func (m Manifest) Validate() error {
 	var errs []string
@@ -68,8 +99,57 @@ func (m Manifest) Validate() error {
 		errs = append(errs, err.Error())
 	}
 
-	if strings.TrimSpace(m.Command) == "" {
-		errs = append(errs, "command is required")
+	transport := m.TransportType()
+	switch transport {
+	case TransportStdio:
+		if strings.TrimSpace(m.Command) == "" {
+			errs = append(errs, "command is required")
+		}
+		if strings.TrimSpace(m.URL) != "" {
+			errs = append(errs, "url is only supported for remote transports")
+		}
+		if len(m.Headers) > 0 {
+			errs = append(errs, "headers are only supported for remote transports")
+		}
+		if m.TimeoutMS != 0 {
+			errs = append(errs, "timeout_ms is only supported for remote transports")
+		}
+		if strings.TrimSpace(m.OAuthResource) != "" {
+			errs = append(errs, "oauth_resource is only supported for remote transports")
+		}
+	case TransportHTTP, TransportSSE:
+		if strings.TrimSpace(m.URL) == "" {
+			errs = append(errs, "url is required for remote transports")
+		} else if err := validateRemoteURL(m.URL); err != nil {
+			errs = append(errs, err.Error())
+		}
+		if strings.TrimSpace(m.Command) != "" {
+			errs = append(errs, "command is not supported for remote transports")
+		}
+		if len(m.Args) > 0 {
+			errs = append(errs, "args are not supported for remote transports")
+		}
+		if len(m.Env) > 0 {
+			errs = append(errs, "env is not supported for remote transports")
+		}
+		if len(m.RequiredEnv.Keys) > 0 {
+			errs = append(errs, "required_env is not supported for remote transports")
+		}
+		if len(m.SecretEnv.Keys) > 0 {
+			errs = append(errs, "secret_env is not supported for remote transports")
+		}
+	default:
+		errs = append(errs, fmt.Sprintf("transport must be one of %q, %q, or %q", TransportStdio, TransportHTTP, TransportSSE))
+	}
+
+	if m.TimeoutMS < 0 {
+		errs = append(errs, "timeout_ms must be positive")
+	}
+
+	for key := range m.Headers {
+		if !validHeaderName(key) {
+			errs = append(errs, fmt.Sprintf("invalid header name %q", key))
+		}
 	}
 
 	if len(m.Clients) == 0 {
@@ -146,4 +226,31 @@ func validateServerName(name string) error {
 		return fmt.Errorf("name must match %q", manifestNamePattern.String())
 	}
 	return nil
+}
+
+func validateRemoteURL(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("invalid url: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("url must use http or https")
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("url must include a host")
+	}
+	return nil
+}
+
+func validHeaderName(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		if r <= 32 || r >= 127 || r == ':' {
+			return false
+		}
+	}
+	return true
 }
