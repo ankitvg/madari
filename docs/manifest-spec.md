@@ -39,8 +39,10 @@ their auth and config behavior is validated per client.
 
 ### `[headers]`
 
-Key/value static HTTP headers for remote transports. Headers are stored in the
-manifest but emitted only for clients that support header configuration.
+Key/value static HTTP headers for remote transports. Header names are limited
+to letters, digits, `-`, and `_` so they round-trip through the manifest
+format. Headers are stored in the manifest but emitted only for clients that
+support header configuration.
 
 ### `[env]`
 

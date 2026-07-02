@@ -399,6 +399,20 @@ func manifestsEqual(a, b Manifest) bool {
 		return false
 	}
 
+	if a.TransportType() != b.TransportType() || a.URL != b.URL ||
+		a.TimeoutMS != b.TimeoutMS || a.OAuthResource != b.OAuthResource {
+		return false
+	}
+
+	if len(a.Headers) != len(b.Headers) {
+		return false
+	}
+	for key, value := range a.Headers {
+		if b.Headers[key] != value {
+			return false
+		}
+	}
+
 	if !slices.Equal(a.Args, b.Args) {
 		return false
 	}

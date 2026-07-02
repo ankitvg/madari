@@ -120,6 +120,8 @@ func (m Manifest) Validate() error {
 	case TransportHTTP, TransportSSE:
 		if strings.TrimSpace(m.URL) == "" {
 			errs = append(errs, "url is required for remote transports")
+		} else if m.URL != strings.TrimSpace(m.URL) {
+			errs = append(errs, "url must not have leading or trailing whitespace")
 		} else if err := validateRemoteURL(m.URL); err != nil {
 			errs = append(errs, err.Error())
 		}
@@ -148,7 +150,7 @@ func (m Manifest) Validate() error {
 
 	for key := range m.Headers {
 		if !validHeaderName(key) {
-			errs = append(errs, fmt.Sprintf("invalid header name %q", key))
+			errs = append(errs, fmt.Sprintf("invalid header name %q (allowed: letters, digits, '-', '_')", key))
 		}
 	}
 
@@ -229,7 +231,7 @@ func validateServerName(name string) error {
 }
 
 func validateRemoteURL(raw string) error {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
+	parsed, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("invalid url: %w", err)
 	}
@@ -242,15 +244,18 @@ func validateRemoteURL(raw string) error {
 	return nil
 }
 
+// validHeaderName restricts header names to characters that round-trip as raw
+// manifest keys; the plain-text parser treats '#', '=', quotes, and brackets
+// specially, so anything outside this set could not be reloaded.
 func validHeaderName(name string) bool {
-	name = strings.TrimSpace(name)
 	if name == "" {
 		return false
 	}
 	for _, r := range name {
-		if r <= 32 || r >= 127 || r == ':' {
-			return false
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			continue
 		}
+		return false
 	}
 	return true
 }

@@ -136,6 +136,33 @@ func TestManifestValidateErrors(t *testing.T) {
 			expects: "invalid header name",
 		},
 		{
+			name: "remote rejects header name that cannot round-trip",
+			mutate: func(m *Manifest) {
+				*m = Manifest{
+					Name:      "cloud-sql",
+					Transport: TransportHTTP,
+					URL:       "https://sqladmin.googleapis.com/mcp",
+					Headers:   map[string]string{"X#Trace": "1"},
+					Enabled:   true,
+					Clients:   []string{"codex"},
+				}
+			},
+			expects: "invalid header name",
+		},
+		{
+			name: "remote rejects url with surrounding whitespace",
+			mutate: func(m *Manifest) {
+				*m = Manifest{
+					Name:      "cloud-sql",
+					Transport: TransportHTTP,
+					URL:       "https://sqladmin.googleapis.com/mcp ",
+					Enabled:   true,
+					Clients:   []string{"codex"},
+				}
+			},
+			expects: "url must not have leading or trailing whitespace",
+		},
+		{
 			name: "remote rejects negative timeout",
 			mutate: func(m *Manifest) {
 				*m = Manifest{

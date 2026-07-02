@@ -281,6 +281,66 @@ func TestImportSnapshotDryRunAndApply(t *testing.T) {
 	}
 }
 
+func TestImportSnapshotDetectsRemoteFieldChanges(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "servers"))
+	if err := store.Save(Manifest{
+		Name:      "cloud-sql",
+		Transport: TransportHTTP,
+		URL:       "https://old.example.com/mcp",
+		Headers:   map[string]string{"x-goog-user-project": "old-project"},
+		Enabled:   true,
+		Clients:   []string{"codex"},
+	}); err != nil {
+		t.Fatalf("save initial manifest: %v", err)
+	}
+
+	snapshot := Snapshot{
+		Version: SnapshotVersion,
+		Servers: []Manifest{
+			{
+				Name:      "cloud-sql",
+				Transport: TransportHTTP,
+				URL:       "https://new.example.com/mcp",
+				Headers:   map[string]string{"x-goog-user-project": "old-project"},
+				Enabled:   true,
+				Clients:   []string{"codex"},
+			},
+		},
+	}
+
+	result, err := ImportSnapshot(store, snapshot, true)
+	if err != nil {
+		t.Fatalf("apply import failed: %v", err)
+	}
+	if len(result.Updated) != 1 || result.Updated[0] != "cloud-sql" {
+		t.Fatalf("expected url-only change to be detected as update, got: %+v", result)
+	}
+	after, err := store.Get("cloud-sql")
+	if err != nil {
+		t.Fatalf("load manifest after apply: %v", err)
+	}
+	if after.URL != "https://new.example.com/mcp" {
+		t.Fatalf("expected url to be updated, got: %q", after.URL)
+	}
+
+	snapshot.Servers[0].Headers = map[string]string{"x-goog-user-project": "new-project"}
+	result, err = ImportSnapshot(store, snapshot, true)
+	if err != nil {
+		t.Fatalf("apply header import failed: %v", err)
+	}
+	if len(result.Updated) != 1 || result.Updated[0] != "cloud-sql" {
+		t.Fatalf("expected header-only change to be detected as update, got: %+v", result)
+	}
+
+	result, err = ImportSnapshot(store, snapshot, true)
+	if err != nil {
+		t.Fatalf("no-op import failed: %v", err)
+	}
+	if len(result.Updated) != 0 || len(result.Unchanged) != 1 {
+		t.Fatalf("expected identical snapshot to be unchanged, got: %+v", result)
+	}
+}
+
 func TestImportSnapshotRingsDryRunAndApply(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "servers"))
 	for _, manifest := range []Manifest{
