@@ -74,8 +74,9 @@ syntax.
 
 ## Core Concepts
 
-**Servers** are executable MCP servers. Madari stores their command, arguments,
-environment metadata, supported clients, and ownership state.
+**Servers** are MCP server capabilities. Madari stores stdio commands or remote
+HTTP/SSE URLs, environment or header metadata, supported clients, and ownership
+state.
 
 **Skills** are official Agent Skill packages: directories with `SKILL.md`
 frontmatter and optional bundled files such as `references/`, `scripts/`, and

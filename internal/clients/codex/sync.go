@@ -241,7 +241,7 @@ func entriesForTarget(manifests []registry.Manifest) map[string]syncshared.Entry
 			continue
 		}
 		entry := syncshared.Entry[serverConfig]{}
-		if manifest.Enabled {
+		if manifest.Enabled && !manifest.IsRemote() {
 			entry.Eligible = true
 			entry.Value = materializeServer(manifest)
 		}

@@ -316,7 +316,7 @@ func checkDrift(manifests []registry.Manifest, targets []DriftTarget, rings []re
 func syncableForTarget(manifests []registry.Manifest, target string) []registry.Manifest {
 	out := make([]registry.Manifest, 0, len(manifests))
 	for _, manifest := range manifests {
-		if manifest.Enabled && manifest.HasClient(target) {
+		if manifest.Enabled && manifest.HasClient(target) && !manifest.IsRemote() {
 			if issue := validateAbsoluteExecutablePath(manifest.Command); issue != nil {
 				continue
 			}
@@ -381,8 +381,19 @@ func inspectServer(manifest registry.Manifest, envLookup func(string) string, ta
 	}
 
 	report.Status = StatusReady
-	if issue := validateAbsoluteExecutablePath(manifest.Command); issue != nil {
-		report.Issues = append(report.Issues, *issue)
+	if !manifest.IsRemote() {
+		if issue := validateAbsoluteExecutablePath(manifest.Command); issue != nil {
+			report.Issues = append(report.Issues, *issue)
+			report.Status = StatusError
+		}
+	}
+
+	if manifest.IsRemote() && strings.TrimSpace(manifest.URL) == "" {
+		report.Issues = append(report.Issues, Issue{
+			Severity: SeverityError,
+			Code:     "missing_remote_url",
+			Message:  "remote transport requires url",
+		})
 		report.Status = StatusError
 	}
 

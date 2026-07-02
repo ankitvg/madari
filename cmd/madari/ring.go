@@ -410,6 +410,26 @@ func (a cliApp) cmdRingRender(args []string) error {
 			fmt.Fprintf(a.stderr, "warning: ring member %s does not target %s; omitted\n", member, target)
 			continue
 		}
+		if manifest.IsRemote() {
+			if !renderTarget.supportsRemote {
+				fmt.Fprintf(a.stderr, "warning: ring member %s uses %s transport, which %s render does not support yet; omitted\n", member, manifest.TransportType(), target)
+				continue
+			}
+			if len(manifest.Headers) > 0 {
+				fmt.Fprintf(a.stderr, "warning: ring member %s: headers are not emitted for %s render\n", member, target)
+			}
+			if manifest.TimeoutMS > 0 {
+				fmt.Fprintf(a.stderr, "warning: ring member %s: timeout_ms is not emitted for %s render\n", member, target)
+			}
+			servers[member] = renderedServer{
+				Transport:     manifest.TransportType(),
+				URL:           manifest.URL,
+				Headers:       copyStringMap(manifest.Headers),
+				TimeoutMS:     manifest.TimeoutMS,
+				OAuthResource: manifest.OAuthResource,
+			}
+			continue
+		}
 		if err := clients.ValidateCommandPath(manifest.Command); err != nil {
 			fmt.Fprintf(a.stderr, "warning: ring member %s omitted: %s\n", member, err.Message)
 			continue

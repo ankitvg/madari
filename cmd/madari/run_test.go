@@ -184,6 +184,47 @@ func TestRunWithStoreAddArgumentCoverage(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreAddRemoteHTTP(t *testing.T) {
+	store := newTestStore(t)
+
+	result := runCmd(
+		store,
+		"add", "cloud-sql",
+		"--transport", "http",
+		"--url", "https://sqladmin.googleapis.com/mcp",
+		"--client", "codex",
+		"--oauth-resource", "https://sqladmin.googleapis.com/",
+		"--timeout-ms", "30000",
+		"--header", "x-goog-user-project=example-project",
+	)
+	if result.code != 0 {
+		t.Fatalf("add remote command failed with code %d, stderr=%s", result.code, result.stderr)
+	}
+
+	manifest, err := store.Get("cloud-sql")
+	if err != nil {
+		t.Fatalf("expected manifest to exist: %v", err)
+	}
+	if !manifest.IsRemote() || manifest.TransportType() != registry.TransportHTTP {
+		t.Fatalf("expected HTTP remote manifest, got: %#v", manifest)
+	}
+	if manifest.Command != "" || len(manifest.Args) != 0 {
+		t.Fatalf("expected remote manifest to have no command/args, got command=%q args=%#v", manifest.Command, manifest.Args)
+	}
+	if manifest.URL != "https://sqladmin.googleapis.com/mcp" {
+		t.Fatalf("unexpected remote URL: %q", manifest.URL)
+	}
+	if manifest.OAuthResource != "https://sqladmin.googleapis.com/" {
+		t.Fatalf("unexpected oauth resource: %q", manifest.OAuthResource)
+	}
+	if manifest.TimeoutMS != 30000 {
+		t.Fatalf("unexpected timeout: %d", manifest.TimeoutMS)
+	}
+	if manifest.Headers["x-goog-user-project"] != "example-project" {
+		t.Fatalf("expected header to be persisted, got: %#v", manifest.Headers)
+	}
+}
+
 func TestRunWithStoreAddResolvesCommandFromPATH(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("PATH executable test is for unix-like environments")
@@ -286,6 +327,59 @@ func TestRunWithStoreAddValidatesEnvAssignments(t *testing.T) {
 				"--env", "A=1", "--env", "A=2",
 			},
 			expected: "duplicate env key",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := runCmd(store, tt.args...)
+			if result.code == 0 {
+				t.Fatalf("expected command to fail")
+			}
+			if !strings.Contains(result.stderr, tt.expected) {
+				t.Fatalf("expected stderr to contain %q, got: %s", tt.expected, result.stderr)
+			}
+		})
+	}
+}
+
+func TestRunWithStoreAddValidatesHeaderAssignments(t *testing.T) {
+	store := newTestStore(t)
+
+	tests := []struct {
+		name     string
+		args     []string
+		expected string
+	}{
+		{
+			name: "invalid header assignment",
+			args: []string{
+				"add", "cloud-sql", "--transport", "http", "--url", "https://sqladmin.googleapis.com/mcp", "--client", "codex",
+				"--header", "BROKEN",
+			},
+			expected: "invalid header assignment",
+		},
+		{
+			name: "duplicate header key",
+			args: []string{
+				"add", "cloud-sql", "--transport", "http", "--url", "https://sqladmin.googleapis.com/mcp", "--client", "codex",
+				"--header", "x-goog-user-project=a", "--header", "x-goog-user-project=b",
+			},
+			expected: "duplicate header key",
+		},
+		{
+			name: "remote missing url",
+			args: []string{
+				"add", "cloud-sql", "--transport", "http", "--client", "codex",
+			},
+			expected: "url is required",
+		},
+		{
+			name: "remote rejects command",
+			args: []string{
+				"add", "cloud-sql", "--transport", "http", "--url", "https://sqladmin.googleapis.com/mcp", "--command", "cloud-sql", "--client", "codex",
+			},
+			expected: "command is not supported",
 		},
 	}
 
@@ -4142,6 +4236,31 @@ env_vars = ["VAULT_ACCOUNT", "VAULT_TOKEN"]
 	}
 	if !strings.Contains(result.stderr, "secret env values omitted (VAULT_TOKEN)") {
 		t.Fatalf("expected secret omission warning, got: %s", result.stderr)
+	}
+}
+
+func TestRunWithStoreRingRenderRemoteUnsupportedTarget(t *testing.T) {
+	store := newTestStore(t)
+
+	if result := runCmd(store, "add", "cloud-sql",
+		"--transport", "http",
+		"--url", "https://sqladmin.googleapis.com/mcp",
+		"--client", "claude-code"); result.code != 0 {
+		t.Fatalf("setup add cloud-sql failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "cloudsql-readonly", "--member", "cloud-sql"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "ring", "render", "cloudsql-readonly", "--client", "claude-code")
+	if result.code != 0 {
+		t.Fatalf("ring render claude-code failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, `"mcpServers": {}`) {
+		t.Fatalf("expected empty MCP config for unsupported remote target, got:\n%s", result.stdout)
+	}
+	if !strings.Contains(result.stderr, "uses http transport") || !strings.Contains(result.stderr, "does not support yet") {
+		t.Fatalf("expected unsupported remote warning, got: %s", result.stderr)
 	}
 }
 

@@ -142,8 +142,10 @@ Skills are not run inputs yet.
 - Never overwrite unknown config blocks.
 - Entries Madari does not manage keep their JSON value, including fields and
   server shapes Madari does not model (e.g. `type`/`url` remote entries);
-  only managed or newly added entries are serialized from manifests. The
-  enclosing document is reformatted on write. For adapters with raw-match
+  only managed or newly added entries are serialized from manifests. Managed
+  remote `http`/`sse` manifests are modeled in the registry but kept
+  ineligible by every sync adapter until per-client remote materialization
+  lands. The enclosing document is reformatted on write. For adapters with raw-match
   validation (currently Claude Code and Claude Desktop), if an unmanaged entry
   has the same name as a desired manifest, Madari only treats it as an exact
   match when its canonical raw JSON, after normalizing empty modeled optional

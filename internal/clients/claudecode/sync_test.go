@@ -1189,6 +1189,50 @@ func assertJSONEqual(t *testing.T, want, got []byte) {
 	}
 }
 
+func TestSyncSkipsManagedRemoteManifest(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+	original := []byte(`{
+  "mcpServers": {
+    "weather": {
+      "command": "uv",
+      "args": ["run", "weather.py"]
+    }
+  }
+}
+`)
+	if err := os.WriteFile(configPath, original, 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	remote := registry.Manifest{
+		Name:      "cloud-sql",
+		Transport: registry.TransportHTTP,
+		URL:       "https://example.com/mcp",
+		Enabled:   true,
+		Clients:   []string{Target},
+	}
+	result, err := Sync([]registry.Manifest{remote}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+	if len(result.Added) != 0 || len(result.Updated) != 0 || len(result.Removed) != 0 {
+		t.Fatalf("expected remote manifest to be ineligible until the adapter supports it, got: %+v", result)
+	}
+
+	servers := readServers(t, configPath)
+	if _, exists := servers["cloud-sql"]; exists {
+		t.Fatalf("expected remote manifest not to be materialized, got: %#v", servers)
+	}
+	if _, ok := servers["weather"]; !ok {
+		t.Fatalf("expected unmanaged weather entry to be preserved")
+	}
+}
+
 func newStewreadsManifest() registry.Manifest {
 	return registry.Manifest{
 		Name:    "stewreads",
