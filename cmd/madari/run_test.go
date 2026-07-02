@@ -2805,8 +2805,11 @@ func TestRunWithStoreSecretEnvPlacementFlow(t *testing.T) {
 	if !strings.Contains(result.stderr, "refused vault") || !strings.Contains(result.stderr, "--scope user") {
 		t.Fatalf("expected refusal warning with user-scope guidance, got: %s", result.stderr)
 	}
+	// A refused-only plan against a fresh config is a no-op, so the repo
+	// config may legitimately not exist; if it does, it must not hold the
+	// secret value.
 	payload, err := os.ReadFile(projectConfig)
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("read project config: %v", err)
 	}
 	if strings.Contains(string(payload), "shhh") {

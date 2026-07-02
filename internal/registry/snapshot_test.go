@@ -207,6 +207,36 @@ func TestParseSnapshotV4RejectsRingContracts(t *testing.T) {
 	}
 }
 
+func TestParseSnapshotV6RejectsRemoteServers(t *testing.T) {
+	payload := []byte(`{"version":6,"servers":[{"name":"cloud-sql","transport":"http","url":"https://example.com/mcp","enabled":true,"clients":["codex"]}]}`)
+	_, err := ParseSnapshotJSON(payload)
+	if err == nil || !strings.Contains(err.Error(), "does not support remote transports") {
+		t.Fatalf("expected v6 remote-transport error, got: %v", err)
+	}
+}
+
+func TestParseSnapshotV7AcceptsRemoteServers(t *testing.T) {
+	payload := []byte(`{"version":7,"servers":[{"name":"cloud-sql","transport":"http","url":"https://example.com/mcp","enabled":true,"clients":["codex"]}]}`)
+	snapshot, err := ParseSnapshotJSON(payload)
+	if err != nil {
+		t.Fatalf("parse v7 snapshot with remote server: %v", err)
+	}
+	if len(snapshot.Servers) != 1 || !snapshot.Servers[0].IsRemote() {
+		t.Fatalf("expected remote server to parse, got: %#v", snapshot.Servers)
+	}
+}
+
+func TestParseSnapshotV6AcceptsStdioServers(t *testing.T) {
+	payload := []byte(`{"version":6,"servers":[{"name":"alpha","command":"/usr/bin/env","enabled":true,"clients":["claude-desktop"]}]}`)
+	snapshot, err := ParseSnapshotJSON(payload)
+	if err != nil {
+		t.Fatalf("parse v6 stdio snapshot: %v", err)
+	}
+	if snapshot.Version != snapshotVersionV6 {
+		t.Fatalf("expected v6 snapshot to keep version 6, got %d", snapshot.Version)
+	}
+}
+
 func TestImportSnapshotDryRunAndApply(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "servers"))
 	if err := store.Save(Manifest{

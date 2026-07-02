@@ -771,6 +771,36 @@ func TestSyncSkipsManagedRemoteManifest(t *testing.T) {
 	}
 }
 
+func TestSyncRemoteOnlyDoesNotCreateFiles(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "claude_desktop_config.json")
+	statePath := filepath.Join(tmp, "state", "claude-desktop-managed.json")
+
+	remote := registry.Manifest{
+		Name:      "cloud-sql",
+		Transport: registry.TransportHTTP,
+		URL:       "https://example.com/mcp",
+		Enabled:   true,
+		Clients:   []string{Target},
+	}
+	result, err := Sync([]registry.Manifest{remote}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+	if len(result.Added)+len(result.Updated)+len(result.Removed) != 0 {
+		t.Fatalf("expected no-op sync result, got: %+v", result)
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no config file for remote-only no-op sync, got err=%v", err)
+	}
+	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no state file for remote-only no-op sync, got err=%v", err)
+	}
+}
+
 func newStewreadsManifest() registry.Manifest {
 	return registry.Manifest{
 		Name:    "stewreads",

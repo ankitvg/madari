@@ -648,6 +648,11 @@ func hasTarget(manifest registry.Manifest, targets []string) bool {
 
 func hasTargetInManifests(manifests []registry.Manifest, target string) bool {
 	for _, manifest := range manifests {
+		// No adapter materializes remote transports yet, so remote manifests
+		// alone don't warrant a client config on disk.
+		if manifest.IsRemote() {
+			continue
+		}
 		if manifest.HasClient(target) {
 			return true
 		}

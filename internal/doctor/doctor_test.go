@@ -244,6 +244,41 @@ func TestRunSkipsClientConfigWhenTargetUnused(t *testing.T) {
 	}
 }
 
+func TestRunSkipsClientConfigForRemoteOnlyTarget(t *testing.T) {
+	tmp := t.TempDir()
+	store := registry.NewStore(filepath.Join(tmp, "servers"))
+
+	if err := store.Save(registry.Manifest{
+		Name:      "cloud-sql",
+		Transport: registry.TransportHTTP,
+		URL:       "https://example.com/mcp",
+		Enabled:   true,
+		Clients:   []string{"claude-desktop"},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+
+	adapter := testAdapter{
+		target:     "claude-desktop",
+		configPath: filepath.Join(tmp, "claude_desktop_config.json"),
+	}
+	report, err := Run(store, Options{Adapters: []clients.ClientAdapter{adapter}})
+	if err != nil {
+		t.Fatalf("doctor run failed: %v", err)
+	}
+
+	cc, ok := findClientConfig(report, "claude-desktop")
+	if !ok {
+		t.Fatalf("expected claude-desktop client config report, got: %+v", report.ClientConfigs)
+	}
+	if cc.Status != StatusSkipped {
+		t.Fatalf("expected remote-only target to skip the config check, got: %+v", cc)
+	}
+	if len(report.Servers) != 1 || report.Servers[0].Status != StatusReady {
+		t.Fatalf("expected remote manifest to report ready, got: %+v", report.Servers)
+	}
+}
+
 func TestRunUsesConfigPathOverride(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix fixture mode bits are used in this test")

@@ -58,7 +58,7 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 	result.ConfigPath = configPath
 	result.DryRun = opts.DryRun
 
-	if opts.DryRun {
+	if opts.DryRun || (!configExists && syncshared.PlanIsNoOp(result, managedState, nextState)) {
 		return result, nil
 	}
 

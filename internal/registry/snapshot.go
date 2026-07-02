@@ -16,7 +16,11 @@ const (
 	snapshotVersionV3 = 3
 	snapshotVersionV4 = 4
 	snapshotVersionV5 = 5
-	SnapshotVersion   = 6
+	snapshotVersionV6 = 6
+	// SnapshotVersion 7 adds remote transport fields on server manifests;
+	// pre-remote importers reject v7 snapshots cleanly by version instead of
+	// misreading a remote server as a stdio manifest without a command.
+	SnapshotVersion = 7
 )
 
 type Snapshot struct {
@@ -310,7 +314,7 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 }
 
 func (s Snapshot) Validate() error {
-	if s.Version != snapshotVersionV1 && s.Version != snapshotVersionV2 && s.Version != snapshotVersionV3 && s.Version != snapshotVersionV4 && s.Version != snapshotVersionV5 && s.Version != SnapshotVersion {
+	if s.Version != snapshotVersionV1 && s.Version != snapshotVersionV2 && s.Version != snapshotVersionV3 && s.Version != snapshotVersionV4 && s.Version != snapshotVersionV5 && s.Version != snapshotVersionV6 && s.Version != SnapshotVersion {
 		return fmt.Errorf("unsupported snapshot version %d (supported: %d)", s.Version, SnapshotVersion)
 	}
 	if s.Version == snapshotVersionV1 && len(s.Rings) > 0 {
@@ -324,6 +328,9 @@ func (s Snapshot) Validate() error {
 	}
 	if s.Version < snapshotVersionV5 && snapshotHasRingContracts(s) {
 		return fmt.Errorf("snapshot version %d does not support ring contracts", s.Version)
+	}
+	if s.Version < SnapshotVersion && snapshotHasRemoteServers(s) {
+		return fmt.Errorf("snapshot version %d does not support remote transports", s.Version)
 	}
 
 	seen := map[string]struct{}{}
@@ -593,6 +600,15 @@ func normalizedRingSkills(r Ring) []string {
 func snapshotHasRingSkills(snapshot Snapshot) bool {
 	for _, ring := range snapshot.Rings {
 		if len(ring.Skills) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func snapshotHasRemoteServers(snapshot Snapshot) bool {
+	for _, server := range snapshot.Servers {
+		if server.IsRemote() {
 			return true
 		}
 	}
