@@ -595,6 +595,7 @@ args = ["run", "weather.py"]
 	}
 
 	manifest := newCloudSQLManifest()
+	manifest.Headers = map[string]string{"x-goog-user-project": "example-project"}
 	result, err := Sync([]registry.Manifest{manifest}, SyncOptions{
 		ConfigPath: configPath,
 		StatePath:  statePath,
@@ -617,8 +618,23 @@ args = ["run", "weather.py"]
 	if got.OAuthResource != "https://sqladmin.googleapis.com/" {
 		t.Fatalf("expected OAuth resource, got: %q", got.OAuthResource)
 	}
+	if got.HTTPHeaders["x-goog-user-project"] != "example-project" {
+		t.Fatalf("expected manifest headers as http_headers, got: %#v", got.HTTPHeaders)
+	}
 	if _, ok := servers["weather"]; !ok {
 		t.Fatalf("expected unmanaged weather entry to be preserved")
+	}
+
+	manifest.Headers["x-goog-user-project"] = "other-project"
+	result, err = Sync([]registry.Manifest{manifest}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("sync header change failed: %v", err)
+	}
+	if !reflect.DeepEqual(result.Updated, []string{"cloud-sql"}) {
+		t.Fatalf("expected header change to be an update, got: %+v", result)
 	}
 
 	manifest.URL = "https://sqladmin.googleapis.com/mcp/v2"
@@ -666,6 +682,28 @@ func TestAttachRingRemoteHTTPLifecycle(t *testing.T) {
 	servers = readServers(t, configPath)
 	if _, exists := servers["cloud-sql"]; exists {
 		t.Fatalf("expected remote entry to be removed after detach, got: %#v", servers)
+	}
+}
+
+func TestSyncKeepsSSEPending(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "config.toml")
+	statePath := filepath.Join(tmp, "state", "codex-managed.json")
+
+	manifest := newCloudSQLManifest()
+	manifest.Transport = registry.TransportSSE
+	result, err := Sync([]registry.Manifest{manifest}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+	if len(result.Added)+len(result.Updated)+len(result.Removed) != 0 {
+		t.Fatalf("expected sse manifest to stay ineligible, got: %+v", result)
+	}
+	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no config file for sse-only sync, got err=%v", err)
 	}
 }
 

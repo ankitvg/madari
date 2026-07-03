@@ -21,7 +21,7 @@ type testAdapter struct {
 
 func (a testAdapter) Target() string                     { return a.target }
 func (a testAdapter) DefaultConfigPath() (string, error) { return a.configPath, nil }
-func (a testAdapter) SupportsRemote() bool               { return a.supportsRemote }
+func (a testAdapter) SupportsRemote(string) bool         { return a.supportsRemote }
 func (a testAdapter) Sync(_ []registry.Manifest, _ clients.SyncOptions) (clients.SyncResult, error) {
 	return clients.SyncResult{}, nil
 }

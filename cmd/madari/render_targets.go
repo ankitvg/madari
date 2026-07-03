@@ -21,8 +21,10 @@ type renderedServer struct {
 }
 
 type ringRenderTarget struct {
-	target         string
-	supportsRemote bool
+	target string
+	// supportsRemote mirrors the sync adapter's per-transport remote
+	// capability so render and sync never disagree about materialization.
+	supportsRemote func(transport string) bool
 	render         func(io.Writer, map[string]renderedServer) error
 }
 
@@ -53,6 +55,13 @@ func renderCodexTOML(out io.Writer, servers map[string]renderedServer) error {
 			fmt.Fprintf(out, "url = %s\n", tomlString(entry.URL))
 			if entry.OAuthResource != "" {
 				fmt.Fprintf(out, "oauth_resource = %s\n", tomlString(entry.OAuthResource))
+			}
+			if len(entry.Headers) > 0 {
+				fmt.Fprintln(out)
+				fmt.Fprintf(out, "[mcp_servers.%s.http_headers]\n", tomlKey(name))
+				for _, key := range sortedMapKeys(entry.Headers) {
+					fmt.Fprintf(out, "%s = %s\n", tomlKey(key), tomlString(entry.Headers[key]))
+				}
 			}
 		} else {
 			fmt.Fprintf(out, "command = %s\n", tomlString(entry.Command))

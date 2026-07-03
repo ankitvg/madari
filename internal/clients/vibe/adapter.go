@@ -20,7 +20,7 @@ func (Adapter) DefaultConfigPath() (string, error) {
 
 // SupportsRemote is false: remote manifests stay ineligible until this
 // adapter materializes remote transports.
-func (Adapter) SupportsRemote() bool {
+func (Adapter) SupportsRemote(string) bool {
 	return false
 }
 

@@ -2711,7 +2711,7 @@ func TestRunWithStoreSyncReportsUnsupportedRemote(t *testing.T) {
 	}
 	if !strings.Contains(result.stderr, "cloud-sql uses http transport") ||
 		!strings.Contains(result.stderr, "stored in registry") ||
-		!strings.Contains(result.stderr, "vibe sync does not materialize remote transports yet") {
+		!strings.Contains(result.stderr, "vibe sync does not materialize http transports yet") {
 		t.Fatalf("expected unsupported remote warning, got: %s", result.stderr)
 	}
 
@@ -3630,7 +3630,7 @@ func TestRunWithStoreRingAttachReportsUnsupportedRemote(t *testing.T) {
 	}
 	if !strings.Contains(result.stderr, "cloud-sql uses http transport") ||
 		!strings.Contains(result.stderr, "stored in registry") ||
-		!strings.Contains(result.stderr, "vibe sync does not materialize remote transports yet") {
+		!strings.Contains(result.stderr, "vibe sync does not materialize http transports yet") {
 		t.Fatalf("expected unsupported remote warning, got: %s", result.stderr)
 	}
 }
@@ -4465,7 +4465,8 @@ func TestRunWithStoreRingRenderCodexRemoteHTTP(t *testing.T) {
 		"--transport", "http",
 		"--url", "https://sqladmin.googleapis.com/mcp",
 		"--client", "codex",
-		"--oauth-resource", "https://sqladmin.googleapis.com/"); result.code != 0 {
+		"--oauth-resource", "https://sqladmin.googleapis.com/",
+		"--header", "x-goog-user-project=example-project"); result.code != 0 {
 		t.Fatalf("setup add cloud-sql failed: %s", result.stderr)
 	}
 	if result := runCmd(store, "ring", "create", "cloudsql-readonly", "--member", "cloud-sql"); result.code != 0 {
@@ -4479,12 +4480,38 @@ func TestRunWithStoreRingRenderCodexRemoteHTTP(t *testing.T) {
 	want := `[mcp_servers.cloud-sql]
 url = "https://sqladmin.googleapis.com/mcp"
 oauth_resource = "https://sqladmin.googleapis.com/"
+
+[mcp_servers.cloud-sql.http_headers]
+x-goog-user-project = "example-project"
 `
 	if result.stdout != want {
 		t.Fatalf("render output for codex remote drift:\nwant:\n%s\ngot:\n%s", want, result.stdout)
 	}
 	if result.stderr != "" {
 		t.Fatalf("expected no remote render warnings, got: %s", result.stderr)
+	}
+}
+
+func TestRunWithStoreSyncCodexKeepsSSEPending(t *testing.T) {
+	store := newTestStore(t)
+
+	if result := runCmd(store, "add", "events",
+		"--transport", "sse",
+		"--url", "https://example.com/sse",
+		"--client", "codex"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	result := runCmd(store, "sync", "codex", "--dry-run", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("sync dry-run failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	if !strings.Contains(result.stdout, "unsupported remote: events") {
+		t.Fatalf("expected sse manifest reported as unsupported, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stderr, "codex sync does not materialize sse transports yet") {
+		t.Fatalf("expected sse-specific warning, got: %s", result.stderr)
 	}
 }
 

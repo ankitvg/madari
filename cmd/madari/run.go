@@ -1392,7 +1392,7 @@ func manifestEndpoint(manifest registry.Manifest) string {
 func doctorEndpointDetail(server doctor.ServerReport) string {
 	switch server.Transport {
 	case registry.TransportHTTP, registry.TransportSSE:
-		pending := remotePendingTargets(server.Clients)
+		pending := remotePendingTargets(server.Clients, server.Transport)
 		if len(pending) == 0 {
 			return fmt.Sprintf("url=%s", server.URL)
 		}
@@ -1403,15 +1403,15 @@ func doctorEndpointDetail(server doctor.ServerReport) string {
 }
 
 // remotePendingTargets returns the manifest's sync targets whose adapters do
-// not materialize remote transports yet.
-func remotePendingTargets(targets []string) []string {
+// not materialize this remote transport yet.
+func remotePendingTargets(targets []string, transport string) []string {
 	pending := []string{}
 	for _, target := range targets {
 		adapter, known := syncAdapters[target]
 		if !known {
 			continue
 		}
-		if !adapter.SupportsRemote() {
+		if !adapter.SupportsRemote(transport) {
 			pending = append(pending, target)
 		}
 	}
@@ -1434,10 +1434,7 @@ func remoteSkipNames(skips []unsupportedRemoteManifest) []string {
 }
 
 func filterSyncableManifests(manifests []registry.Manifest, target string) ([]registry.Manifest, []string, []unsupportedRemoteManifest) {
-	remoteSupported := false
-	if adapter, known := syncAdapters[target]; known {
-		remoteSupported = adapter.SupportsRemote()
-	}
+	adapter, adapterKnown := syncAdapters[target]
 	out := make([]registry.Manifest, 0, len(manifests))
 	var skipped []string
 	var unsupportedRemote []unsupportedRemoteManifest
@@ -1447,7 +1444,7 @@ func filterSyncableManifests(manifests []registry.Manifest, target string) ([]re
 			continue
 		}
 		if manifest.IsRemote() {
-			if !remoteSupported {
+			if !adapterKnown || !adapter.SupportsRemote(manifest.TransportType()) {
 				unsupportedRemote = append(unsupportedRemote, unsupportedRemoteManifest{
 					Name:      manifest.Name,
 					Transport: manifest.TransportType(),
@@ -1630,7 +1627,7 @@ func printSyncSummary(stdout, stderr io.Writer, target, configPath string, dryRu
 	if len(unsupportedRemote) > 0 {
 		fmt.Fprintf(stdout, "unsupported remote: %s\n", formatNameList(remoteSkipNames(unsupportedRemote)))
 		for _, remote := range unsupportedRemote {
-			fmt.Fprintf(stderr, "warning: remote %s uses %s transport; stored in registry, but %s sync does not materialize remote transports yet\n", remote.Name, remote.Transport, target)
+			fmt.Fprintf(stderr, "warning: remote %s uses %s transport; stored in registry, but %s sync does not materialize %s transports yet\n", remote.Name, remote.Transport, target, remote.Transport)
 		}
 	}
 	if len(refused) > 0 {
