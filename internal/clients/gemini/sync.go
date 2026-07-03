@@ -59,7 +59,7 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 	result.ConfigPath = configPath
 	result.DryRun = opts.DryRun
 
-	if opts.DryRun {
+	if opts.DryRun || (!configExists && syncshared.PlanIsNoOp(result, managedState, nextState)) {
 		return result, nil
 	}
 
@@ -280,6 +280,8 @@ func entriesForTarget(manifests []registry.Manifest, userScope bool) map[string]
 		switch {
 		case !manifest.Enabled:
 			// ineligible
+		case manifest.IsRemote():
+			// Remote transports are not materialized by this adapter yet.
 		case !userScope && manifest.HasSecretValue():
 			entry.Refused = true
 		default:

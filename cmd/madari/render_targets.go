@@ -9,15 +9,21 @@ import (
 
 // renderedServer is the self-contained client config entry ring render emits.
 type renderedServer struct {
-	Command        string            `json:"command"`
+	Transport      string            `json:"type,omitempty"`
+	Command        string            `json:"command,omitempty"`
 	Args           []string          `json:"args,omitempty"`
+	URL            string            `json:"url,omitempty"`
+	Headers        map[string]string `json:"headers,omitempty"`
+	TimeoutMS      int               `json:"timeout,omitempty"`
+	OAuthResource  string            `json:"-"`
 	Env            map[string]string `json:"env,omitempty"`
 	RuntimeEnvKeys []string          `json:"-"`
 }
 
 type ringRenderTarget struct {
-	target string
-	render func(io.Writer, map[string]renderedServer) error
+	target         string
+	supportsRemote bool
+	render         func(io.Writer, map[string]renderedServer) error
 }
 
 var ringRenderTargets = ringRenderTargetsFromClientTargets()
@@ -117,6 +123,17 @@ func sortedMapKeys(values map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func copyStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
 }
 
 func tomlKey(key string) string {

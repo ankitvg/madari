@@ -55,6 +55,128 @@ func TestManifestValidateErrors(t *testing.T) {
 			expects: "command is required",
 		},
 		{
+			name: "invalid transport",
+			mutate: func(m *Manifest) {
+				m.Transport = "websocket"
+			},
+			expects: "transport must be one of",
+		},
+		{
+			name: "stdio rejects url",
+			mutate: func(m *Manifest) {
+				m.URL = "https://example.com/mcp"
+			},
+			expects: "url is only supported",
+		},
+		{
+			name: "remote missing url",
+			mutate: func(m *Manifest) {
+				*m = Manifest{
+					Name:      "cloud-sql",
+					Transport: TransportHTTP,
+					Enabled:   true,
+					Clients:   []string{"codex"},
+				}
+			},
+			expects: "url is required",
+		},
+		{
+			name: "remote rejects command",
+			mutate: func(m *Manifest) {
+				*m = Manifest{
+					Name:      "cloud-sql",
+					Transport: TransportHTTP,
+					URL:       "https://sqladmin.googleapis.com/mcp",
+					Command:   "mcp-server-cloud-sql",
+					Enabled:   true,
+					Clients:   []string{"codex"},
+				}
+			},
+			expects: "command is not supported",
+		},
+		{
+			name: "remote rejects args",
+			mutate: func(m *Manifest) {
+				*m = Manifest{
+					Name:      "cloud-sql",
+					Transport: TransportHTTP,
+					URL:       "https://sqladmin.googleapis.com/mcp",
+					Args:      []string{"--stdio"},
+					Enabled:   true,
+					Clients:   []string{"codex"},
+				}
+			},
+			expects: "args are not supported",
+		},
+		{
+			name: "remote requires http url",
+			mutate: func(m *Manifest) {
+				*m = Manifest{
+					Name:      "cloud-sql",
+					Transport: TransportHTTP,
+					URL:       "file:///tmp/mcp",
+					Enabled:   true,
+					Clients:   []string{"codex"},
+				}
+			},
+			expects: "url must use http or https",
+		},
+		{
+			name: "remote rejects invalid header name",
+			mutate: func(m *Manifest) {
+				*m = Manifest{
+					Name:      "cloud-sql",
+					Transport: TransportHTTP,
+					URL:       "https://sqladmin.googleapis.com/mcp",
+					Headers:   map[string]string{"Bad Header": "value"},
+					Enabled:   true,
+					Clients:   []string{"codex"},
+				}
+			},
+			expects: "invalid header name",
+		},
+		{
+			name: "remote rejects header name that cannot round-trip",
+			mutate: func(m *Manifest) {
+				*m = Manifest{
+					Name:      "cloud-sql",
+					Transport: TransportHTTP,
+					URL:       "https://sqladmin.googleapis.com/mcp",
+					Headers:   map[string]string{"X#Trace": "1"},
+					Enabled:   true,
+					Clients:   []string{"codex"},
+				}
+			},
+			expects: "invalid header name",
+		},
+		{
+			name: "remote rejects url with surrounding whitespace",
+			mutate: func(m *Manifest) {
+				*m = Manifest{
+					Name:      "cloud-sql",
+					Transport: TransportHTTP,
+					URL:       "https://sqladmin.googleapis.com/mcp ",
+					Enabled:   true,
+					Clients:   []string{"codex"},
+				}
+			},
+			expects: "url must not have leading or trailing whitespace",
+		},
+		{
+			name: "remote rejects negative timeout",
+			mutate: func(m *Manifest) {
+				*m = Manifest{
+					Name:      "cloud-sql",
+					Transport: TransportHTTP,
+					URL:       "https://sqladmin.googleapis.com/mcp",
+					TimeoutMS: -1,
+					Enabled:   true,
+					Clients:   []string{"codex"},
+				}
+			},
+			expects: "timeout_ms must be positive",
+		},
+		{
 			name: "duplicate clients",
 			mutate: func(m *Manifest) {
 				m.Clients = []string{"claude-desktop", "claude-desktop"}
@@ -103,5 +225,24 @@ func TestManifestValidateErrors(t *testing.T) {
 				t.Fatalf("expected error containing %q, got: %v", tt.expects, err)
 			}
 		})
+	}
+}
+
+func TestManifestValidateRemoteOK(t *testing.T) {
+	m := Manifest{
+		Name:          "cloud-sql",
+		Transport:     TransportHTTP,
+		URL:           "https://sqladmin.googleapis.com/mcp",
+		OAuthResource: "https://sqladmin.googleapis.com/",
+		TimeoutMS:     30000,
+		Headers:       map[string]string{"x-goog-user-project": "project-id"},
+		Enabled:       true,
+		Clients:       []string{"codex"},
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("expected remote manifest to validate, got: %v", err)
+	}
+	if !m.IsRemote() {
+		t.Fatalf("expected remote manifest to report IsRemote")
 	}
 }

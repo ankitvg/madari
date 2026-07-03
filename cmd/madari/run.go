@@ -320,20 +320,30 @@ func (a cliApp) cmdAdd(args []string) error {
 	fs.SetOutput(io.Discard)
 
 	var command string
+	var transport string
+	var url string
+	var oauthResource string
 	var description string
 	var disabled bool
+	var timeoutMS int
 	var cmdArgs stringList
 	var clients stringList
 	var envPairs stringList
+	var headerPairs stringList
 	var requiredEnv stringList
 	var secretEnv stringList
 
 	fs.StringVar(&command, "command", "", "Server command")
+	fs.StringVar(&transport, "transport", "", "Server transport (stdio, http, or sse; default: stdio)")
+	fs.StringVar(&url, "url", "", "Remote MCP server URL for http/sse transports")
+	fs.StringVar(&oauthResource, "oauth-resource", "", "OAuth resource for remote MCP clients that support it")
 	fs.StringVar(&description, "description", "", "Server description")
+	fs.IntVar(&timeoutMS, "timeout-ms", 0, "Remote MCP timeout in milliseconds")
 	fs.BoolVar(&disabled, "disabled", false, "Create server in disabled state")
 	fs.Var(&cmdArgs, "arg", "Command argument (repeatable)")
 	fs.Var(&clients, "client", "Client id (repeatable)")
 	fs.Var(&envPairs, "env", "Environment variable KEY=VALUE (repeatable)")
+	fs.Var(&headerPairs, "header", "HTTP header KEY=VALUE for remote transports (repeatable)")
 	fs.Var(&requiredEnv, "required-env", "Required environment key (repeatable)")
 	fs.Var(&secretEnv, "secret-env", "Secret env key barred from repo-scoped configs (repeatable)")
 
@@ -347,9 +357,6 @@ func (a cliApp) cmdAdd(args []string) error {
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
 	}
-	if strings.TrimSpace(command) == "" {
-		return fmt.Errorf("--command is required")
-	}
 	if len(clients) == 0 {
 		return fmt.Errorf("at least one --client is required")
 	}
@@ -358,21 +365,42 @@ func (a cliApp) cmdAdd(args []string) error {
 	if err != nil {
 		return err
 	}
-	resolvedCommand, err := resolveCommandPath(command)
+	headers, err := parseHeaderPairs(headerPairs)
 	if err != nil {
 		return err
 	}
 
+	transport = strings.TrimSpace(strings.ToLower(transport))
+	if transport == "" {
+		transport = registry.TransportStdio
+	}
+
+	resolvedCommand := strings.TrimSpace(command)
+	if transport == registry.TransportStdio {
+		if resolvedCommand == "" {
+			return fmt.Errorf("--command is required")
+		}
+		resolvedCommand, err = resolveCommandPath(command)
+		if err != nil {
+			return err
+		}
+	}
+
 	manifest := registry.Manifest{
-		Name:        name,
-		Command:     resolvedCommand,
-		Args:        append([]string(nil), cmdArgs...),
-		Enabled:     !disabled,
-		Clients:     append([]string(nil), clients...),
-		Description: description,
-		Env:         env,
-		RequiredEnv: registry.RequiredEnv{Keys: append([]string(nil), requiredEnv...)},
-		SecretEnv:   registry.SecretEnv{Keys: append([]string(nil), secretEnv...)},
+		Name:          name,
+		Transport:     transport,
+		Command:       resolvedCommand,
+		Args:          append([]string(nil), cmdArgs...),
+		URL:           strings.TrimSpace(url),
+		Headers:       headers,
+		TimeoutMS:     timeoutMS,
+		OAuthResource: strings.TrimSpace(oauthResource),
+		Enabled:       !disabled,
+		Clients:       append([]string(nil), clients...),
+		Description:   description,
+		Env:           env,
+		RequiredEnv:   registry.RequiredEnv{Keys: append([]string(nil), requiredEnv...)},
+		SecretEnv:     registry.SecretEnv{Keys: append([]string(nil), secretEnv...)},
 	}
 
 	if err := a.store.Add(manifest); err != nil {
@@ -426,17 +454,19 @@ func (a cliApp) cmdList(args []string) error {
 			clients := append([]string(nil), manifest.Clients...)
 			sort.Strings(clients)
 			payload.Servers = append(payload.Servers, serverJSON{
-				Name:    manifest.Name,
-				Enabled: manifest.Enabled,
-				Command: manifest.Command,
-				Clients: nonNilStrings(clients),
-				Sources: nonNilStrings(managedSources[manifest.Name]),
+				Name:      manifest.Name,
+				Enabled:   manifest.Enabled,
+				Transport: manifest.TransportType(),
+				Command:   manifest.Command,
+				URL:       manifest.URL,
+				Clients:   nonNilStrings(clients),
+				Sources:   nonNilStrings(managedSources[manifest.Name]),
 			})
 		}
 		return writeJSON(a.stdout, payload)
 	}
 
-	fmt.Fprintln(a.stdout, "NAME\tSTATUS\tCOMMAND\tCLIENTS\tSOURCES")
+	fmt.Fprintln(a.stdout, "NAME\tSTATUS\tTRANSPORT\tENDPOINT\tCLIENTS\tSOURCES")
 	for _, manifest := range manifests {
 		status := "disabled"
 		if manifest.Enabled {
@@ -448,7 +478,7 @@ func (a cliApp) cmdList(args []string) error {
 		if list := managedSources[manifest.Name]; len(list) > 0 {
 			sources = strings.Join(list, ",")
 		}
-		fmt.Fprintf(a.stdout, "%s\t%s\t%s\t%s\t%s\n", manifest.Name, status, manifest.Command, strings.Join(clients, ","), sources)
+		fmt.Fprintf(a.stdout, "%s\t%s\t%s\t%s\t%s\t%s\n", manifest.Name, status, manifest.TransportType(), manifestEndpoint(manifest), strings.Join(clients, ","), sources)
 	}
 	return nil
 }
@@ -663,7 +693,7 @@ func (a cliApp) cmdSync(args []string) error {
 	if err != nil {
 		return err
 	}
-	syncable, skipped := filterSyncableManifests(manifests, target)
+	syncable, skipped, unsupportedRemote := filterSyncableManifests(manifests, target)
 
 	rings, err := a.store.ListRings()
 	if err != nil {
@@ -703,24 +733,25 @@ func (a cliApp) cmdSync(args []string) error {
 	}
 	if jsonOut {
 		return writeJSON(a.stdout, syncJSON{
-			SchemaVersion:   jsonSchemaVersion,
-			Command:         "sync",
-			Target:          target,
-			ConfigPath:      result.ConfigPath,
-			DryRun:          result.DryRun,
-			Added:           nonNilStrings(result.Added),
-			Updated:         nonNilStrings(result.Updated),
-			Removed:         nonNilStrings(result.Removed),
-			Unchanged:       nonNilStrings(result.Unchanged),
-			Skipped:         nonNilStrings(skipped),
-			Refused:         nonNilStrings(result.Refused),
-			SkillsAdded:     nonNilStrings(skillResult.Added),
-			SkillsUpdated:   nonNilStrings(skillResult.Updated),
-			SkillsRemoved:   nonNilStrings(skillResult.Removed),
-			SkillsUnchanged: nonNilStrings(skillResult.Unchanged),
+			SchemaVersion:     jsonSchemaVersion,
+			Command:           "sync",
+			Target:            target,
+			ConfigPath:        result.ConfigPath,
+			DryRun:            result.DryRun,
+			Added:             nonNilStrings(result.Added),
+			Updated:           nonNilStrings(result.Updated),
+			Removed:           nonNilStrings(result.Removed),
+			Unchanged:         nonNilStrings(result.Unchanged),
+			Skipped:           nonNilStrings(skipped),
+			UnsupportedRemote: nonNilStrings(remoteSkipNames(unsupportedRemote)),
+			Refused:           nonNilStrings(result.Refused),
+			SkillsAdded:       nonNilStrings(skillResult.Added),
+			SkillsUpdated:     nonNilStrings(skillResult.Updated),
+			SkillsRemoved:     nonNilStrings(skillResult.Removed),
+			SkillsUnchanged:   nonNilStrings(skillResult.Unchanged),
 		})
 	}
-	printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, skipped, result.Refused)
+	printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, skipped, unsupportedRemote, result.Refused)
 	printRingSkillSummary(a.stdout, skillResult)
 	return nil
 }
@@ -858,12 +889,14 @@ func (a cliApp) cmdDoctor(args []string) error {
 				})
 			}
 			payload.Servers = append(payload.Servers, doctorServerJSON{
-				Name:    server.Name,
-				Enabled: server.Enabled,
-				Clients: nonNilStrings(server.Clients),
-				Command: server.Command,
-				Status:  string(server.Status),
-				Issues:  issues,
+				Name:      server.Name,
+				Enabled:   server.Enabled,
+				Transport: server.Transport,
+				Clients:   nonNilStrings(server.Clients),
+				Command:   server.Command,
+				URL:       server.URL,
+				Status:    string(server.Status),
+				Issues:    issues,
 			})
 		}
 		for _, manifestError := range report.ManifestErrors {
@@ -956,11 +989,12 @@ func (a cliApp) cmdDoctor(args []string) error {
 		for _, server := range report.Servers {
 			fmt.Fprintf(
 				a.stdout,
-				"  - %s [%s] enabled=%t command=%s clients=%s\n",
+				"  - %s [%s] enabled=%t transport=%s %s clients=%s\n",
 				server.Name,
 				server.Status,
 				server.Enabled,
-				server.Command,
+				server.Transport,
+				doctorEndpointDetail(server),
 				strings.Join(server.Clients, ","),
 			)
 			for _, issue := range server.Issues {
@@ -1332,11 +1366,66 @@ func parseEnvPairs(pairs []string) (map[string]string, error) {
 	return env, nil
 }
 
-func filterSyncableManifests(manifests []registry.Manifest, target string) ([]registry.Manifest, []string) {
+func parseHeaderPairs(pairs []string) (map[string]string, error) {
+	headers := map[string]string{}
+	for _, pair := range pairs {
+		key, value, ok := strings.Cut(pair, "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			return nil, fmt.Errorf("invalid header assignment %q, expected KEY=VALUE", pair)
+		}
+		if _, exists := headers[key]; exists {
+			return nil, fmt.Errorf("duplicate header key %q", key)
+		}
+		headers[key] = value
+	}
+	return headers, nil
+}
+
+func manifestEndpoint(manifest registry.Manifest) string {
+	if manifest.IsRemote() {
+		return manifest.URL
+	}
+	return manifest.Command
+}
+
+func doctorEndpointDetail(server doctor.ServerReport) string {
+	switch server.Transport {
+	case registry.TransportHTTP, registry.TransportSSE:
+		return fmt.Sprintf("url=%s sync=pending", server.URL)
+	default:
+		return fmt.Sprintf("command=%s", server.Command)
+	}
+}
+
+type unsupportedRemoteManifest struct {
+	Name      string
+	Transport string
+}
+
+func remoteSkipNames(skips []unsupportedRemoteManifest) []string {
+	names := make([]string, 0, len(skips))
+	for _, skip := range skips {
+		names = append(names, skip.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func filterSyncableManifests(manifests []registry.Manifest, target string) ([]registry.Manifest, []string, []unsupportedRemoteManifest) {
 	out := make([]registry.Manifest, 0, len(manifests))
 	var skipped []string
+	var unsupportedRemote []unsupportedRemoteManifest
 	for _, manifest := range manifests {
 		if !manifest.Enabled || !manifest.HasClient(target) {
+			out = append(out, manifest)
+			continue
+		}
+		if manifest.IsRemote() {
+			unsupportedRemote = append(unsupportedRemote, unsupportedRemoteManifest{
+				Name:      manifest.Name,
+				Transport: manifest.TransportType(),
+			})
 			out = append(out, manifest)
 			continue
 		}
@@ -1347,7 +1436,10 @@ func filterSyncableManifests(manifests []registry.Manifest, target string) ([]re
 		out = append(out, manifest)
 	}
 	sort.Strings(skipped)
-	return out, skipped
+	sort.Slice(unsupportedRemote, func(i, j int) bool {
+		return unsupportedRemote[i].Name < unsupportedRemote[j].Name
+	})
+	return out, skipped, unsupportedRemote
 }
 
 func syncTargetsForClients(manifest registry.Manifest) []string {
@@ -1490,7 +1582,7 @@ func formatNameList(names []string) string {
 	return strings.Join(names, ",")
 }
 
-func printSyncSummary(stdout, stderr io.Writer, target, configPath string, dryRun bool, added, updated, removed, unchanged, skipped, refused []string) {
+func printSyncSummary(stdout, stderr io.Writer, target, configPath string, dryRun bool, added, updated, removed, unchanged, skipped []string, unsupportedRemote []unsupportedRemoteManifest, refused []string) {
 	mode := "applied"
 	if dryRun {
 		mode = "dry-run"
@@ -1506,6 +1598,12 @@ func printSyncSummary(stdout, stderr io.Writer, target, configPath string, dryRu
 		fmt.Fprintf(stdout, "skipped: %s\n", formatNameList(skipped))
 		for _, name := range skipped {
 			fmt.Fprintf(stderr, "warning: skipped %s because command path is not an executable file\n", name)
+		}
+	}
+	if len(unsupportedRemote) > 0 {
+		fmt.Fprintf(stdout, "unsupported remote: %s\n", formatNameList(remoteSkipNames(unsupportedRemote)))
+		for _, remote := range unsupportedRemote {
+			fmt.Fprintf(stderr, "warning: remote %s uses %s transport; stored in registry, but %s sync does not materialize remote transports yet\n", remote.Name, remote.Transport, target)
 		}
 	}
 	if len(refused) > 0 {
@@ -1606,9 +1704,15 @@ func printVersionHelp(out io.Writer) {
 func printAddHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
 	fmt.Fprintln(out, "  madari add <name> --command <cmd> --client <client> [options]")
+	fmt.Fprintln(out, "  madari add <name> --transport http --url <url> --client <client> [options]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
-	fmt.Fprintln(out, "  --command <cmd>            Server command (required)")
+	fmt.Fprintln(out, "  --command <cmd>            Server command (required for stdio)")
+	fmt.Fprintln(out, "  --transport <transport>    Server transport: stdio, http, or sse (default: stdio)")
+	fmt.Fprintln(out, "  --url <url>                Remote MCP server URL for http/sse transports")
+	fmt.Fprintln(out, "  --header KEY=VALUE         HTTP header for remote transports (repeatable)")
+	fmt.Fprintln(out, "  --timeout-ms <ms>          Remote MCP timeout in milliseconds")
+	fmt.Fprintln(out, "  --oauth-resource <url>     OAuth resource for remote clients that support it")
 	fmt.Fprintln(out, "  --client <client>          Target client id (required, repeatable)")
 	fmt.Fprintln(out, "  --arg <value>              Command argument (repeatable)")
 	fmt.Fprintln(out, "  --env KEY=VALUE            Environment variable (repeatable)")
@@ -1620,6 +1724,7 @@ func printAddHelp(out io.Writer) {
 	fmt.Fprintln(out, "Examples:")
 	fmt.Fprintln(out, "  madari add stewreads --command stewreads-mcp --client claude-desktop")
 	fmt.Fprintln(out, "  madari add mailer --command ./bin/mailer --client claude-desktop --required-env SMTP_PASSWORD")
+	fmt.Fprintln(out, "  madari add cloud-sql --transport http --url https://sqladmin.googleapis.com/mcp --client codex --oauth-resource https://sqladmin.googleapis.com/")
 }
 
 func printInstallHelp(out io.Writer) {

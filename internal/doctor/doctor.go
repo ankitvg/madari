@@ -38,12 +38,14 @@ type Issue struct {
 }
 
 type ServerReport struct {
-	Name    string
-	Enabled bool
-	Clients []string
-	Command string
-	Status  Status
-	Issues  []Issue
+	Name      string
+	Enabled   bool
+	Clients   []string
+	Transport string
+	Command   string
+	URL       string
+	Status    Status
+	Issues    []Issue
 }
 
 type ManifestError struct {
@@ -316,7 +318,7 @@ func checkDrift(manifests []registry.Manifest, targets []DriftTarget, rings []re
 func syncableForTarget(manifests []registry.Manifest, target string) []registry.Manifest {
 	out := make([]registry.Manifest, 0, len(manifests))
 	for _, manifest := range manifests {
-		if manifest.Enabled && manifest.HasClient(target) {
+		if manifest.Enabled && manifest.HasClient(target) && !manifest.IsRemote() {
 			if issue := validateAbsoluteExecutablePath(manifest.Command); issue != nil {
 				continue
 			}
@@ -368,12 +370,14 @@ func summarize(report Report) Summary {
 
 func inspectServer(manifest registry.Manifest, envLookup func(string) string, targets []string) ServerReport {
 	report := ServerReport{
-		Name:    manifest.Name,
-		Enabled: manifest.Enabled,
-		Clients: append([]string(nil), manifest.Clients...),
-		Command: manifest.Command,
-		Status:  StatusSkipped,
-		Issues:  []Issue{},
+		Name:      manifest.Name,
+		Enabled:   manifest.Enabled,
+		Clients:   append([]string(nil), manifest.Clients...),
+		Transport: manifest.TransportType(),
+		Command:   manifest.Command,
+		URL:       manifest.URL,
+		Status:    StatusSkipped,
+		Issues:    []Issue{},
 	}
 
 	if !manifest.Enabled || !hasTarget(manifest, targets) {
@@ -381,8 +385,19 @@ func inspectServer(manifest registry.Manifest, envLookup func(string) string, ta
 	}
 
 	report.Status = StatusReady
-	if issue := validateAbsoluteExecutablePath(manifest.Command); issue != nil {
-		report.Issues = append(report.Issues, *issue)
+	if !manifest.IsRemote() {
+		if issue := validateAbsoluteExecutablePath(manifest.Command); issue != nil {
+			report.Issues = append(report.Issues, *issue)
+			report.Status = StatusError
+		}
+	}
+
+	if manifest.IsRemote() && strings.TrimSpace(manifest.URL) == "" {
+		report.Issues = append(report.Issues, Issue{
+			Severity: SeverityError,
+			Code:     "missing_remote_url",
+			Message:  "remote transport requires url",
+		})
 		report.Status = StatusError
 	}
 
@@ -637,6 +652,11 @@ func hasTarget(manifest registry.Manifest, targets []string) bool {
 
 func hasTargetInManifests(manifests []registry.Manifest, target string) bool {
 	for _, manifest := range manifests {
+		// No adapter materializes remote transports yet, so remote manifests
+		// alone don't warrant a client config on disk.
+		if manifest.IsRemote() {
+			continue
+		}
 		if manifest.HasClient(target) {
 			return true
 		}

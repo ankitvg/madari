@@ -410,6 +410,26 @@ func (a cliApp) cmdRingRender(args []string) error {
 			fmt.Fprintf(a.stderr, "warning: ring member %s does not target %s; omitted\n", member, target)
 			continue
 		}
+		if manifest.IsRemote() {
+			if !renderTarget.supportsRemote {
+				fmt.Fprintf(a.stderr, "warning: ring member %s uses %s transport, which %s render does not support yet; omitted\n", member, manifest.TransportType(), target)
+				continue
+			}
+			if len(manifest.Headers) > 0 {
+				fmt.Fprintf(a.stderr, "warning: ring member %s: headers are not emitted for %s render\n", member, target)
+			}
+			if manifest.TimeoutMS > 0 {
+				fmt.Fprintf(a.stderr, "warning: ring member %s: timeout_ms is not emitted for %s render\n", member, target)
+			}
+			servers[member] = renderedServer{
+				Transport:     manifest.TransportType(),
+				URL:           manifest.URL,
+				Headers:       copyStringMap(manifest.Headers),
+				TimeoutMS:     manifest.TimeoutMS,
+				OAuthResource: manifest.OAuthResource,
+			}
+			continue
+		}
 		if err := clients.ValidateCommandPath(manifest.Command); err != nil {
 			fmt.Fprintf(a.stderr, "warning: ring member %s omitted: %s\n", member, err.Message)
 			continue
@@ -556,7 +576,7 @@ func (a cliApp) cmdRingAttach(args []string) error {
 	}
 
 	a.warnRingMembers(ring, manifests, target)
-	syncable, skipped := filterSyncableManifests(manifests, target)
+	syncable, skipped, unsupportedRemote := filterSyncableManifests(manifests, target)
 
 	adapter := syncAdapters[target]
 	opts := clients.SyncOptions{
@@ -595,7 +615,7 @@ func (a cliApp) cmdRingAttach(args []string) error {
 	}
 	fmt.Fprintf(a.stdout, "ring: %s\n", ringName)
 	if len(ring.Members) > 0 {
-		printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, skipped, result.Refused)
+		printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, skipped, unsupportedRemote, result.Refused)
 	}
 	printRingSkillSummary(a.stdout, skillResult)
 	return nil
@@ -662,7 +682,7 @@ func (a cliApp) cmdRingDetach(args []string) error {
 	}
 	fmt.Fprintf(a.stdout, "ring: %s\n", ringName)
 	if serverAttached {
-		printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, nil, result.Refused)
+		printSyncSummary(a.stdout, a.stderr, target, result.ConfigPath, result.DryRun, result.Added, result.Updated, result.Removed, result.Unchanged, nil, nil, result.Refused)
 	}
 	printRingSkillSummary(a.stdout, skillResult)
 	return nil

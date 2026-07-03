@@ -19,6 +19,7 @@ type clientTarget struct {
 	target             string
 	syncAdapter        clients.ClientAdapter
 	ringConfigRenderer func(io.Writer, map[string]renderedServer) error
+	ringRenderRemote   bool
 	userScope          bool
 	skillRoots         skillTargetRoots
 }
@@ -97,8 +98,9 @@ func ringRenderTargetsFromClientTargets() map[string]ringRenderTarget {
 	for _, ct := range clientTargets {
 		if ct.ringConfigRenderer != nil {
 			targets[ct.target] = ringRenderTarget{
-				target: ct.target,
-				render: ct.ringConfigRenderer,
+				target:         ct.target,
+				supportsRemote: ct.ringRenderRemote,
+				render:         ct.ringConfigRenderer,
 			}
 		}
 	}

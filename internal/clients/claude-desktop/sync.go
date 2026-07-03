@@ -58,7 +58,7 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 	result.ConfigPath = configPath
 	result.DryRun = opts.DryRun
 
-	if opts.DryRun {
+	if opts.DryRun || (!configExists && syncshared.PlanIsNoOp(result, managedState, nextState)) {
 		return result, nil
 	}
 
@@ -246,7 +246,7 @@ func entriesForTarget(manifests []registry.Manifest) map[string]syncshared.Entry
 			continue
 		}
 		entry := syncshared.Entry[serverConfig]{}
-		if manifest.Enabled {
+		if manifest.Enabled && !manifest.IsRemote() {
 			entry.Eligible = true
 			entry.Value = materializeServer(manifest)
 		}

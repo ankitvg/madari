@@ -2,6 +2,7 @@ package syncshared
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -21,6 +22,39 @@ type Entry[T any] struct {
 	// Refused marks a would-be-eligible entry excluded by the secrets
 	// placement policy; reported via SyncResult.Refused.
 	Refused bool
+}
+
+// PlanIsNoOp reports whether applying a sync plan would change neither the
+// client config nor the managed state. Adapters use it to skip applying when
+// the config file does not exist yet, so a sync with nothing to do (for
+// example only remote manifests, which no adapter materializes) never creates
+// config or state files. Existing configs still go through applyPlan for its
+// side effects (formatting normalization, permission tightening).
+func PlanIsNoOp(result clients.SyncResult, prev, next map[string][]string) bool {
+	if len(result.Added)+len(result.Updated)+len(result.Removed) > 0 {
+		return false
+	}
+	return managedStatesEqual(prev, next)
+}
+
+func managedStatesEqual(a, b map[string][]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for name, aSources := range a {
+		bSources, ok := b[name]
+		if !ok || len(aSources) != len(bSources) {
+			return false
+		}
+		as := append([]string(nil), aSources...)
+		bs := append([]string(nil), bSources...)
+		sort.Strings(as)
+		sort.Strings(bs)
+		if !slices.Equal(as, bs) {
+			return false
+		}
+	}
+	return true
 }
 
 // PlanSync computes a sync plan and the post-sync ownership state under the

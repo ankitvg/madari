@@ -9,8 +9,16 @@ Each managed server is stored as a TOML document.
 ## Fields
 
 - `name` (string, required): stable logical ID.
-- `command` (string, required): absolute executable path for reliable sync behavior.
-- `args` (array of strings, optional): command arguments.
+- `transport` (string, optional): `stdio`, `http`, or `sse`. Empty means
+  `stdio` for legacy manifests.
+- `command` (string, required for `stdio`): absolute executable path for
+  reliable sync behavior.
+- `args` (array of strings, optional for `stdio`): command arguments.
+- `url` (string, required for `http`/`sse`): remote MCP server URL.
+- `timeout_ms` (integer, optional for `http`/`sse`): remote MCP timeout in
+  milliseconds. Emitted only for clients that support it.
+- `oauth_resource` (string, optional for `http`/`sse`): OAuth resource value
+  for clients that support it.
 - `enabled` (bool, required): whether this server should be synced into clients.
 - `clients` (array of strings, required): client IDs.
 - `description` (string, optional): friendly description.
@@ -25,10 +33,20 @@ Known client IDs:
 
 `claude-desktop`, `claude-code`, `gemini`, `codex`, and `vibe` are
 sync-capable today. All are also render targets for `madari ring render`.
+Remote `http`/`sse` manifests are stored and validated, but no sync or render
+target materializes them yet; adapters keep remote entries ineligible until
+their auth and config behavior is validated per client.
+
+### `[headers]`
+
+Key/value static HTTP headers for remote transports. Header names are limited
+to letters, digits, `-`, and `_` so they round-trip through the manifest
+format. Headers are stored in the manifest but emitted only for clients that
+support header configuration.
 
 ### `[env]`
 
-Key/value static environment variables.
+Key/value static environment variables for stdio transports.
 
 ### `[required_env]`
 
@@ -47,6 +65,8 @@ Key/value static environment variables.
 
 ## Example
 
+Stdio server:
+
 ```toml
 name = "stewreads"
 command = "/Users/me/.local/bin/stewreads-mcp"
@@ -62,12 +82,27 @@ STEWREADS_CONFIG_PATH = "~/.config/stewreads/config.toml"
 keys = ["STEWREADS_GMAIL_APP_PASSWORD"]
 ```
 
+Remote HTTP server:
+
+```toml
+name = "cloud-sql"
+transport = "http"
+url = "https://sqladmin.googleapis.com/mcp"
+oauth_resource = "https://sqladmin.googleapis.com/"
+enabled = true
+clients = ["codex"]
+description = "Official Cloud SQL remote MCP server"
+```
+
 ## Validation Rules
 
 - `name` must be lowercase alphanumeric with `-` and `.` allowed as separators.
 - `clients` must contain unique values.
 - Unknown top-level keys are rejected.
-- Empty `command` is invalid.
+- Empty `command` is invalid for `stdio`.
+- `url` is required for `http` and `sse`.
+- Remote transports reject `command`, `args`, `[env]`, `[required_env]`, and
+  `[secret_env]` because they are local process settings.
 
 ## Ring Files
 

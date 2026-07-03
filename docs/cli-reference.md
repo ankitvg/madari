@@ -6,11 +6,20 @@ Quick command reference for day-to-day Madari usage.
 
 ```bash
 madari add <name> --command /abs/path/to/server --client <client>
+madari add <name> --transport http --url https://example.com/mcp --client codex
 madari list
 madari enable <name>
 madari disable <name>
 madari remove <name>
 ```
+
+`madari add` defaults to `stdio`, where `--command` is required and is resolved
+to an absolute executable path. Remote manifests use `--transport http` or
+`--transport sse` with `--url`; optional remote metadata includes `--header`,
+`--timeout-ms`, and `--oauth-resource`. Remote manifests are stored and
+validated, but sync and render targets skip them until per-client support
+lands. `madari list` and `madari doctor` show each server's transport and
+endpoint so remote entries are visible while materialization is pending.
 
 ## Install Workflow
 
@@ -132,6 +141,8 @@ Render targets are independent from sync adapters. `claude-code`,
 `[[mcp_servers]]` entries with `transport = "stdio"`.
 Codex render output also emits `env_vars = [...]` for `[required_env]` and
 `[secret_env]` keys so runtime-provided environment values can be forwarded.
+Remote `http`/`sse` ring members are omitted with warnings; no render target
+materializes remote transports yet.
 Ring skill members are not embedded in MCP render output; use `ring attach`
 for native skill materialization.
 Ephemeral-session recipe:
@@ -257,6 +268,7 @@ defined.
     {
       "name": "stewreads",
       "enabled": true,
+      "transport": "stdio",
       "command": "/abs/path/stewreads-mcp",
       "clients": ["claude-desktop"],
       "sources": ["standalone"]
@@ -322,6 +334,7 @@ itself.
     {
       "name": "stewreads",
       "enabled": true,
+      "transport": "stdio",
       "clients": ["claude-desktop"],
       "command": "/abs/path/stewreads-mcp",
       "status": "warn",
@@ -376,6 +389,7 @@ itself.
   "removed": [],
   "unchanged": [],
   "skipped": [],
+  "unsupported_remote": [],
   "refused": [],
   "skills_added": [],
   "skills_updated": [],
