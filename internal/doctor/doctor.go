@@ -38,12 +38,14 @@ type Issue struct {
 }
 
 type ServerReport struct {
-	Name    string
-	Enabled bool
-	Clients []string
-	Command string
-	Status  Status
-	Issues  []Issue
+	Name      string
+	Enabled   bool
+	Clients   []string
+	Transport string
+	Command   string
+	URL       string
+	Status    Status
+	Issues    []Issue
 }
 
 type ManifestError struct {
@@ -368,12 +370,14 @@ func summarize(report Report) Summary {
 
 func inspectServer(manifest registry.Manifest, envLookup func(string) string, targets []string) ServerReport {
 	report := ServerReport{
-		Name:    manifest.Name,
-		Enabled: manifest.Enabled,
-		Clients: append([]string(nil), manifest.Clients...),
-		Command: manifest.Command,
-		Status:  StatusSkipped,
-		Issues:  []Issue{},
+		Name:      manifest.Name,
+		Enabled:   manifest.Enabled,
+		Clients:   append([]string(nil), manifest.Clients...),
+		Transport: manifest.TransportType(),
+		Command:   manifest.Command,
+		URL:       manifest.URL,
+		Status:    StatusSkipped,
+		Issues:    []Issue{},
 	}
 
 	if !manifest.Enabled || !hasTarget(manifest, targets) {

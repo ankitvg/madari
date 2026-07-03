@@ -18,7 +18,8 @@ to an absolute executable path. Remote manifests use `--transport http` or
 `--transport sse` with `--url`; optional remote metadata includes `--header`,
 `--timeout-ms`, and `--oauth-resource`. Remote manifests are stored and
 validated, but sync and render targets skip them until per-client support
-lands.
+lands. `madari list` and `madari doctor` show each server's transport and
+endpoint so remote entries are visible while materialization is pending.
 
 ## Install Workflow
 
@@ -267,6 +268,7 @@ defined.
     {
       "name": "stewreads",
       "enabled": true,
+      "transport": "stdio",
       "command": "/abs/path/stewreads-mcp",
       "clients": ["claude-desktop"],
       "sources": ["standalone"]
@@ -332,6 +334,7 @@ itself.
     {
       "name": "stewreads",
       "enabled": true,
+      "transport": "stdio",
       "clients": ["claude-desktop"],
       "command": "/abs/path/stewreads-mcp",
       "status": "warn",
@@ -386,6 +389,7 @@ itself.
   "removed": [],
   "unchanged": [],
   "skipped": [],
+  "unsupported_remote": [],
   "refused": [],
   "skills_added": [],
   "skills_updated": [],

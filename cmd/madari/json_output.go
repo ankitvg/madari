@@ -22,11 +22,13 @@ type listJSON struct {
 }
 
 type serverJSON struct {
-	Name    string   `json:"name"`
-	Enabled bool     `json:"enabled"`
-	Command string   `json:"command"`
-	Clients []string `json:"clients"`
-	Sources []string `json:"sources"`
+	Name      string   `json:"name"`
+	Enabled   bool     `json:"enabled"`
+	Transport string   `json:"transport"`
+	Command   string   `json:"command"`
+	URL       string   `json:"url,omitempty"`
+	Clients   []string `json:"clients"`
+	Sources   []string `json:"sources"`
 }
 
 type statusJSON struct {
@@ -109,12 +111,14 @@ type driftJSON struct {
 }
 
 type doctorServerJSON struct {
-	Name    string      `json:"name"`
-	Enabled bool        `json:"enabled"`
-	Clients []string    `json:"clients"`
-	Command string      `json:"command"`
-	Status  string      `json:"status"`
-	Issues  []issueJSON `json:"issues"`
+	Name      string      `json:"name"`
+	Enabled   bool        `json:"enabled"`
+	Transport string      `json:"transport"`
+	Clients   []string    `json:"clients"`
+	Command   string      `json:"command"`
+	URL       string      `json:"url,omitempty"`
+	Status    string      `json:"status"`
+	Issues    []issueJSON `json:"issues"`
 }
 
 type issueJSON struct {
@@ -137,21 +141,22 @@ type doctorConfigJSON struct {
 }
 
 type syncJSON struct {
-	SchemaVersion   int      `json:"schema_version"`
-	Command         string   `json:"command"`
-	Target          string   `json:"target"`
-	ConfigPath      string   `json:"config_path"`
-	DryRun          bool     `json:"dry_run"`
-	Added           []string `json:"added"`
-	Updated         []string `json:"updated"`
-	Removed         []string `json:"removed"`
-	Unchanged       []string `json:"unchanged"`
-	Skipped         []string `json:"skipped"`
-	Refused         []string `json:"refused"`
-	SkillsAdded     []string `json:"skills_added"`
-	SkillsUpdated   []string `json:"skills_updated"`
-	SkillsRemoved   []string `json:"skills_removed"`
-	SkillsUnchanged []string `json:"skills_unchanged"`
+	SchemaVersion     int      `json:"schema_version"`
+	Command           string   `json:"command"`
+	Target            string   `json:"target"`
+	ConfigPath        string   `json:"config_path"`
+	DryRun            bool     `json:"dry_run"`
+	Added             []string `json:"added"`
+	Updated           []string `json:"updated"`
+	Removed           []string `json:"removed"`
+	Unchanged         []string `json:"unchanged"`
+	Skipped           []string `json:"skipped"`
+	UnsupportedRemote []string `json:"unsupported_remote"`
+	Refused           []string `json:"refused"`
+	SkillsAdded       []string `json:"skills_added"`
+	SkillsUpdated     []string `json:"skills_updated"`
+	SkillsRemoved     []string `json:"skills_removed"`
+	SkillsUnchanged   []string `json:"skills_unchanged"`
 }
 
 type ringListJSON struct {

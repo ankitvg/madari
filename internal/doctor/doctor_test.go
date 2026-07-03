@@ -277,6 +277,9 @@ func TestRunSkipsClientConfigForRemoteOnlyTarget(t *testing.T) {
 	if len(report.Servers) != 1 || report.Servers[0].Status != StatusReady {
 		t.Fatalf("expected remote manifest to report ready, got: %+v", report.Servers)
 	}
+	if report.Servers[0].Transport != registry.TransportHTTP || report.Servers[0].URL != "https://example.com/mcp" {
+		t.Fatalf("expected remote transport details in report, got: %+v", report.Servers[0])
+	}
 }
 
 func TestRunUsesConfigPathOverride(t *testing.T) {

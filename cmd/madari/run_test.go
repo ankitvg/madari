@@ -2488,7 +2488,7 @@ func TestRunWithStoreListAndStatusShowManagedSources(t *testing.T) {
 	if !strings.Contains(result.stdout, "SOURCES") {
 		t.Fatalf("expected SOURCES column header, got: %s", result.stdout)
 	}
-	if !strings.Contains(result.stdout, "stewreads\tenabled\t"+commandPath+"\tclaude-desktop\t-") {
+	if !strings.Contains(result.stdout, "stewreads\tenabled\tstdio\t"+commandPath+"\tclaude-desktop\t-") {
 		t.Fatalf("expected unsynced server to show '-' sources, got: %s", result.stdout)
 	}
 
@@ -2504,7 +2504,7 @@ func TestRunWithStoreListAndStatusShowManagedSources(t *testing.T) {
 	if result.code != 0 {
 		t.Fatalf("list after sync failed: %s", result.stderr)
 	}
-	if !strings.Contains(result.stdout, "stewreads\tenabled\t"+commandPath+"\tclaude-desktop\tstandalone") {
+	if !strings.Contains(result.stdout, "stewreads\tenabled\tstdio\t"+commandPath+"\tclaude-desktop\tstandalone") {
 		t.Fatalf("expected synced server to show standalone source, got: %s", result.stdout)
 	}
 
@@ -2586,6 +2586,7 @@ func TestRunWithStoreListJSON(t *testing.T) {
     {
       "name": "stewreads",
       "enabled": true,
+      "transport": "stdio",
       "command": %q,
       "clients": [
         "claude-desktop"
@@ -2599,6 +2600,51 @@ func TestRunWithStoreListJSON(t *testing.T) {
 `, commandPath)
 	if result.stdout != expected {
 		t.Fatalf("list --json schema drift:\nwant:\n%s\ngot:\n%s", expected, result.stdout)
+	}
+}
+
+func TestRunWithStoreListShowsRemoteEndpoint(t *testing.T) {
+	store := newTestStore(t)
+
+	if result := runCmd(store, "add", "cloud-sql",
+		"--transport", "http",
+		"--url", "https://sqladmin.googleapis.com/mcp",
+		"--client", "codex"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "list")
+	if result.code != 0 {
+		t.Fatalf("list failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, "cloud-sql\tenabled\thttp\thttps://sqladmin.googleapis.com/mcp\tcodex\t-") {
+		t.Fatalf("expected remote server endpoint in list output, got: %s", result.stdout)
+	}
+
+	result = runCmd(store, "list", "--json")
+	if result.code != 0 {
+		t.Fatalf("list --json failed: %s", result.stderr)
+	}
+	expected := `{
+  "schema_version": 1,
+  "command": "list",
+  "servers": [
+    {
+      "name": "cloud-sql",
+      "enabled": true,
+      "transport": "http",
+      "command": "",
+      "url": "https://sqladmin.googleapis.com/mcp",
+      "clients": [
+        "codex"
+      ],
+      "sources": []
+    }
+  ]
+}
+`
+	if result.stdout != expected {
+		t.Fatalf("list --json remote schema drift:\nwant:\n%s\ngot:\n%s", expected, result.stdout)
 	}
 }
 
@@ -2632,6 +2678,7 @@ func TestRunWithStoreSyncDryRunJSON(t *testing.T) {
   "removed": [],
   "unchanged": [],
   "skipped": [],
+  "unsupported_remote": [],
   "refused": [],
   "skills_added": [],
   "skills_updated": [],
@@ -2641,6 +2688,60 @@ func TestRunWithStoreSyncDryRunJSON(t *testing.T) {
 `, configPath)
 	if result.stdout != expected {
 		t.Fatalf("sync --json schema drift:\nwant:\n%s\ngot:\n%s", expected, result.stdout)
+	}
+}
+
+func TestRunWithStoreSyncReportsUnsupportedRemote(t *testing.T) {
+	store := newTestStore(t)
+
+	if result := runCmd(store, "add", "cloud-sql",
+		"--transport", "http",
+		"--url", "https://sqladmin.googleapis.com/mcp",
+		"--client", "codex"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	result := runCmd(store, "sync", "codex", "--dry-run", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("sync dry-run failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	if !strings.Contains(result.stdout, "unsupported remote: cloud-sql") {
+		t.Fatalf("expected unsupported remote summary, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stderr, "cloud-sql uses http transport") ||
+		!strings.Contains(result.stderr, "stored in registry") ||
+		!strings.Contains(result.stderr, "codex sync does not materialize remote transports yet") {
+		t.Fatalf("expected unsupported remote warning, got: %s", result.stderr)
+	}
+
+	result = runCmd(store, "sync", "codex", "--dry-run", "--json", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("sync dry-run --json failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	expected := fmt.Sprintf(`{
+  "schema_version": 1,
+  "command": "sync",
+  "target": "codex",
+  "config_path": %q,
+  "dry_run": true,
+  "added": [],
+  "updated": [],
+  "removed": [],
+  "unchanged": [],
+  "skipped": [],
+  "unsupported_remote": [
+    "cloud-sql"
+  ],
+  "refused": [],
+  "skills_added": [],
+  "skills_updated": [],
+  "skills_removed": [],
+  "skills_unchanged": []
+}
+`, configPath)
+	if result.stdout != expected {
+		t.Fatalf("sync --json unsupported remote schema drift:\nwant:\n%s\ngot:\n%s", expected, result.stdout)
 	}
 }
 
@@ -2756,7 +2857,7 @@ func TestRunWithStoreDoctorJSONReportsErrorsAndExitCode(t *testing.T) {
 	if len(servers) != 1 {
 		t.Fatalf("expected one server entry, got: %v", servers)
 	}
-	assertJSONKeys(t, servers[0].(map[string]any), "name", "enabled", "clients", "command", "status", "issues")
+	assertJSONKeys(t, servers[0].(map[string]any), "name", "enabled", "transport", "clients", "command", "status", "issues")
 
 	configs := payload["client_configs"].([]any)
 	if len(configs) == 0 {
@@ -2826,7 +2927,7 @@ func TestRunWithStoreSecretEnvPlacementFlow(t *testing.T) {
 	if result.code != 0 {
 		t.Fatalf("list failed: %s", result.stderr)
 	}
-	if !strings.Contains(result.stdout, "vault\tenabled\t"+commandPath+"\tclaude-code\tstandalone") {
+	if !strings.Contains(result.stdout, "vault\tenabled\tstdio\t"+commandPath+"\tclaude-code\tstandalone") {
 		t.Fatalf("expected user-scope managed sources in list, got: %s", result.stdout)
 	}
 
@@ -3445,6 +3546,39 @@ expected_outputs = ["findings", "next check"]
 	}
 }
 
+func TestRunWithStoreRingAttachReportsUnsupportedRemote(t *testing.T) {
+	store := newTestStore(t)
+
+	if result := runCmd(store, "add", "cloud-sql",
+		"--transport", "http",
+		"--url", "https://sqladmin.googleapis.com/mcp",
+		"--client", "codex"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "cloudsql-readonly", "--member", "cloud-sql"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	result := runCmd(store, "ring", "attach", "cloudsql-readonly", "codex", "--dry-run", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("ring attach dry-run failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	for _, want := range []string{
+		"ring: cloudsql-readonly",
+		"unsupported remote: cloud-sql",
+	} {
+		if !strings.Contains(result.stdout, want) {
+			t.Fatalf("expected %q in ring attach output, got: %s", want, result.stdout)
+		}
+	}
+	if !strings.Contains(result.stderr, "cloud-sql uses http transport") ||
+		!strings.Contains(result.stderr, "stored in registry") ||
+		!strings.Contains(result.stderr, "codex sync does not materialize remote transports yet") {
+		t.Fatalf("expected unsupported remote warning, got: %s", result.stderr)
+	}
+}
+
 func TestRunWithStoreRingAttachDetachFlow(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
@@ -3487,7 +3621,7 @@ func TestRunWithStoreRingAttachDetachFlow(t *testing.T) {
 
 	// list shows ring sources.
 	result = runCmd(store, "list")
-	if !strings.Contains(result.stdout, "stewreads\tenabled\t"+commandPath+"\tclaude-code\tring:r1,ring:r2") {
+	if !strings.Contains(result.stdout, "stewreads\tenabled\tstdio\t"+commandPath+"\tclaude-code\tring:r1,ring:r2") {
 		t.Fatalf("expected overlapping ring sources in list, got: %s", result.stdout)
 	}
 
