@@ -1392,10 +1392,31 @@ func manifestEndpoint(manifest registry.Manifest) string {
 func doctorEndpointDetail(server doctor.ServerReport) string {
 	switch server.Transport {
 	case registry.TransportHTTP, registry.TransportSSE:
-		return fmt.Sprintf("url=%s sync=pending", server.URL)
+		pending := remotePendingTargets(server.Clients)
+		if len(pending) == 0 {
+			return fmt.Sprintf("url=%s", server.URL)
+		}
+		return fmt.Sprintf("url=%s sync=pending(%s)", server.URL, strings.Join(pending, ","))
 	default:
 		return fmt.Sprintf("command=%s", server.Command)
 	}
+}
+
+// remotePendingTargets returns the manifest's sync targets whose adapters do
+// not materialize remote transports yet.
+func remotePendingTargets(targets []string) []string {
+	pending := []string{}
+	for _, target := range targets {
+		adapter, known := syncAdapters[target]
+		if !known {
+			continue
+		}
+		if !adapter.SupportsRemote() {
+			pending = append(pending, target)
+		}
+	}
+	sort.Strings(pending)
+	return pending
 }
 
 type unsupportedRemoteManifest struct {
@@ -1413,6 +1434,10 @@ func remoteSkipNames(skips []unsupportedRemoteManifest) []string {
 }
 
 func filterSyncableManifests(manifests []registry.Manifest, target string) ([]registry.Manifest, []string, []unsupportedRemoteManifest) {
+	remoteSupported := false
+	if adapter, known := syncAdapters[target]; known {
+		remoteSupported = adapter.SupportsRemote()
+	}
 	out := make([]registry.Manifest, 0, len(manifests))
 	var skipped []string
 	var unsupportedRemote []unsupportedRemoteManifest
@@ -1422,10 +1447,12 @@ func filterSyncableManifests(manifests []registry.Manifest, target string) ([]re
 			continue
 		}
 		if manifest.IsRemote() {
-			unsupportedRemote = append(unsupportedRemote, unsupportedRemoteManifest{
-				Name:      manifest.Name,
-				Transport: manifest.TransportType(),
-			})
+			if !remoteSupported {
+				unsupportedRemote = append(unsupportedRemote, unsupportedRemoteManifest{
+					Name:      manifest.Name,
+					Transport: manifest.TransportType(),
+				})
+			}
 			out = append(out, manifest)
 			continue
 		}

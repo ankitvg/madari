@@ -18,6 +18,12 @@ func (Adapter) DefaultConfigPath() (string, error) {
 	return DefaultConfigPath()
 }
 
+// SupportsRemote is false: remote manifests stay ineligible until this
+// adapter materializes remote transports.
+func (Adapter) SupportsRemote() bool {
+	return false
+}
+
 func (Adapter) Sync(manifests []registry.Manifest, opts clients.SyncOptions) (clients.SyncResult, error) {
 	return Sync(manifests, opts)
 }

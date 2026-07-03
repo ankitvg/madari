@@ -241,7 +241,7 @@ func entriesForTarget(manifests []registry.Manifest) map[string]syncshared.Entry
 			continue
 		}
 		entry := syncshared.Entry[serverConfig]{}
-		if manifest.Enabled && !manifest.IsRemote() {
+		if manifest.Enabled {
 			entry.Eligible = true
 			entry.Value = materializeServer(manifest)
 		}
@@ -251,6 +251,16 @@ func entriesForTarget(manifests []registry.Manifest) map[string]syncshared.Entry
 }
 
 func materializeServer(manifest registry.Manifest) serverConfig {
+	if manifest.IsRemote() {
+		// Codex remote entries carry url plus optional OAuth metadata.
+		// headers and timeout_ms are not part of Codex's config surface and
+		// are deliberately not emitted (documented in the manifest spec).
+		return serverConfig{
+			URL:           manifest.URL,
+			OAuthResource: manifest.OAuthResource,
+		}
+	}
+
 	entry := serverConfig{
 		Command: manifest.Command,
 		EnvVars: runtimeEnvKeys(
@@ -299,6 +309,12 @@ func runtimeEnvKeys(keyGroups ...[]string) []string {
 
 func equalServer(a, b serverConfig) bool {
 	if a.Command != b.Command {
+		return false
+	}
+	if a.URL != b.URL {
+		return false
+	}
+	if a.OAuthResource != b.OAuthResource {
 		return false
 	}
 	if effectiveEnabled(a) != effectiveEnabled(b) {
@@ -397,6 +413,20 @@ func parseServer(name string, raw any) (serverConfig, error) {
 		}
 		entry.Command = command
 	}
+	if rawURL, exists := table["url"]; exists {
+		url, ok := rawURL.(string)
+		if !ok {
+			return serverConfig{}, fmt.Errorf("parse mcp_servers.%s.url: expected string", name)
+		}
+		entry.URL = url
+	}
+	if rawOAuthResource, exists := table["oauth_resource"]; exists {
+		oauthResource, ok := rawOAuthResource.(string)
+		if !ok {
+			return serverConfig{}, fmt.Errorf("parse mcp_servers.%s.oauth_resource: expected string", name)
+		}
+		entry.OAuthResource = oauthResource
+	}
 	if enabled, ok, err := optionalBool(table, "enabled"); err != nil {
 		return serverConfig{}, fmt.Errorf("parse mcp_servers.%s.enabled: %w", name, err)
 	} else if ok {
@@ -483,9 +513,11 @@ func optionalStringMap(table map[string]any, key string) (map[string]string, boo
 }
 
 type serverConfig struct {
-	Command string            `toml:"command"`
-	Enabled *bool             `toml:"enabled,omitempty"`
-	Args    []string          `toml:"args,omitempty"`
-	EnvVars []string          `toml:"env_vars,omitempty"`
-	Env     map[string]string `toml:"env,omitempty"`
+	Command       string            `toml:"command,omitempty"`
+	URL           string            `toml:"url,omitempty"`
+	OAuthResource string            `toml:"oauth_resource,omitempty"`
+	Enabled       *bool             `toml:"enabled,omitempty"`
+	Args          []string          `toml:"args,omitempty"`
+	EnvVars       []string          `toml:"env_vars,omitempty"`
+	Env           map[string]string `toml:"env,omitempty"`
 }

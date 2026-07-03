@@ -14,12 +14,14 @@ import (
 
 // testAdapter is a minimal ClientAdapter for use in doctor tests.
 type testAdapter struct {
-	target     string
-	configPath string
+	target         string
+	configPath     string
+	supportsRemote bool
 }
 
 func (a testAdapter) Target() string                     { return a.target }
 func (a testAdapter) DefaultConfigPath() (string, error) { return a.configPath, nil }
+func (a testAdapter) SupportsRemote() bool               { return a.supportsRemote }
 func (a testAdapter) Sync(_ []registry.Manifest, _ clients.SyncOptions) (clients.SyncResult, error) {
 	return clients.SyncResult{}, nil
 }
@@ -279,6 +281,39 @@ func TestRunSkipsClientConfigForRemoteOnlyTarget(t *testing.T) {
 	}
 	if report.Servers[0].Transport != registry.TransportHTTP || report.Servers[0].URL != "https://example.com/mcp" {
 		t.Fatalf("expected remote transport details in report, got: %+v", report.Servers[0])
+	}
+}
+
+func TestRunChecksClientConfigForRemoteCapableTarget(t *testing.T) {
+	tmp := t.TempDir()
+	store := registry.NewStore(filepath.Join(tmp, "servers"))
+
+	if err := store.Save(registry.Manifest{
+		Name:      "cloud-sql",
+		Transport: registry.TransportHTTP,
+		URL:       "https://example.com/mcp",
+		Enabled:   true,
+		Clients:   []string{"codex"},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+
+	adapter := testAdapter{
+		target:         "codex",
+		configPath:     filepath.Join(tmp, "config.toml"),
+		supportsRemote: true,
+	}
+	report, err := Run(store, Options{Adapters: []clients.ClientAdapter{adapter}})
+	if err != nil {
+		t.Fatalf("doctor run failed: %v", err)
+	}
+
+	cc, ok := findClientConfig(report, "codex")
+	if !ok {
+		t.Fatalf("expected codex client config report, got: %+v", report.ClientConfigs)
+	}
+	if cc.Status == StatusSkipped {
+		t.Fatalf("expected remote-capable target to run the config check, got: %+v", cc)
 	}
 }
 

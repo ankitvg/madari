@@ -16,10 +16,10 @@ madari remove <name>
 `madari add` defaults to `stdio`, where `--command` is required and is resolved
 to an absolute executable path. Remote manifests use `--transport http` or
 `--transport sse` with `--url`; optional remote metadata includes `--header`,
-`--timeout-ms`, and `--oauth-resource`. Remote manifests are stored and
-validated, but sync and render targets skip them until per-client support
+`--timeout-ms`, and `--oauth-resource`. Remote manifests materialize for
+`codex`; the other sync and render targets skip them until per-client support
 lands. `madari list` and `madari doctor` show each server's transport and
-endpoint so remote entries are visible while materialization is pending.
+endpoint so remote entries are visible where materialization is pending.
 
 ## Install Workflow
 
@@ -58,7 +58,10 @@ sync with `--scope user`.
 `~/.codex/config.toml` when `CODEX_HOME` is unset). Static non-secret `[env]`
 values are written under `[mcp_servers.<name>.env]`; `[required_env]` and
 `[secret_env]` keys are forwarded through `env_vars`, and static secret
-values are not written into Codex config.
+values are not written into Codex config. Codex also materializes managed
+remote HTTP/SSE entries as native `url` entries with optional
+`oauth_resource`; manifest `[headers]` and `timeout_ms` are not part of
+Codex's config surface and are not emitted.
 
 `vibe` sync targets Vibe's user config (`$VIBE_HOME/config.toml`, or
 `~/.vibe/config.toml` when `VIBE_HOME` is unset). Static `[env]` values are
@@ -141,8 +144,9 @@ Render targets are independent from sync adapters. `claude-code`,
 `[[mcp_servers]]` entries with `transport = "stdio"`.
 Codex render output also emits `env_vars = [...]` for `[required_env]` and
 `[secret_env]` keys so runtime-provided environment values can be forwarded.
-Remote `http`/`sse` ring members are omitted with warnings; no render target
-materializes remote transports yet.
+Codex render also emits remote HTTP/SSE members as `url` entries with optional
+`oauth_resource`. For the other render targets, remote `http`/`sse` ring
+members are omitted with warnings until per-client support lands.
 Ring skill members are not embedded in MCP render output; use `ring attach`
 for native skill materialization.
 Ephemeral-session recipe:

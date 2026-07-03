@@ -49,18 +49,25 @@ func renderCodexTOML(out io.Writer, servers map[string]renderedServer) error {
 		}
 		entry := servers[name]
 		fmt.Fprintf(out, "[mcp_servers.%s]\n", tomlKey(name))
-		fmt.Fprintf(out, "command = %s\n", tomlString(entry.Command))
-		if len(entry.Args) > 0 {
-			fmt.Fprintf(out, "args = %s\n", tomlStringArray(entry.Args))
-		}
-		if len(entry.RuntimeEnvKeys) > 0 {
-			fmt.Fprintf(out, "env_vars = %s\n", tomlStringArray(entry.RuntimeEnvKeys))
-		}
-		if len(entry.Env) > 0 {
-			fmt.Fprintln(out)
-			fmt.Fprintf(out, "[mcp_servers.%s.env]\n", tomlKey(name))
-			for _, key := range sortedMapKeys(entry.Env) {
-				fmt.Fprintf(out, "%s = %s\n", tomlKey(key), tomlString(entry.Env[key]))
+		if entry.URL != "" {
+			fmt.Fprintf(out, "url = %s\n", tomlString(entry.URL))
+			if entry.OAuthResource != "" {
+				fmt.Fprintf(out, "oauth_resource = %s\n", tomlString(entry.OAuthResource))
+			}
+		} else {
+			fmt.Fprintf(out, "command = %s\n", tomlString(entry.Command))
+			if len(entry.Args) > 0 {
+				fmt.Fprintf(out, "args = %s\n", tomlStringArray(entry.Args))
+			}
+			if len(entry.RuntimeEnvKeys) > 0 {
+				fmt.Fprintf(out, "env_vars = %s\n", tomlStringArray(entry.RuntimeEnvKeys))
+			}
+			if len(entry.Env) > 0 {
+				fmt.Fprintln(out)
+				fmt.Fprintf(out, "[mcp_servers.%s.env]\n", tomlKey(name))
+				for _, key := range sortedMapKeys(entry.Env) {
+					fmt.Fprintf(out, "%s = %s\n", tomlKey(key), tomlString(entry.Env[key]))
+				}
 			}
 		}
 	}

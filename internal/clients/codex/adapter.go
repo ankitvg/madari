@@ -18,6 +18,12 @@ func (Adapter) DefaultConfigPath() (string, error) {
 	return DefaultConfigPath()
 }
 
+// SupportsRemote is true: Codex materializes remote manifests as native
+// url entries in config.toml.
+func (Adapter) SupportsRemote() bool {
+	return true
+}
+
 func (Adapter) Sync(manifests []registry.Manifest, opts clients.SyncOptions) (clients.SyncResult, error) {
 	return Sync(manifests, opts)
 }

@@ -44,6 +44,7 @@ var clientTargets = []clientTarget{
 		target:             codex.Target,
 		syncAdapter:        codex.Adapter{},
 		ringConfigRenderer: renderCodexTOML,
+		ringRenderRemote:   true,
 		skillRoots: skillTargetRoots{
 			project: defaultProjectSkillRoot(".agents", "skills"),
 			user:    defaultHomeSkillRoot(".agents", "skills"),

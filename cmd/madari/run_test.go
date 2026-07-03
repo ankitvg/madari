@@ -2697,12 +2697,12 @@ func TestRunWithStoreSyncReportsUnsupportedRemote(t *testing.T) {
 	if result := runCmd(store, "add", "cloud-sql",
 		"--transport", "http",
 		"--url", "https://sqladmin.googleapis.com/mcp",
-		"--client", "codex"); result.code != 0 {
+		"--client", "vibe"); result.code != 0 {
 		t.Fatalf("setup add failed: %s", result.stderr)
 	}
 
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	result := runCmd(store, "sync", "codex", "--dry-run", "--config-path", configPath)
+	result := runCmd(store, "sync", "vibe", "--dry-run", "--config-path", configPath)
 	if result.code != 0 {
 		t.Fatalf("sync dry-run failed: stdout=%s stderr=%s", result.stdout, result.stderr)
 	}
@@ -2711,18 +2711,18 @@ func TestRunWithStoreSyncReportsUnsupportedRemote(t *testing.T) {
 	}
 	if !strings.Contains(result.stderr, "cloud-sql uses http transport") ||
 		!strings.Contains(result.stderr, "stored in registry") ||
-		!strings.Contains(result.stderr, "codex sync does not materialize remote transports yet") {
+		!strings.Contains(result.stderr, "vibe sync does not materialize remote transports yet") {
 		t.Fatalf("expected unsupported remote warning, got: %s", result.stderr)
 	}
 
-	result = runCmd(store, "sync", "codex", "--dry-run", "--json", "--config-path", configPath)
+	result = runCmd(store, "sync", "vibe", "--dry-run", "--json", "--config-path", configPath)
 	if result.code != 0 {
 		t.Fatalf("sync dry-run --json failed: stdout=%s stderr=%s", result.stdout, result.stderr)
 	}
 	expected := fmt.Sprintf(`{
   "schema_version": 1,
   "command": "sync",
-  "target": "codex",
+  "target": "vibe",
   "config_path": %q,
   "dry_run": true,
   "added": [],
@@ -2742,6 +2742,62 @@ func TestRunWithStoreSyncReportsUnsupportedRemote(t *testing.T) {
 `, configPath)
 	if result.stdout != expected {
 		t.Fatalf("sync --json unsupported remote schema drift:\nwant:\n%s\ngot:\n%s", expected, result.stdout)
+	}
+}
+
+func TestRunWithStoreSyncCodexMaterializesRemote(t *testing.T) {
+	store := newTestStore(t)
+
+	if result := runCmd(store, "add", "cloud-sql",
+		"--transport", "http",
+		"--url", "https://sqladmin.googleapis.com/mcp",
+		"--client", "codex",
+		"--oauth-resource", "https://sqladmin.googleapis.com/"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	result := runCmd(store, "sync", "codex", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("sync failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	if !strings.Contains(result.stdout, "added: cloud-sql") {
+		t.Fatalf("expected remote entry added, got: %s", result.stdout)
+	}
+	if strings.Contains(result.stdout, "unsupported remote") {
+		t.Fatalf("expected no unsupported remote line for codex, got: %s", result.stdout)
+	}
+	if strings.TrimSpace(result.stderr) != "" {
+		t.Fatalf("expected no warnings for codex remote sync, got: %s", result.stderr)
+	}
+
+	payload, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read codex config: %v", err)
+	}
+	for _, want := range []string{
+		"url = 'https://sqladmin.googleapis.com/mcp'",
+		"oauth_resource = 'https://sqladmin.googleapis.com/'",
+	} {
+		if !strings.Contains(string(payload), want) {
+			t.Fatalf("expected %q in codex config, got:\n%s", want, payload)
+		}
+	}
+	if strings.Contains(string(payload), "command") {
+		t.Fatalf("expected no command key for remote entry, got:\n%s", payload)
+	}
+
+	result = runCmd(store, "sync", "codex", "--dry-run", "--json", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("sync dry-run --json failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	if !strings.Contains(result.stdout, `"unsupported_remote": []`) {
+		t.Fatalf("expected empty unsupported_remote for codex, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stdout, `"unchanged": [
+    "cloud-sql"
+  ]`) {
+		t.Fatalf("expected cloud-sql unchanged on re-sync, got: %s", result.stdout)
 	}
 }
 
@@ -3552,7 +3608,7 @@ func TestRunWithStoreRingAttachReportsUnsupportedRemote(t *testing.T) {
 	if result := runCmd(store, "add", "cloud-sql",
 		"--transport", "http",
 		"--url", "https://sqladmin.googleapis.com/mcp",
-		"--client", "codex"); result.code != 0 {
+		"--client", "vibe"); result.code != 0 {
 		t.Fatalf("setup add failed: %s", result.stderr)
 	}
 	if result := runCmd(store, "ring", "create", "cloudsql-readonly", "--member", "cloud-sql"); result.code != 0 {
@@ -3560,7 +3616,7 @@ func TestRunWithStoreRingAttachReportsUnsupportedRemote(t *testing.T) {
 	}
 
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	result := runCmd(store, "ring", "attach", "cloudsql-readonly", "codex", "--dry-run", "--config-path", configPath)
+	result := runCmd(store, "ring", "attach", "cloudsql-readonly", "vibe", "--dry-run", "--config-path", configPath)
 	if result.code != 0 {
 		t.Fatalf("ring attach dry-run failed: stdout=%s stderr=%s", result.stdout, result.stderr)
 	}
@@ -3574,8 +3630,34 @@ func TestRunWithStoreRingAttachReportsUnsupportedRemote(t *testing.T) {
 	}
 	if !strings.Contains(result.stderr, "cloud-sql uses http transport") ||
 		!strings.Contains(result.stderr, "stored in registry") ||
-		!strings.Contains(result.stderr, "codex sync does not materialize remote transports yet") {
+		!strings.Contains(result.stderr, "vibe sync does not materialize remote transports yet") {
 		t.Fatalf("expected unsupported remote warning, got: %s", result.stderr)
+	}
+}
+
+func TestRunWithStoreRingAttachCodexRemote(t *testing.T) {
+	store := newTestStore(t)
+
+	if result := runCmd(store, "add", "cloud-sql",
+		"--transport", "http",
+		"--url", "https://sqladmin.googleapis.com/mcp",
+		"--client", "codex"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "cloudsql-readonly", "--member", "cloud-sql"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	result := runCmd(store, "ring", "attach", "cloudsql-readonly", "codex", "--dry-run", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("ring attach dry-run failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	if !strings.Contains(result.stdout, "added: cloud-sql") {
+		t.Fatalf("expected remote member added, got: %s", result.stdout)
+	}
+	if strings.Contains(result.stdout, "unsupported remote") {
+		t.Fatalf("expected no unsupported remote line for codex attach, got: %s", result.stdout)
 	}
 }
 
@@ -4373,6 +4455,36 @@ env_vars = ["VAULT_ACCOUNT", "VAULT_TOKEN"]
 	}
 	if !strings.Contains(result.stderr, "secret env values omitted (VAULT_TOKEN)") {
 		t.Fatalf("expected secret omission warning, got: %s", result.stderr)
+	}
+}
+
+func TestRunWithStoreRingRenderCodexRemoteHTTP(t *testing.T) {
+	store := newTestStore(t)
+
+	if result := runCmd(store, "add", "cloud-sql",
+		"--transport", "http",
+		"--url", "https://sqladmin.googleapis.com/mcp",
+		"--client", "codex",
+		"--oauth-resource", "https://sqladmin.googleapis.com/"); result.code != 0 {
+		t.Fatalf("setup add cloud-sql failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "cloudsql-readonly", "--member", "cloud-sql"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "ring", "render", "cloudsql-readonly", "--client", "codex")
+	if result.code != 0 {
+		t.Fatalf("ring render codex failed: %s", result.stderr)
+	}
+	want := `[mcp_servers.cloud-sql]
+url = "https://sqladmin.googleapis.com/mcp"
+oauth_resource = "https://sqladmin.googleapis.com/"
+`
+	if result.stdout != want {
+		t.Fatalf("render output for codex remote drift:\nwant:\n%s\ngot:\n%s", want, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected no remote render warnings, got: %s", result.stderr)
 	}
 }
 
