@@ -33,16 +33,18 @@ Known client IDs:
 
 `claude-desktop`, `claude-code`, `gemini`, `codex`, and `vibe` are
 sync-capable today. All are also render targets for `madari ring render`.
-Remote `http`/`sse` manifests are stored and validated, but no sync or render
-target materializes them yet; adapters keep remote entries ineligible until
-their auth and config behavior is validated per client.
+Remote `http` manifests are materialized for `codex` (native `url` entries
+plus optional OAuth metadata and `[headers]` as `http_headers`). `sse`
+manifests and the other targets keep remote entries ineligible until their
+auth and config behavior is validated per client.
 
 ### `[headers]`
 
 Key/value static HTTP headers for remote transports. Header names are limited
 to letters, digits, `-`, and `_` so they round-trip through the manifest
-format. Headers are stored in the manifest but emitted only for clients that
-support header configuration.
+format. Headers are emitted only for clients that support header
+configuration (Codex writes them as `http_headers`); other targets store
+them without emitting.
 
 ### `[env]`
 

@@ -411,12 +411,9 @@ func (a cliApp) cmdRingRender(args []string) error {
 			continue
 		}
 		if manifest.IsRemote() {
-			if !renderTarget.supportsRemote {
+			if !renderTarget.supportsRemote(manifest.TransportType()) {
 				fmt.Fprintf(a.stderr, "warning: ring member %s uses %s transport, which %s render does not support yet; omitted\n", member, manifest.TransportType(), target)
 				continue
-			}
-			if len(manifest.Headers) > 0 {
-				fmt.Fprintf(a.stderr, "warning: ring member %s: headers are not emitted for %s render\n", member, target)
 			}
 			if manifest.TimeoutMS > 0 {
 				fmt.Fprintf(a.stderr, "warning: ring member %s: timeout_ms is not emitted for %s render\n", member, target)

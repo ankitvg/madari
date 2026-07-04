@@ -241,7 +241,7 @@ func entriesForTarget(manifests []registry.Manifest) map[string]syncshared.Entry
 			continue
 		}
 		entry := syncshared.Entry[serverConfig]{}
-		if manifest.Enabled && !manifest.IsRemote() {
+		if manifest.Enabled && (!manifest.IsRemote() || supportsRemoteTransport(manifest.TransportType())) {
 			entry.Eligible = true
 			entry.Value = materializeServer(manifest)
 		}
@@ -250,7 +250,32 @@ func entriesForTarget(manifests []registry.Manifest) map[string]syncshared.Entry
 	return entries
 }
 
+// supportsRemoteTransport gates which remote transports Codex materializes:
+// Streamable HTTP is Codex's documented remote config support; SSE stays
+// pending.
+func supportsRemoteTransport(transport string) bool {
+	return transport == registry.TransportHTTP
+}
+
 func materializeServer(manifest registry.Manifest) serverConfig {
+	if manifest.IsRemote() {
+		// Codex remote entries carry url, optional OAuth metadata, and
+		// static headers as http_headers. timeout_ms has no Codex
+		// equivalent and is deliberately not emitted (documented in the
+		// manifest spec).
+		entry := serverConfig{
+			URL:           manifest.URL,
+			OAuthResource: manifest.OAuthResource,
+		}
+		if len(manifest.Headers) > 0 {
+			entry.HTTPHeaders = make(map[string]string, len(manifest.Headers))
+			for key, value := range manifest.Headers {
+				entry.HTTPHeaders[key] = value
+			}
+		}
+		return entry
+	}
+
 	entry := serverConfig{
 		Command: manifest.Command,
 		EnvVars: runtimeEnvKeys(
@@ -300,6 +325,20 @@ func runtimeEnvKeys(keyGroups ...[]string) []string {
 func equalServer(a, b serverConfig) bool {
 	if a.Command != b.Command {
 		return false
+	}
+	if a.URL != b.URL {
+		return false
+	}
+	if a.OAuthResource != b.OAuthResource {
+		return false
+	}
+	if len(a.HTTPHeaders) != len(b.HTTPHeaders) {
+		return false
+	}
+	for key, value := range a.HTTPHeaders {
+		if b.HTTPHeaders[key] != value {
+			return false
+		}
 	}
 	if effectiveEnabled(a) != effectiveEnabled(b) {
 		return false
@@ -397,6 +436,25 @@ func parseServer(name string, raw any) (serverConfig, error) {
 		}
 		entry.Command = command
 	}
+	if rawURL, exists := table["url"]; exists {
+		url, ok := rawURL.(string)
+		if !ok {
+			return serverConfig{}, fmt.Errorf("parse mcp_servers.%s.url: expected string", name)
+		}
+		entry.URL = url
+	}
+	if rawOAuthResource, exists := table["oauth_resource"]; exists {
+		oauthResource, ok := rawOAuthResource.(string)
+		if !ok {
+			return serverConfig{}, fmt.Errorf("parse mcp_servers.%s.oauth_resource: expected string", name)
+		}
+		entry.OAuthResource = oauthResource
+	}
+	if headers, ok, err := optionalStringMap(table, "http_headers"); err != nil {
+		return serverConfig{}, fmt.Errorf("parse mcp_servers.%s.http_headers: %w", name, err)
+	} else if ok {
+		entry.HTTPHeaders = headers
+	}
 	if enabled, ok, err := optionalBool(table, "enabled"); err != nil {
 		return serverConfig{}, fmt.Errorf("parse mcp_servers.%s.enabled: %w", name, err)
 	} else if ok {
@@ -483,9 +541,12 @@ func optionalStringMap(table map[string]any, key string) (map[string]string, boo
 }
 
 type serverConfig struct {
-	Command string            `toml:"command"`
-	Enabled *bool             `toml:"enabled,omitempty"`
-	Args    []string          `toml:"args,omitempty"`
-	EnvVars []string          `toml:"env_vars,omitempty"`
-	Env     map[string]string `toml:"env,omitempty"`
+	Command       string            `toml:"command,omitempty"`
+	URL           string            `toml:"url,omitempty"`
+	OAuthResource string            `toml:"oauth_resource,omitempty"`
+	Enabled       *bool             `toml:"enabled,omitempty"`
+	Args          []string          `toml:"args,omitempty"`
+	EnvVars       []string          `toml:"env_vars,omitempty"`
+	Env           map[string]string `toml:"env,omitempty"`
+	HTTPHeaders   map[string]string `toml:"http_headers,omitempty"`
 }

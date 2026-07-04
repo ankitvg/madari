@@ -580,7 +580,7 @@ STEWREADS_CONFIG_PATH = "~/.config/stewreads/config.toml"
 	}
 }
 
-func TestSyncSkipsManagedRemoteManifest(t *testing.T) {
+func TestSyncApplyRemoteHTTP(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "config.toml")
 	statePath := filepath.Join(tmp, "state", "codex-managed.json")
@@ -594,46 +594,105 @@ args = ["run", "weather.py"]
 		t.Fatalf("write config fixture: %v", err)
 	}
 
-	remote := registry.Manifest{
-		Name:      "cloud-sql",
-		Transport: registry.TransportHTTP,
-		URL:       "https://example.com/mcp",
-		Enabled:   true,
-		Clients:   []string{Target},
-	}
-	result, err := Sync([]registry.Manifest{remote}, SyncOptions{
+	manifest := newCloudSQLManifest()
+	manifest.Headers = map[string]string{"x-goog-user-project": "example-project"}
+	result, err := Sync([]registry.Manifest{manifest}, SyncOptions{
 		ConfigPath: configPath,
 		StatePath:  statePath,
 	})
 	if err != nil {
-		t.Fatalf("sync failed: %v", err)
+		t.Fatalf("sync remote failed: %v", err)
 	}
-	if len(result.Added) != 0 || len(result.Updated) != 0 || len(result.Removed) != 0 {
-		t.Fatalf("expected remote manifest to be ineligible until the adapter supports it, got: %+v", result)
+	if !reflect.DeepEqual(result.Added, []string{"cloud-sql"}) {
+		t.Fatalf("expected remote add result, got: %+v", result)
 	}
 
 	servers := readServers(t, configPath)
-	if _, exists := servers["cloud-sql"]; exists {
-		t.Fatalf("expected remote manifest not to be materialized, got: %#v", servers)
+	got := servers["cloud-sql"]
+	if got.Command != "" {
+		t.Fatalf("expected remote Codex entry to omit command, got: %q", got.Command)
+	}
+	if got.URL != "https://sqladmin.googleapis.com/mcp" {
+		t.Fatalf("expected remote URL, got: %q", got.URL)
+	}
+	if got.OAuthResource != "https://sqladmin.googleapis.com/" {
+		t.Fatalf("expected OAuth resource, got: %q", got.OAuthResource)
+	}
+	if got.HTTPHeaders["x-goog-user-project"] != "example-project" {
+		t.Fatalf("expected manifest headers as http_headers, got: %#v", got.HTTPHeaders)
 	}
 	if _, ok := servers["weather"]; !ok {
 		t.Fatalf("expected unmanaged weather entry to be preserved")
 	}
+
+	manifest.Headers["x-goog-user-project"] = "other-project"
+	result, err = Sync([]registry.Manifest{manifest}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("sync header change failed: %v", err)
+	}
+	if !reflect.DeepEqual(result.Updated, []string{"cloud-sql"}) {
+		t.Fatalf("expected header change to be an update, got: %+v", result)
+	}
+
+	manifest.URL = "https://sqladmin.googleapis.com/mcp/v2"
+	result, err = Sync([]registry.Manifest{manifest}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("sync remote url change failed: %v", err)
+	}
+	if !reflect.DeepEqual(result.Updated, []string{"cloud-sql"}) {
+		t.Fatalf("expected url change to be an update, got: %+v", result)
+	}
+	if readServers(t, configPath)["cloud-sql"].URL != manifest.URL {
+		t.Fatalf("expected updated url to be written")
+	}
 }
 
-func TestSyncRemoteOnlyDoesNotCreateFiles(t *testing.T) {
+func TestAttachRingRemoteHTTPLifecycle(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "config.toml")
+	statePath := filepath.Join(tmp, "state", "codex-managed.json")
+	manifest := newCloudSQLManifest()
+	opts := SyncOptions{ConfigPath: configPath, StatePath: statePath}
+
+	result, err := AttachRing(registry.Ring{Name: "cloudsql-readonly", Members: []string{"cloud-sql"}}, []registry.Manifest{manifest}, opts)
+	if err != nil {
+		t.Fatalf("attach remote ring: %v", err)
+	}
+	if !reflect.DeepEqual(result.Added, []string{"cloud-sql"}) {
+		t.Fatalf("expected remote ring add, got: %+v", result)
+	}
+	servers := readServers(t, configPath)
+	if servers["cloud-sql"].URL != manifest.URL {
+		t.Fatalf("expected remote entry to be materialized, got: %#v", servers["cloud-sql"])
+	}
+
+	result, err = DetachRing("cloudsql-readonly", opts)
+	if err != nil {
+		t.Fatalf("detach remote ring: %v", err)
+	}
+	if !reflect.DeepEqual(result.Removed, []string{"cloud-sql"}) {
+		t.Fatalf("expected remote ring removal, got: %+v", result)
+	}
+	servers = readServers(t, configPath)
+	if _, exists := servers["cloud-sql"]; exists {
+		t.Fatalf("expected remote entry to be removed after detach, got: %#v", servers)
+	}
+}
+
+func TestSyncKeepsSSEPending(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "config.toml")
 	statePath := filepath.Join(tmp, "state", "codex-managed.json")
 
-	remote := registry.Manifest{
-		Name:      "cloud-sql",
-		Transport: registry.TransportHTTP,
-		URL:       "https://example.com/mcp",
-		Enabled:   true,
-		Clients:   []string{Target},
-	}
-	result, err := Sync([]registry.Manifest{remote}, SyncOptions{
+	manifest := newCloudSQLManifest()
+	manifest.Transport = registry.TransportSSE
+	result, err := Sync([]registry.Manifest{manifest}, SyncOptions{
 		ConfigPath: configPath,
 		StatePath:  statePath,
 	})
@@ -641,13 +700,21 @@ func TestSyncRemoteOnlyDoesNotCreateFiles(t *testing.T) {
 		t.Fatalf("sync failed: %v", err)
 	}
 	if len(result.Added)+len(result.Updated)+len(result.Removed) != 0 {
-		t.Fatalf("expected no-op sync result, got: %+v", result)
+		t.Fatalf("expected sse manifest to stay ineligible, got: %+v", result)
 	}
 	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected no config file for remote-only no-op sync, got err=%v", err)
+		t.Fatalf("expected no config file for sse-only sync, got err=%v", err)
 	}
-	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected no state file for remote-only no-op sync, got err=%v", err)
+}
+
+func newCloudSQLManifest() registry.Manifest {
+	return registry.Manifest{
+		Name:          "cloud-sql",
+		Transport:     registry.TransportHTTP,
+		URL:           "https://sqladmin.googleapis.com/mcp",
+		OAuthResource: "https://sqladmin.googleapis.com/",
+		Enabled:       true,
+		Clients:       []string{Target},
 	}
 }
 

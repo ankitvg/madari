@@ -18,6 +18,13 @@ func (Adapter) DefaultConfigPath() (string, error) {
 	return DefaultConfigPath()
 }
 
+// SupportsRemote is true for Streamable HTTP only: Codex materializes http
+// manifests as native url entries in config.toml. SSE endpoints are not part
+// of Codex's documented remote support and stay pending.
+func (Adapter) SupportsRemote(transport string) bool {
+	return supportsRemoteTransport(transport)
+}
+
 func (Adapter) Sync(manifests []registry.Manifest, opts clients.SyncOptions) (clients.SyncResult, error) {
 	return Sync(manifests, opts)
 }

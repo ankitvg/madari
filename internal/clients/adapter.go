@@ -43,6 +43,12 @@ type ClientAdapter interface {
 	Target() string
 	// DefaultConfigPath resolves the adapter's default config path.
 	DefaultConfigPath() (string, error)
+	// SupportsRemote reports whether this adapter materializes remote
+	// manifests of the given transport (registry.TransportHTTP or
+	// registry.TransportSSE) into the client config. Unsupported transports
+	// keep the manifest ineligible: stored in the registry, surfaced as
+	// pending, never written to the client.
+	SupportsRemote(transport string) bool
 	// Sync computes/applies config changes for the target client.
 	//
 	// On dry-run, return the plan only. On apply, persist config and managed

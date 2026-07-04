@@ -170,7 +170,7 @@ func Run(store *registry.Store, opts Options) (Report, error) {
 
 	report.ClientConfigs = make([]ClientConfigReport, 0, len(opts.Adapters))
 	for _, adapter := range opts.Adapters {
-		if !hasTargetInManifests(manifests, adapter.Target()) {
+		if !hasTargetInManifests(manifests, adapter.Target(), adapter.SupportsRemote) {
 			report.ClientConfigs = append(report.ClientConfigs, ClientConfigReport{
 				Target: adapter.Target(),
 				Status: StatusSkipped,
@@ -650,11 +650,11 @@ func hasTarget(manifest registry.Manifest, targets []string) bool {
 	return false
 }
 
-func hasTargetInManifests(manifests []registry.Manifest, target string) bool {
+func hasTargetInManifests(manifests []registry.Manifest, target string, supportsRemote func(transport string) bool) bool {
 	for _, manifest := range manifests {
-		// No adapter materializes remote transports yet, so remote manifests
-		// alone don't warrant a client config on disk.
-		if manifest.IsRemote() {
+		// Remote manifests only warrant a client config on disk when the
+		// target's adapter materializes their transport.
+		if manifest.IsRemote() && !supportsRemote(manifest.TransportType()) {
 			continue
 		}
 		if manifest.HasClient(target) {
