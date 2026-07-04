@@ -143,11 +143,14 @@ Skills are not run inputs yet.
 - Entries Madari does not manage keep their JSON value, including fields and
   server shapes Madari does not model (e.g. `type`/`url` remote entries);
   only managed or newly added entries are serialized from manifests. Managed
-  stdio entries are serialized from command manifests; managed Codex remote
-  entries are serialized from `url` manifests. Adapters whose
-  `SupportsRemote()` is false keep remote manifests ineligible until their
-  per-client remote materialization lands. The enclosing document is
-  reformatted on write. For adapters with raw-match
+  stdio entries are serialized from command manifests; managed remote entries
+  are serialized client-natively (Codex `url`/`http_headers`, Claude Code
+  `type`/`url`/`headers`, Gemini `httpUrl` or `url` plus `headers`). Adapters
+  report remote support per transport via `SupportsRemote(transport)`;
+  unsupported combinations keep remote manifests ineligible. Remote header
+  values for credential headers (built-in list plus `[secret_headers]`)
+  follow the secret placement policy: refused and scrubbed at repo scope,
+  user scope only. The enclosing document is reformatted on write. For adapters with raw-match
   validation (currently Claude Code and Claude Desktop), if an unmanaged entry
   has the same name as a desired manifest, Madari only treats it as an exact
   match when its canonical raw JSON, after normalizing empty modeled optional

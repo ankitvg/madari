@@ -415,14 +415,26 @@ func (a cliApp) cmdRingRender(args []string) error {
 				fmt.Fprintf(a.stderr, "warning: ring member %s uses %s transport, which %s render does not support yet; omitted\n", member, manifest.TransportType(), target)
 				continue
 			}
-			if manifest.TimeoutMS > 0 {
+			timeoutMS := manifest.TimeoutMS
+			if timeoutMS > 0 && !renderTarget.emitsRemoteTimeout {
 				fmt.Fprintf(a.stderr, "warning: ring member %s: timeout_ms is not emitted for %s render\n", member, target)
+				timeoutMS = 0
+			}
+			headers := copyStringMap(manifest.Headers)
+			if secretNames := manifest.SecretHeaderNames(); len(secretNames) > 0 {
+				// Render output is for sharing/ephemeral use: secret header
+				// values are never emitted, mirroring secret_env render
+				// policy. The warning names the headers to provide manually.
+				for _, name := range secretNames {
+					delete(headers, name)
+				}
+				fmt.Fprintf(a.stderr, "warning: ring member %s: secret header values omitted from render: %s\n", member, strings.Join(secretNames, ", "))
 			}
 			servers[member] = renderedServer{
 				Transport:     manifest.TransportType(),
 				URL:           manifest.URL,
-				Headers:       copyStringMap(manifest.Headers),
-				TimeoutMS:     manifest.TimeoutMS,
+				Headers:       headers,
+				TimeoutMS:     timeoutMS,
 				OAuthResource: manifest.OAuthResource,
 			}
 			continue

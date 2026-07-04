@@ -332,6 +332,7 @@ func (a cliApp) cmdAdd(args []string) error {
 	var headerPairs stringList
 	var requiredEnv stringList
 	var secretEnv stringList
+	var secretHeaders stringList
 
 	fs.StringVar(&command, "command", "", "Server command")
 	fs.StringVar(&transport, "transport", "", "Server transport (stdio, http, or sse; default: stdio)")
@@ -346,6 +347,7 @@ func (a cliApp) cmdAdd(args []string) error {
 	fs.Var(&headerPairs, "header", "HTTP header KEY=VALUE for remote transports (repeatable)")
 	fs.Var(&requiredEnv, "required-env", "Required environment key (repeatable)")
 	fs.Var(&secretEnv, "secret-env", "Secret env key barred from repo-scoped configs (repeatable)")
+	fs.Var(&secretHeaders, "secret-header", "Secret header name barred from repo-scoped configs (repeatable)")
 
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -401,6 +403,7 @@ func (a cliApp) cmdAdd(args []string) error {
 		Env:           env,
 		RequiredEnv:   registry.RequiredEnv{Keys: append([]string(nil), requiredEnv...)},
 		SecretEnv:     registry.SecretEnv{Keys: append([]string(nil), secretEnv...)},
+		SecretHeaders: registry.SecretHeaders{Keys: append([]string(nil), secretHeaders...)},
 	}
 
 	if err := a.store.Add(manifest); err != nil {
@@ -1633,7 +1636,7 @@ func printSyncSummary(stdout, stderr io.Writer, target, configPath string, dryRu
 	if len(refused) > 0 {
 		fmt.Fprintf(stdout, "refused: %s\n", formatNameList(refused))
 		for _, name := range refused {
-			fmt.Fprintf(stderr, "warning: refused %s: secret env values cannot be written to the repo-scoped config; run `madari sync %s --scope user` or remove the static [env] value for keys marked in [secret_env]\n", name, target)
+			fmt.Fprintf(stderr, "warning: refused %s: secret values cannot be written to the repo-scoped config; run `madari sync %s --scope user` or remove the static secret values (env values for [secret_env] keys, header values for credential or [secret_headers] names)\n", name, target)
 		}
 	}
 	if len(unchanged) > 0 {
@@ -1735,6 +1738,8 @@ func printAddHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --transport <transport>    Server transport: stdio, http, or sse (default: stdio)")
 	fmt.Fprintln(out, "  --url <url>                Remote MCP server URL for http/sse transports")
 	fmt.Fprintln(out, "  --header KEY=VALUE         HTTP header for remote transports (repeatable)")
+	fmt.Fprintln(out, "  --secret-header <NAME>     Secret header name barred from repo-scoped configs (repeatable);")
+	fmt.Fprintln(out, "                             well-known credential headers are always treated as secret")
 	fmt.Fprintln(out, "  --timeout-ms <ms>          Remote MCP timeout in milliseconds")
 	fmt.Fprintln(out, "  --oauth-resource <url>     OAuth resource for remote clients that support it")
 	fmt.Fprintln(out, "  --client <client>          Target client id (required, repeatable)")

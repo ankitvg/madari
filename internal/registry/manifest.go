@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -34,6 +35,7 @@ type Manifest struct {
 	Env           map[string]string `toml:"env,omitempty" json:"env,omitempty"`
 	RequiredEnv   RequiredEnv       `toml:"required_env,omitempty" json:"required_env,omitempty"`
 	SecretEnv     SecretEnv         `toml:"secret_env,omitempty" json:"secret_env,omitempty"`
+	SecretHeaders SecretHeaders     `toml:"secret_headers,omitempty" json:"secret_headers,omitempty"`
 }
 
 // RequiredEnv describes environment variables that must be present at runtime.
@@ -47,13 +49,87 @@ type SecretEnv struct {
 	Keys []string `toml:"keys,omitempty" json:"keys,omitempty"`
 }
 
-// HasSecretValue reports whether the manifest carries a static env value for
-// any key marked secret — the case placement policy must guard against.
-// Keys are trimmed to match Validate, which accepts padded secret_env
-// entries; an untrimmed lookup here would fail open and leak the value.
+// SecretHeaders marks remote header names whose values are secrets and must
+// never be materialized into repo-scoped client configs. Well-known
+// credential headers (see IsSecretHeaderName) are treated as secret even
+// when not listed here.
+type SecretHeaders struct {
+	Keys []string `toml:"keys,omitempty" json:"keys,omitempty"`
+}
+
+// secretHeaderNameExact lists headers that carry credentials by definition,
+// compared case-insensitively. Values for these names are refused in
+// repo-scoped configs even without a [secret_headers] entry, so a forgotten
+// annotation cannot commit a token.
+var secretHeaderNameExact = map[string]bool{
+	"authorization":       true,
+	"proxy-authorization": true,
+	"cookie":              true,
+	"api-key":             true,
+	"apikey":              true,
+	"x-api-key":           true,
+}
+
+// secretHeaderNameSubstrings extends the exact list to conventional
+// credential naming (x-auth-token, x-goog-api-key, session-secret, ...).
+var secretHeaderNameSubstrings = []string{"token", "secret", "api-key", "apikey"}
+
+// IsSecretHeaderName reports whether a header name is treated as a
+// credential by default. Underscores are folded to hyphens before matching
+// so variants like X_API_KEY cannot slip past the detector.
+func IsSecretHeaderName(name string) bool {
+	name = strings.ToLower(strings.TrimSpace(name))
+	name = strings.ReplaceAll(name, "_", "-")
+	if secretHeaderNameExact[name] {
+		return true
+	}
+	for _, fragment := range secretHeaderNameSubstrings {
+		if strings.Contains(name, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasSecretValue reports whether the manifest carries a static value the
+// placement policy must keep out of repo-scoped configs: an env value for a
+// key marked secret, or a remote header value whose name is marked secret or
+// is a well-known credential header. Keys are trimmed to match Validate,
+// which accepts padded entries; an untrimmed lookup here would fail open and
+// leak the value.
 func (m Manifest) HasSecretValue() bool {
 	for _, key := range m.SecretEnv.Keys {
 		if _, exists := m.Env[strings.TrimSpace(key)]; exists {
+			return true
+		}
+	}
+	for name := range m.Headers {
+		if m.isSecretHeader(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// SecretHeaderNames returns the manifest's header names whose values must
+// not land in repo-scoped configs, sorted for stable output.
+func (m Manifest) SecretHeaderNames() []string {
+	var names []string
+	for name := range m.Headers {
+		if m.isSecretHeader(name) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (m Manifest) isSecretHeader(name string) bool {
+	if IsSecretHeaderName(name) {
+		return true
+	}
+	for _, key := range m.SecretHeaders.Keys {
+		if strings.EqualFold(strings.TrimSpace(key), strings.TrimSpace(name)) {
 			return true
 		}
 	}
@@ -117,6 +193,9 @@ func (m Manifest) Validate() error {
 		if strings.TrimSpace(m.OAuthResource) != "" {
 			errs = append(errs, "oauth_resource is only supported for remote transports")
 		}
+		if len(m.SecretHeaders.Keys) > 0 {
+			errs = append(errs, "secret_headers is only supported for remote transports")
+		}
 	case TransportHTTP, TransportSSE:
 		if strings.TrimSpace(m.URL) == "" {
 			errs = append(errs, "url is required for remote transports")
@@ -152,6 +231,20 @@ func (m Manifest) Validate() error {
 		if !validHeaderName(key) {
 			errs = append(errs, fmt.Sprintf("invalid header name %q (allowed: letters, digits, '-', '_')", key))
 		}
+	}
+
+	seenSecretHeaders := map[string]struct{}{}
+	for _, key := range m.SecretHeaders.Keys {
+		key = strings.ToLower(strings.TrimSpace(key))
+		if !validHeaderName(key) {
+			errs = append(errs, fmt.Sprintf("invalid secret_headers name %q (allowed: letters, digits, '-', '_')", key))
+			continue
+		}
+		if _, exists := seenSecretHeaders[key]; exists {
+			errs = append(errs, fmt.Sprintf("duplicate secret_headers name %q", key))
+			continue
+		}
+		seenSecretHeaders[key] = struct{}{}
 	}
 
 	if len(m.Clients) == 0 {

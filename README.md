@@ -48,6 +48,21 @@ madari sync codex --dry-run
 madari sync codex
 ```
 
+Remote MCP servers are added with a transport and URL instead of a command.
+Credential headers (like `Authorization`) and names marked `--secret-header`
+never land in repo-scoped configs — they refuse at project scope and sync
+with `--scope user`:
+
+```bash
+madari add linear \
+  --transport http \
+  --url https://mcp.linear.app/mcp \
+  --header "Authorization=Bearer $LINEAR_TOKEN" \
+  --client claude-code
+
+madari sync claude-code --scope user
+```
+
 Create a ring when a few capabilities belong together:
 
 ```bash
@@ -103,7 +118,10 @@ is useful for temporary sessions and experiments.
 - Backup plus atomic write on sync
 - Explicit ownership of every managed entry
 - No hidden mutation of unmanaged client config
-- Secret env keys are not written into repo-scoped configs
+- Secret env values are not written into repo-scoped configs
+- Remote header values for credential headers (`Authorization`, api-key and
+  token variants) and `--secret-header` names follow the same policy, and
+  `ring render` never emits them
 - Diagnostics through `madari doctor`, `madari status`, and `madari ring status`
 
 ## Supported Clients
@@ -115,6 +133,10 @@ Madari can sync MCP servers for:
 - `gemini`
 - `codex`
 - `vibe`
+
+Remote (`http`/`sse`) servers currently materialize for `claude-code` and
+`gemini` (both transports) and `codex` (`http` only); other targets store
+remote manifests and report them as pending.
 
 Madari can materialize skills for:
 

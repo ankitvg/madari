@@ -5,6 +5,8 @@ import (
 	"io"
 	"sort"
 	"strings"
+
+	"github.com/ankitvg/madari/internal/registry"
 )
 
 // renderedServer is the self-contained client config entry ring render emits.
@@ -25,7 +27,11 @@ type ringRenderTarget struct {
 	// supportsRemote mirrors the sync adapter's per-transport remote
 	// capability so render and sync never disagree about materialization.
 	supportsRemote func(transport string) bool
-	render         func(io.Writer, map[string]renderedServer) error
+	// emitsRemoteTimeout is true when the renderer carries timeout_ms into
+	// the client's per-server timeout field; targets without an equivalent
+	// (codex) warn instead.
+	emitsRemoteTimeout bool
+	render             func(io.Writer, map[string]renderedServer) error
 }
 
 var ringRenderTargets = ringRenderTargetsFromClientTargets()
@@ -41,6 +47,40 @@ func supportedRingRenderTargets() []string {
 
 func renderMCPServersJSON(out io.Writer, servers map[string]renderedServer) error {
 	return writeJSON(out, map[string]map[string]renderedServer{"mcpServers": servers})
+}
+
+// geminiRenderedServer mirrors gemini-cli's settings.json server shape:
+// remote transports are distinguished by field (httpUrl = Streamable HTTP,
+// url = SSE) rather than a type key.
+type geminiRenderedServer struct {
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	HTTPURL string            `json:"httpUrl,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	Timeout int               `json:"timeout,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+}
+
+func renderGeminiJSON(out io.Writer, servers map[string]renderedServer) error {
+	shaped := make(map[string]geminiRenderedServer, len(servers))
+	for name, entry := range servers {
+		server := geminiRenderedServer{
+			Command: entry.Command,
+			Args:    entry.Args,
+			Headers: entry.Headers,
+			Timeout: entry.TimeoutMS,
+			Env:     entry.Env,
+		}
+		switch entry.Transport {
+		case registry.TransportHTTP:
+			server.HTTPURL = entry.URL
+		case registry.TransportSSE:
+			server.URL = entry.URL
+		}
+		shaped[name] = server
+	}
+	return writeJSON(out, map[string]map[string]geminiRenderedServer{"mcpServers": shaped})
 }
 
 func renderCodexTOML(out io.Writer, servers map[string]renderedServer) error {

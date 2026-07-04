@@ -18,10 +18,10 @@ func (Adapter) DefaultConfigPath() (string, error) {
 	return DefaultProjectConfigPath()
 }
 
-// SupportsRemote is false: remote manifests stay ineligible until this
-// adapter materializes remote transports.
-func (Adapter) SupportsRemote(string) bool {
-	return false
+// SupportsRemote reports which remote transports this adapter
+// materializes as native config entries.
+func (Adapter) SupportsRemote(transport string) bool {
+	return supportsRemoteTransport(transport)
 }
 
 func (Adapter) Sync(manifests []registry.Manifest, opts clients.SyncOptions) (clients.SyncResult, error) {

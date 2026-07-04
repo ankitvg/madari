@@ -17,10 +17,13 @@ const (
 	snapshotVersionV4 = 4
 	snapshotVersionV5 = 5
 	snapshotVersionV6 = 6
-	// SnapshotVersion 7 adds remote transport fields on server manifests;
+	// snapshotVersionV7 added remote transport fields on server manifests;
 	// pre-remote importers reject v7 snapshots cleanly by version instead of
 	// misreading a remote server as a stdio manifest without a command.
-	SnapshotVersion = 7
+	snapshotVersionV7 = 7
+	// SnapshotVersion 8 adds [secret_headers]; older importers reject by
+	// version instead of silently dropping the secrecy annotation.
+	SnapshotVersion = 8
 )
 
 type Snapshot struct {
@@ -314,7 +317,7 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 }
 
 func (s Snapshot) Validate() error {
-	if s.Version != snapshotVersionV1 && s.Version != snapshotVersionV2 && s.Version != snapshotVersionV3 && s.Version != snapshotVersionV4 && s.Version != snapshotVersionV5 && s.Version != snapshotVersionV6 && s.Version != SnapshotVersion {
+	if s.Version != snapshotVersionV1 && s.Version != snapshotVersionV2 && s.Version != snapshotVersionV3 && s.Version != snapshotVersionV4 && s.Version != snapshotVersionV5 && s.Version != snapshotVersionV6 && s.Version != snapshotVersionV7 && s.Version != SnapshotVersion {
 		return fmt.Errorf("unsupported snapshot version %d (supported: %d)", s.Version, SnapshotVersion)
 	}
 	if s.Version == snapshotVersionV1 && len(s.Rings) > 0 {
@@ -329,8 +332,11 @@ func (s Snapshot) Validate() error {
 	if s.Version < snapshotVersionV5 && snapshotHasRingContracts(s) {
 		return fmt.Errorf("snapshot version %d does not support ring contracts", s.Version)
 	}
-	if s.Version < SnapshotVersion && snapshotHasRemoteServers(s) {
+	if s.Version < snapshotVersionV7 && snapshotHasRemoteServers(s) {
 		return fmt.Errorf("snapshot version %d does not support remote transports", s.Version)
+	}
+	if s.Version < SnapshotVersion && snapshotHasSecretHeaders(s) {
+		return fmt.Errorf("snapshot version %d does not support secret_headers", s.Version)
 	}
 
 	seen := map[string]struct{}{}
@@ -453,7 +459,15 @@ func manifestsEqual(a, b Manifest) bool {
 	bSecret := append([]string(nil), b.SecretEnv.Keys...)
 	sort.Strings(aSecret)
 	sort.Strings(bSecret)
-	return slices.Equal(aSecret, bSecret)
+	if !slices.Equal(aSecret, bSecret) {
+		return false
+	}
+
+	aSecretHeaders := append([]string(nil), a.SecretHeaders.Keys...)
+	bSecretHeaders := append([]string(nil), b.SecretHeaders.Keys...)
+	sort.Strings(aSecretHeaders)
+	sort.Strings(bSecretHeaders)
+	return slices.Equal(aSecretHeaders, bSecretHeaders)
 }
 
 func ringsEqual(a, b Ring) bool {
@@ -609,6 +623,15 @@ func snapshotHasRingSkills(snapshot Snapshot) bool {
 func snapshotHasRemoteServers(snapshot Snapshot) bool {
 	for _, server := range snapshot.Servers {
 		if server.IsRemote() {
+			return true
+		}
+	}
+	return false
+}
+
+func snapshotHasSecretHeaders(snapshot Snapshot) bool {
+	for _, server := range snapshot.Servers {
+		if len(server.SecretHeaders.Keys) > 0 {
 			return true
 		}
 	}
