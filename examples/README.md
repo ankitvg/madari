@@ -5,8 +5,6 @@ then use the files beside it as the example's source material.
 
 - `cloudsql-readonly/`: read-only Cloud SQL inspection through Google's remote
   MCP server, with a ring contract and bundled skill package.
-- `stewreads-local/`: minimal stdio server manifest for a local StewReads MCP
-  server.
 
 Keep new examples grouped by workflow instead of by primitive. Prefer:
 
