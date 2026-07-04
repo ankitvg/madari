@@ -259,13 +259,15 @@ func supportsRemoteTransport(transport string) bool {
 
 func materializeServer(manifest registry.Manifest) serverConfig {
 	if manifest.IsRemote() {
-		// Codex remote entries carry url, optional OAuth metadata, and
-		// static headers as http_headers. timeout_ms has no Codex
+		// Codex remote entries carry url, optional OAuth metadata,
+		// bearer-token env references, and static headers as http_headers.
+		// timeout_ms has no Codex
 		// equivalent and is deliberately not emitted (documented in the
 		// manifest spec).
 		entry := serverConfig{
-			URL:           manifest.URL,
-			OAuthResource: manifest.OAuthResource,
+			URL:               manifest.URL,
+			OAuthResource:     manifest.OAuthResource,
+			BearerTokenEnvVar: manifest.BearerTokenEnvVar,
 		}
 		if len(manifest.Headers) > 0 {
 			entry.HTTPHeaders = make(map[string]string, len(manifest.Headers))
@@ -330,6 +332,9 @@ func equalServer(a, b serverConfig) bool {
 		return false
 	}
 	if a.OAuthResource != b.OAuthResource {
+		return false
+	}
+	if a.BearerTokenEnvVar != b.BearerTokenEnvVar {
 		return false
 	}
 	if len(a.HTTPHeaders) != len(b.HTTPHeaders) {
@@ -450,6 +455,13 @@ func parseServer(name string, raw any) (serverConfig, error) {
 		}
 		entry.OAuthResource = oauthResource
 	}
+	if rawBearerTokenEnvVar, exists := table["bearer_token_env_var"]; exists {
+		bearerTokenEnvVar, ok := rawBearerTokenEnvVar.(string)
+		if !ok {
+			return serverConfig{}, fmt.Errorf("parse mcp_servers.%s.bearer_token_env_var: expected string", name)
+		}
+		entry.BearerTokenEnvVar = bearerTokenEnvVar
+	}
 	if headers, ok, err := optionalStringMap(table, "http_headers"); err != nil {
 		return serverConfig{}, fmt.Errorf("parse mcp_servers.%s.http_headers: %w", name, err)
 	} else if ok {
@@ -541,12 +553,13 @@ func optionalStringMap(table map[string]any, key string) (map[string]string, boo
 }
 
 type serverConfig struct {
-	Command       string            `toml:"command,omitempty"`
-	URL           string            `toml:"url,omitempty"`
-	OAuthResource string            `toml:"oauth_resource,omitempty"`
-	Enabled       *bool             `toml:"enabled,omitempty"`
-	Args          []string          `toml:"args,omitempty"`
-	EnvVars       []string          `toml:"env_vars,omitempty"`
-	Env           map[string]string `toml:"env,omitempty"`
-	HTTPHeaders   map[string]string `toml:"http_headers,omitempty"`
+	Command           string            `toml:"command,omitempty"`
+	URL               string            `toml:"url,omitempty"`
+	OAuthResource     string            `toml:"oauth_resource,omitempty"`
+	BearerTokenEnvVar string            `toml:"bearer_token_env_var,omitempty"`
+	Enabled           *bool             `toml:"enabled,omitempty"`
+	Args              []string          `toml:"args,omitempty"`
+	EnvVars           []string          `toml:"env_vars,omitempty"`
+	Env               map[string]string `toml:"env,omitempty"`
+	HTTPHeaders       map[string]string `toml:"http_headers,omitempty"`
 }

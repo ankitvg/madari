@@ -411,8 +411,12 @@ func (a cliApp) cmdRingRender(args []string) error {
 			continue
 		}
 		if manifest.IsRemote() {
-			if !renderTarget.supportsRemote(manifest.TransportType()) {
-				fmt.Fprintf(a.stderr, "warning: ring member %s uses %s transport, which %s render does not support yet; omitted\n", member, manifest.TransportType(), target)
+			if detail, unsupported := unsupportedRemoteForTarget(manifest, target); unsupported {
+				if detail.Auth != "" {
+					fmt.Fprintf(a.stderr, "warning: ring member %s requires %s, which %s render does not support yet; omitted\n", member, detail.Auth, target)
+				} else {
+					fmt.Fprintf(a.stderr, "warning: ring member %s uses %s transport, which %s render does not support yet; omitted\n", member, detail.Transport, target)
+				}
 				continue
 			}
 			timeoutMS := manifest.TimeoutMS
@@ -431,11 +435,12 @@ func (a cliApp) cmdRingRender(args []string) error {
 				fmt.Fprintf(a.stderr, "warning: ring member %s: secret header values omitted from render: %s\n", member, strings.Join(secretNames, ", "))
 			}
 			servers[member] = renderedServer{
-				Transport:     manifest.TransportType(),
-				URL:           manifest.URL,
-				Headers:       headers,
-				TimeoutMS:     timeoutMS,
-				OAuthResource: manifest.OAuthResource,
+				Transport:         manifest.TransportType(),
+				URL:               manifest.URL,
+				Headers:           headers,
+				TimeoutMS:         timeoutMS,
+				OAuthResource:     manifest.OAuthResource,
+				BearerTokenEnvVar: manifest.BearerTokenEnvVar,
 			}
 			continue
 		}

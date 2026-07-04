@@ -309,6 +309,9 @@ func entriesForTarget(manifests []registry.Manifest, userScope bool) map[string]
 			// ineligible
 		case manifest.IsRemote() && !supportsRemoteTransport(manifest.TransportType()):
 			// unsupported remote transports stay pending
+		case manifest.IsRemote() && manifest.RequiresBearerTokenEnv():
+			// bearer_token_env_var is not part of Claude Code .mcp.json.
+			// Keep the remote pending instead of emitting an unauthenticated URL.
 		case !userScope && manifest.HasSecretValue():
 			// covers static secret env values and secret header values;
 			// refusal at project scope keeps credentials out of .mcp.json

@@ -317,6 +317,48 @@ func TestRunChecksClientConfigForRemoteCapableTarget(t *testing.T) {
 	}
 }
 
+func TestRunWarnsForMissingBearerTokenEnv(t *testing.T) {
+	tmp := t.TempDir()
+	store := registry.NewStore(filepath.Join(tmp, "servers"))
+
+	if err := store.Save(registry.Manifest{
+		Name:              "cloud-sql",
+		Transport:         registry.TransportHTTP,
+		URL:               "https://example.com/mcp",
+		BearerTokenEnvVar: "CLOUDSQL_MCP_TOKEN",
+		Enabled:           true,
+		Clients:           []string{"codex"},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+
+	adapter := testAdapter{
+		target:         "codex",
+		configPath:     filepath.Join(tmp, "config.toml"),
+		supportsRemote: true,
+	}
+	report, err := Run(store, Options{
+		Adapters: []clients.ClientAdapter{adapter},
+		EnvLookup: func(string) string {
+			return ""
+		},
+	})
+	if err != nil {
+		t.Fatalf("doctor run failed: %v", err)
+	}
+
+	if len(report.Servers) != 1 {
+		t.Fatalf("expected one server report, got: %+v", report.Servers)
+	}
+	server := report.Servers[0]
+	if server.Status != StatusWarning || server.BearerTokenEnvVar != "CLOUDSQL_MCP_TOKEN" {
+		t.Fatalf("expected warning with bearer token env detail, got: %+v", server)
+	}
+	if len(server.Issues) != 1 || server.Issues[0].Code != "missing_bearer_token_env" {
+		t.Fatalf("expected missing bearer env issue, got: %+v", server.Issues)
+	}
+}
+
 func TestRunUsesConfigPathOverride(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix fixture mode bits are used in this test")
