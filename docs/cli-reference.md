@@ -59,10 +59,12 @@ servers keep syncing; a previously materialized secret entry is scrubbed)
 and must sync with `--scope user`.
 
 `claude-code` and `gemini` also materialize managed remote entries.
-Claude Code writes `type`/`url` entries with `headers` into its config;
+Claude Code writes `type`/`url` entries with `headers` into its config
+(accepting existing unmanaged `streamable-http` entries as equal to `http`);
 Gemini writes `httpUrl` (Streamable HTTP) or `url` (SSE) entries with
-`headers`. `oauth_resource` and `timeout_ms` have no equivalent in either
-client and are not emitted.
+`headers`. `timeout_ms` is carried through as each client's per-server
+`timeout` field (milliseconds). `oauth_resource` has no equivalent in either
+client and is not emitted.
 
 `codex` sync targets Codex's user config (`$CODEX_HOME/config.toml`, or
 `~/.codex/config.toml` when `CODEX_HOME` is unset). Static non-secret `[env]`

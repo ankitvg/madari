@@ -4547,6 +4547,7 @@ func TestRunWithStoreRingRenderClaudeCodeRemote(t *testing.T) {
 		"--transport", "http",
 		"--url", "https://example.com/mcp",
 		"--client", "claude-code",
+		"--timeout-ms", "30000",
 		"--header", "x-goog-user-project=example-project",
 		"--header", "Authorization=Bearer sekrit"); result.code != 0 {
 		t.Fatalf("setup add cloud-sql failed: %s", result.stderr)
@@ -4566,7 +4567,8 @@ func TestRunWithStoreRingRenderClaudeCodeRemote(t *testing.T) {
       "url": "https://example.com/mcp",
       "headers": {
         "x-goog-user-project": "example-project"
-      }
+      },
+      "timeout": 30000
     }
   }
 }

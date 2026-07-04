@@ -287,6 +287,7 @@ func TestIsSecretHeaderName(t *testing.T) {
 		"Authorization", "authorization", "Proxy-Authorization", "Cookie",
 		"X-Api-Key", "api-key", "ApiKey", "X-Auth-Token", "X-Goog-Api-Key",
 		"Session-Secret", "X-Access-Token",
+		"X_API_KEY", "X-API_KEY", "Api_Key", "ACCESS_TOKEN",
 	}
 	for _, name := range secret {
 		if !IsSecretHeaderName(name) {

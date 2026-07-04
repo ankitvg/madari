@@ -311,9 +311,10 @@ func supportsRemoteTransport(transport string) bool {
 func materializeServer(manifest registry.Manifest) serverConfig {
 	if manifest.IsRemote() {
 		// Gemini distinguishes transports by field, not a type key:
-		// httpUrl = Streamable HTTP, url = SSE. oauth_resource and
-		// timeout_ms have no settings.json equivalent and are not emitted.
-		entry := serverConfig{}
+		// httpUrl = Streamable HTTP, url = SSE. timeout is the per-server
+		// request timeout in milliseconds. oauth_resource has no
+		// settings.json equivalent and is not emitted.
+		entry := serverConfig{Timeout: manifest.TimeoutMS}
 		if manifest.TransportType() == registry.TransportHTTP {
 			entry.HTTPURL = manifest.URL
 		} else {
@@ -346,6 +347,9 @@ func equalServer(a, b serverConfig) bool {
 		return false
 	}
 	if a.HTTPURL != b.HTTPURL || a.URL != b.URL {
+		return false
+	}
+	if a.Timeout != b.Timeout {
 		return false
 	}
 	if len(a.Headers) != len(b.Headers) {
@@ -421,4 +425,5 @@ type serverConfig struct {
 	HTTPURL string            `json:"httpUrl,omitempty"`
 	URL     string            `json:"url,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
+	Timeout int               `json:"timeout,omitempty"`
 }

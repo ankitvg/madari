@@ -336,11 +336,13 @@ func supportsRemoteTransport(transport string) bool {
 
 func materializeServer(manifest registry.Manifest) serverConfig {
 	if manifest.IsRemote() {
-		// Remote entries carry type/url/headers. oauth_resource and
-		// timeout_ms have no .mcp.json equivalent and are not emitted.
+		// Remote entries carry type/url/headers plus the per-server tool
+		// timeout in milliseconds. oauth_resource has no .mcp.json
+		// equivalent and is not emitted.
 		entry := serverConfig{
-			Type: manifest.TransportType(),
-			URL:  manifest.URL,
+			Type:    manifest.TransportType(),
+			URL:     manifest.URL,
+			Timeout: manifest.TimeoutMS,
 		}
 		if len(manifest.Headers) > 0 {
 			entry.Headers = make(map[string]string, len(manifest.Headers))
@@ -364,11 +366,24 @@ func materializeServer(manifest registry.Manifest) serverConfig {
 	return entry
 }
 
+// normalizeType folds Claude Code's documented streamable-http alias into
+// http so hand-written entries copied from server docs compare as equal to
+// madari's materialization instead of raising unmanaged conflicts.
+func normalizeType(transport string) string {
+	if transport == "streamable-http" {
+		return "http"
+	}
+	return transport
+}
+
 func equalServer(a, b serverConfig) bool {
 	if a.Command != b.Command {
 		return false
 	}
-	if a.Type != b.Type || a.URL != b.URL {
+	if normalizeType(a.Type) != normalizeType(b.Type) || a.URL != b.URL {
+		return false
+	}
+	if a.Timeout != b.Timeout {
 		return false
 	}
 	if len(a.Headers) != len(b.Headers) {
@@ -488,6 +503,13 @@ func stripEmptyModeledServerFields(object map[string]any) bool {
 			delete(object, "headers")
 		}
 	}
+	if value, exists := object["type"]; exists {
+		transport, ok := value.(string)
+		if !ok {
+			return false
+		}
+		object["type"] = normalizeType(transport)
+	}
 	return true
 }
 
@@ -537,4 +559,5 @@ type serverConfig struct {
 	Env     map[string]string `json:"env,omitempty"`
 	URL     string            `json:"url,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
+	Timeout int               `json:"timeout,omitempty"`
 }

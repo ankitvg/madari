@@ -415,8 +415,10 @@ func (a cliApp) cmdRingRender(args []string) error {
 				fmt.Fprintf(a.stderr, "warning: ring member %s uses %s transport, which %s render does not support yet; omitted\n", member, manifest.TransportType(), target)
 				continue
 			}
-			if manifest.TimeoutMS > 0 {
+			timeoutMS := manifest.TimeoutMS
+			if timeoutMS > 0 && !renderTarget.emitsRemoteTimeout {
 				fmt.Fprintf(a.stderr, "warning: ring member %s: timeout_ms is not emitted for %s render\n", member, target)
+				timeoutMS = 0
 			}
 			headers := copyStringMap(manifest.Headers)
 			if secretNames := manifest.SecretHeaderNames(); len(secretNames) > 0 {
@@ -432,6 +434,7 @@ func (a cliApp) cmdRingRender(args []string) error {
 				Transport:     manifest.TransportType(),
 				URL:           manifest.URL,
 				Headers:       headers,
+				TimeoutMS:     timeoutMS,
 				OAuthResource: manifest.OAuthResource,
 			}
 			continue

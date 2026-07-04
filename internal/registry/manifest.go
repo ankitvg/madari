@@ -75,9 +75,11 @@ var secretHeaderNameExact = map[string]bool{
 var secretHeaderNameSubstrings = []string{"token", "secret", "api-key", "apikey"}
 
 // IsSecretHeaderName reports whether a header name is treated as a
-// credential by default.
+// credential by default. Underscores are folded to hyphens before matching
+// so variants like X_API_KEY cannot slip past the detector.
 func IsSecretHeaderName(name string) bool {
 	name = strings.ToLower(strings.TrimSpace(name))
+	name = strings.ReplaceAll(name, "_", "-")
 	if secretHeaderNameExact[name] {
 		return true
 	}

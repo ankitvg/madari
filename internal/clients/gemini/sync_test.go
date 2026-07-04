@@ -582,6 +582,7 @@ func TestSyncApplyRemoteHTTP(t *testing.T) {
 		Transport: registry.TransportHTTP,
 		URL:       "https://example.com/mcp",
 		Headers:   map[string]string{"x-goog-user-project": "example-project"},
+		TimeoutMS: 30000,
 		Enabled:   true,
 		Clients:   []string{Target},
 	}
@@ -603,6 +604,9 @@ func TestSyncApplyRemoteHTTP(t *testing.T) {
 	}
 	if got.Headers["x-goog-user-project"] != "example-project" {
 		t.Fatalf("expected non-secret headers to materialize, got: %#v", got.Headers)
+	}
+	if got.Timeout != 30000 {
+		t.Fatalf("expected timeout_ms carried through as timeout, got: %#v", got)
 	}
 	if _, ok := servers["weather"]; !ok {
 		t.Fatalf("expected unmanaged weather entry to be preserved")

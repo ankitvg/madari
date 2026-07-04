@@ -19,8 +19,11 @@ type clientTarget struct {
 	target             string
 	syncAdapter        clients.ClientAdapter
 	ringConfigRenderer func(io.Writer, map[string]renderedServer) error
-	userScope          bool
-	skillRoots         skillTargetRoots
+	// ringRenderTimeout marks renderers that emit timeout_ms as the
+	// client's per-server timeout field for remote entries.
+	ringRenderTimeout bool
+	userScope         bool
+	skillRoots        skillTargetRoots
 }
 
 var clientTargets = []clientTarget{
@@ -33,6 +36,7 @@ var clientTargets = []clientTarget{
 		target:             claudecode.Target,
 		syncAdapter:        claudecode.Adapter{},
 		ringConfigRenderer: renderMCPServersJSON,
+		ringRenderTimeout:  true,
 		userScope:          true,
 		skillRoots: skillTargetRoots{
 			project: defaultProjectSkillRoot(".claude", "skills"),
@@ -52,6 +56,7 @@ var clientTargets = []clientTarget{
 		target:             gemini.Target,
 		syncAdapter:        gemini.Adapter{},
 		ringConfigRenderer: renderGeminiJSON,
+		ringRenderTimeout:  true,
 		userScope:          true,
 		skillRoots: skillTargetRoots{
 			project: defaultProjectSkillRoot(".gemini", "skills"),
@@ -101,9 +106,10 @@ func ringRenderTargetsFromClientTargets() map[string]ringRenderTarget {
 				supportsRemote = ct.syncAdapter.SupportsRemote
 			}
 			targets[ct.target] = ringRenderTarget{
-				target:         ct.target,
-				supportsRemote: supportsRemote,
-				render:         ct.ringConfigRenderer,
+				target:             ct.target,
+				supportsRemote:     supportsRemote,
+				emitsRemoteTimeout: ct.ringRenderTimeout,
+				render:             ct.ringConfigRenderer,
 			}
 		}
 	}

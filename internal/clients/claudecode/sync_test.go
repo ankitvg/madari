@@ -1211,6 +1211,7 @@ func TestSyncApplyRemoteHTTP(t *testing.T) {
 		Transport: registry.TransportHTTP,
 		URL:       "https://example.com/mcp",
 		Headers:   map[string]string{"x-goog-user-project": "example-project"},
+		TimeoutMS: 30000,
 		Enabled:   true,
 		Clients:   []string{Target},
 	}
@@ -1232,6 +1233,9 @@ func TestSyncApplyRemoteHTTP(t *testing.T) {
 	}
 	if got.Headers["x-goog-user-project"] != "example-project" {
 		t.Fatalf("expected non-secret headers to materialize, got: %#v", got.Headers)
+	}
+	if got.Timeout != 30000 {
+		t.Fatalf("expected timeout_ms carried through as timeout, got: %#v", got)
 	}
 	if _, ok := servers["weather"]; !ok {
 		t.Fatalf("expected unmanaged weather entry to be preserved")
@@ -1275,6 +1279,47 @@ func TestSyncApplyRemoteSSE(t *testing.T) {
 	got := readServers(t, configPath)["events"]
 	if got.Type != "sse" || got.URL != "https://example.com/sse" {
 		t.Fatalf("expected sse type/url entry, got: %#v", got)
+	}
+}
+
+func TestSyncTreatsStreamableHTTPAliasAsEqual(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+	original := []byte(`{
+  "mcpServers": {
+    "cloud-sql": {
+      "type": "streamable-http",
+      "url": "https://example.com/mcp"
+    }
+  }
+}
+`)
+	if err := os.WriteFile(configPath, original, 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	remote := registry.Manifest{
+		Name:      "cloud-sql",
+		Transport: registry.TransportHTTP,
+		URL:       "https://example.com/mcp",
+		Enabled:   true,
+		Clients:   []string{Target},
+	}
+	result, err := Sync([]registry.Manifest{remote}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("expected streamable-http alias to compare equal, got: %v", err)
+	}
+	if len(result.Unchanged) != 1 || result.Unchanged[0] != "cloud-sql" {
+		t.Fatalf("expected alias entry reported unchanged, got: %+v", result)
+	}
+	// The unmanaged entry keeps its raw value: no adoption, no rewrite.
+	got := readServers(t, configPath)["cloud-sql"]
+	if got.Type != "streamable-http" {
+		t.Fatalf("expected unmanaged alias entry preserved verbatim, got: %#v", got)
 	}
 }
 
