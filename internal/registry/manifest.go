@@ -21,21 +21,22 @@ const (
 
 // Manifest is the canonical configuration for one local MCP server.
 type Manifest struct {
-	Name          string            `toml:"name" json:"name"`
-	Transport     string            `toml:"transport,omitempty" json:"transport,omitempty"`
-	Command       string            `toml:"command" json:"command"`
-	Args          []string          `toml:"args" json:"args"`
-	URL           string            `toml:"url,omitempty" json:"url,omitempty"`
-	Headers       map[string]string `toml:"headers,omitempty" json:"headers,omitempty"`
-	TimeoutMS     int               `toml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
-	OAuthResource string            `toml:"oauth_resource,omitempty" json:"oauth_resource,omitempty"`
-	Enabled       bool              `toml:"enabled" json:"enabled"`
-	Clients       []string          `toml:"clients" json:"clients"`
-	Description   string            `toml:"description,omitempty" json:"description,omitempty"`
-	Env           map[string]string `toml:"env,omitempty" json:"env,omitempty"`
-	RequiredEnv   RequiredEnv       `toml:"required_env,omitempty" json:"required_env,omitempty"`
-	SecretEnv     SecretEnv         `toml:"secret_env,omitempty" json:"secret_env,omitempty"`
-	SecretHeaders SecretHeaders     `toml:"secret_headers,omitempty" json:"secret_headers,omitempty"`
+	Name              string            `toml:"name" json:"name"`
+	Transport         string            `toml:"transport,omitempty" json:"transport,omitempty"`
+	Command           string            `toml:"command" json:"command"`
+	Args              []string          `toml:"args" json:"args"`
+	URL               string            `toml:"url,omitempty" json:"url,omitempty"`
+	Headers           map[string]string `toml:"headers,omitempty" json:"headers,omitempty"`
+	TimeoutMS         int               `toml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
+	OAuthResource     string            `toml:"oauth_resource,omitempty" json:"oauth_resource,omitempty"`
+	BearerTokenEnvVar string            `toml:"bearer_token_env_var,omitempty" json:"bearer_token_env_var,omitempty"`
+	Enabled           bool              `toml:"enabled" json:"enabled"`
+	Clients           []string          `toml:"clients" json:"clients"`
+	Description       string            `toml:"description,omitempty" json:"description,omitempty"`
+	Env               map[string]string `toml:"env,omitempty" json:"env,omitempty"`
+	RequiredEnv       RequiredEnv       `toml:"required_env,omitempty" json:"required_env,omitempty"`
+	SecretEnv         SecretEnv         `toml:"secret_env,omitempty" json:"secret_env,omitempty"`
+	SecretHeaders     SecretHeaders     `toml:"secret_headers,omitempty" json:"secret_headers,omitempty"`
 }
 
 // RequiredEnv describes environment variables that must be present at runtime.
@@ -167,6 +168,10 @@ func (m Manifest) IsRemote() bool {
 	}
 }
 
+func (m Manifest) RequiresBearerTokenEnv() bool {
+	return strings.TrimSpace(m.BearerTokenEnvVar) != ""
+}
+
 // Validate enforces manifest-level invariants.
 func (m Manifest) Validate() error {
 	var errs []string
@@ -192,6 +197,9 @@ func (m Manifest) Validate() error {
 		}
 		if strings.TrimSpace(m.OAuthResource) != "" {
 			errs = append(errs, "oauth_resource is only supported for remote transports")
+		}
+		if strings.TrimSpace(m.BearerTokenEnvVar) != "" {
+			errs = append(errs, "bearer_token_env_var is only supported for remote transports")
 		}
 		if len(m.SecretHeaders.Keys) > 0 {
 			errs = append(errs, "secret_headers is only supported for remote transports")
@@ -225,6 +233,14 @@ func (m Manifest) Validate() error {
 
 	if m.TimeoutMS < 0 {
 		errs = append(errs, "timeout_ms must be positive")
+	}
+
+	if key := strings.TrimSpace(m.BearerTokenEnvVar); key != "" {
+		if m.BearerTokenEnvVar != key {
+			errs = append(errs, "bearer_token_env_var must not have leading or trailing whitespace")
+		} else if !envKeyPattern.MatchString(key) {
+			errs = append(errs, fmt.Sprintf("invalid bearer_token_env_var key %q", key))
+		}
 	}
 
 	for key := range m.Headers {

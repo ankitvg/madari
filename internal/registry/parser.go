@@ -141,6 +141,9 @@ func MarshalManifest(m Manifest) ([]byte, error) {
 		if strings.TrimSpace(m.OAuthResource) != "" {
 			fmt.Fprintf(&b, "oauth_resource = %s\n", strconv.Quote(m.OAuthResource))
 		}
+		if strings.TrimSpace(m.BearerTokenEnvVar) != "" {
+			fmt.Fprintf(&b, "bearer_token_env_var = %s\n", strconv.Quote(m.BearerTokenEnvVar))
+		}
 	} else {
 		fmt.Fprintf(&b, "command = %s\n", strconv.Quote(m.Command))
 		fmt.Fprintf(&b, "args = %s\n", formatStringArray(m.Args))
@@ -231,6 +234,12 @@ func parseTopLevel(m *Manifest, key, value string) error {
 			return fmt.Errorf("invalid oauth_resource: %w", err)
 		}
 		m.OAuthResource = sv
+	case "bearer_token_env_var":
+		sv, err := parseString(value)
+		if err != nil {
+			return fmt.Errorf("invalid bearer_token_env_var: %w", err)
+		}
+		m.BearerTokenEnvVar = sv
 	case "timeout_ms":
 		iv, err := parseInt(value)
 		if err != nil {

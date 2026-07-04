@@ -234,6 +234,25 @@ func TestParseSnapshotV8AcceptsSecretHeaders(t *testing.T) {
 	}
 }
 
+func TestParseSnapshotV8RejectsBearerTokenEnv(t *testing.T) {
+	payload := []byte(`{"version":8,"servers":[{"name":"cloud-sql","transport":"http","url":"https://example.com/mcp","bearer_token_env_var":"CLOUDSQL_MCP_TOKEN","enabled":true,"clients":["codex"]}]}`)
+	_, err := ParseSnapshotJSON(payload)
+	if err == nil || !strings.Contains(err.Error(), "does not support bearer_token_env_var") {
+		t.Fatalf("expected v8 bearer-token-env error, got: %v", err)
+	}
+}
+
+func TestParseSnapshotV9AcceptsBearerTokenEnv(t *testing.T) {
+	payload := []byte(`{"version":9,"servers":[{"name":"cloud-sql","transport":"http","url":"https://example.com/mcp","bearer_token_env_var":"CLOUDSQL_MCP_TOKEN","enabled":true,"clients":["codex"]}]}`)
+	snapshot, err := ParseSnapshotJSON(payload)
+	if err != nil {
+		t.Fatalf("parse v9 snapshot with bearer_token_env_var: %v", err)
+	}
+	if len(snapshot.Servers) != 1 || snapshot.Servers[0].BearerTokenEnvVar != "CLOUDSQL_MCP_TOKEN" {
+		t.Fatalf("expected bearer_token_env_var to parse, got: %#v", snapshot.Servers)
+	}
+}
+
 func TestParseSnapshotV7AcceptsRemoteServers(t *testing.T) {
 	payload := []byte(`{"version":7,"servers":[{"name":"cloud-sql","transport":"http","url":"https://example.com/mcp","enabled":true,"clients":["codex"]}]}`)
 	snapshot, err := ParseSnapshotJSON(payload)

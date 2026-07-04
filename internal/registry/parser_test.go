@@ -67,14 +67,15 @@ func TestParseAndMarshalManifestRoundTrip(t *testing.T) {
 
 func TestParseAndMarshalRemoteManifestRoundTrip(t *testing.T) {
 	in := Manifest{
-		Name:          "cloud-sql",
-		Transport:     TransportHTTP,
-		URL:           "https://sqladmin.googleapis.com/mcp",
-		TimeoutMS:     30000,
-		OAuthResource: "https://sqladmin.googleapis.com/",
-		Enabled:       true,
-		Clients:       []string{"codex"},
-		Description:   "Cloud SQL remote MCP",
+		Name:              "cloud-sql",
+		Transport:         TransportHTTP,
+		URL:               "https://sqladmin.googleapis.com/mcp",
+		TimeoutMS:         30000,
+		OAuthResource:     "https://sqladmin.googleapis.com/",
+		BearerTokenEnvVar: "CLOUDSQL_MCP_TOKEN",
+		Enabled:           true,
+		Clients:           []string{"codex"},
+		Description:       "Cloud SQL remote MCP",
 		Headers: map[string]string{
 			"x-goog-user-project": "example-project",
 			"x-routing-key":       "internal-value",
@@ -91,6 +92,7 @@ func TestParseAndMarshalRemoteManifestRoundTrip(t *testing.T) {
 		`url = "https://sqladmin.googleapis.com/mcp"`,
 		`timeout_ms = 30000`,
 		`oauth_resource = "https://sqladmin.googleapis.com/"`,
+		`bearer_token_env_var = "CLOUDSQL_MCP_TOKEN"`,
 		"[headers]",
 		`x-goog-user-project = "example-project"`,
 		"[secret_headers]",
@@ -108,7 +110,9 @@ func TestParseAndMarshalRemoteManifestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse failed: %v", err)
 	}
-	if out.TransportType() != TransportHTTP || out.URL != in.URL || out.OAuthResource != in.OAuthResource {
+	if out.TransportType() != TransportHTTP || out.URL != in.URL ||
+		out.OAuthResource != in.OAuthResource ||
+		out.BearerTokenEnvVar != in.BearerTokenEnvVar {
 		t.Fatalf("remote roundtrip mismatch: got %#v", out)
 	}
 	if out.Headers["x-goog-user-project"] != "example-project" {
