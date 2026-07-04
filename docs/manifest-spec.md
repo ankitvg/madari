@@ -33,18 +33,23 @@ Known client IDs:
 
 `claude-desktop`, `claude-code`, `gemini`, `codex`, and `vibe` are
 sync-capable today. All are also render targets for `madari ring render`.
-Remote `http` manifests are materialized for `codex` (native `url` entries
-plus optional OAuth metadata and `[headers]` as `http_headers`). `sse`
-manifests and the other targets keep remote entries ineligible until their
-auth and config behavior is validated per client.
+Remote materialization is per client and per transport:
+
+- `codex`: `http` only, as native `url` entries plus optional OAuth metadata
+  and `[headers]` as `http_headers`.
+- `claude-code`: `http` and `sse`, as `type`/`url` entries with `headers`.
+- `gemini`: `http` (as `httpUrl`) and `sse` (as `url`), with `headers`.
+- `claude-desktop` and `vibe`: remote entries stay ineligible until their
+  auth and config behavior is validated per client.
 
 ### `[headers]`
 
 Key/value static HTTP headers for remote transports. Header names are limited
 to letters, digits, `-`, and `_` so they round-trip through the manifest
 format. Headers are emitted only for clients that support header
-configuration (Codex writes them as `http_headers`); other targets store
-them without emitting.
+configuration (Codex writes them as `http_headers`; Claude Code and Gemini
+as `headers`); other targets store them without emitting. Header values for
+credential headers follow the `[secret_headers]` placement policy below.
 
 ### `[env]`
 
@@ -64,6 +69,20 @@ Key/value static environment variables for stdio transports.
   write static secret values into Codex config. Vibe sync targets the user
   config, so static secret values are allowed there like other user-scoped
   configs.
+
+### `[secret_headers]`
+
+- `keys` (array of strings): header names whose values are secrets, following
+  the same placement policy as `[secret_env]`: entries carrying a secret
+  header value are refused at repo scope (and scrubbed if previously
+  materialized there) and materialize only into user-scoped configs.
+
+Well-known credential headers are always treated as secret, with or without a
+`[secret_headers]` entry: `Authorization`, `Proxy-Authorization`, `Cookie`,
+api-key variants, and names containing `token` or `secret` (all
+case-insensitive). Use `[secret_headers]` to mark additional headers whose
+values must stay out of committed configs. `ring render` never emits secret
+header values; the warning names the headers to provide manually.
 
 ## Example
 
@@ -105,6 +124,8 @@ description = "Official Cloud SQL remote MCP server"
 - `url` is required for `http` and `sse`.
 - Remote transports reject `command`, `args`, `[env]`, `[required_env]`, and
   `[secret_env]` because they are local process settings.
+- `[secret_headers]` is remote-only; names must be valid header names and
+  unique (case-insensitive).
 
 ## Ring Files
 

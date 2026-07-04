@@ -307,9 +307,11 @@ func entriesForTarget(manifests []registry.Manifest, userScope bool) map[string]
 		switch {
 		case !manifest.Enabled:
 			// ineligible
-		case manifest.IsRemote():
-			// Remote transports are not materialized by this adapter yet.
+		case manifest.IsRemote() && !supportsRemoteTransport(manifest.TransportType()):
+			// unsupported remote transports stay pending
 		case !userScope && manifest.HasSecretValue():
+			// covers static secret env values and secret header values;
+			// refusal at project scope keeps credentials out of .mcp.json
 			entry.Refused = true
 		default:
 			entry.Eligible = true
@@ -320,7 +322,35 @@ func entriesForTarget(manifests []registry.Manifest, userScope bool) map[string]
 	return entries
 }
 
+// supportsRemoteTransport gates which remote transports Claude Code
+// materializes: both Streamable HTTP and SSE are documented .mcp.json
+// server types (SSE is deprecated upstream but still supported).
+func supportsRemoteTransport(transport string) bool {
+	switch transport {
+	case registry.TransportHTTP, registry.TransportSSE:
+		return true
+	default:
+		return false
+	}
+}
+
 func materializeServer(manifest registry.Manifest) serverConfig {
+	if manifest.IsRemote() {
+		// Remote entries carry type/url/headers. oauth_resource and
+		// timeout_ms have no .mcp.json equivalent and are not emitted.
+		entry := serverConfig{
+			Type: manifest.TransportType(),
+			URL:  manifest.URL,
+		}
+		if len(manifest.Headers) > 0 {
+			entry.Headers = make(map[string]string, len(manifest.Headers))
+			for key, value := range manifest.Headers {
+				entry.Headers[key] = value
+			}
+		}
+		return entry
+	}
+
 	entry := serverConfig{Command: manifest.Command}
 	if len(manifest.Args) > 0 {
 		entry.Args = append([]string(nil), manifest.Args...)
@@ -337,6 +367,17 @@ func materializeServer(manifest registry.Manifest) serverConfig {
 func equalServer(a, b serverConfig) bool {
 	if a.Command != b.Command {
 		return false
+	}
+	if a.Type != b.Type || a.URL != b.URL {
+		return false
+	}
+	if len(a.Headers) != len(b.Headers) {
+		return false
+	}
+	for key, value := range a.Headers {
+		if b.Headers[key] != value {
+			return false
+		}
 	}
 	if len(a.Args) != len(b.Args) {
 		return false
@@ -438,6 +479,15 @@ func stripEmptyModeledServerFields(object map[string]any) bool {
 			delete(object, "env")
 		}
 	}
+	if value, exists := object["headers"]; exists {
+		headers, ok := value.(map[string]any)
+		if !ok {
+			return false
+		}
+		if len(headers) == 0 {
+			delete(object, "headers")
+		}
+	}
 	return true
 }
 
@@ -481,7 +531,10 @@ func loadClaudeCodeConfig(path string) (map[string]json.RawMessage, map[string]j
 }
 
 type serverConfig struct {
-	Command string            `json:"command"`
+	Type    string            `json:"type,omitempty"`
+	Command string            `json:"command,omitempty"`
 	Args    []string          `json:"args,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
 }

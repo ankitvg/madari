@@ -4521,7 +4521,34 @@ func TestRunWithStoreRingRenderRemoteUnsupportedTarget(t *testing.T) {
 	if result := runCmd(store, "add", "cloud-sql",
 		"--transport", "http",
 		"--url", "https://sqladmin.googleapis.com/mcp",
-		"--client", "claude-code"); result.code != 0 {
+		"--client", "claude-desktop"); result.code != 0 {
+		t.Fatalf("setup add cloud-sql failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "cloudsql-readonly", "--member", "cloud-sql"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "ring", "render", "cloudsql-readonly", "--client", "claude-desktop")
+	if result.code != 0 {
+		t.Fatalf("ring render claude-desktop failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, `"mcpServers": {}`) {
+		t.Fatalf("expected empty MCP config for unsupported remote target, got:\n%s", result.stdout)
+	}
+	if !strings.Contains(result.stderr, "uses http transport") || !strings.Contains(result.stderr, "does not support yet") {
+		t.Fatalf("expected unsupported remote warning, got: %s", result.stderr)
+	}
+}
+
+func TestRunWithStoreRingRenderClaudeCodeRemote(t *testing.T) {
+	store := newTestStore(t)
+
+	if result := runCmd(store, "add", "cloud-sql",
+		"--transport", "http",
+		"--url", "https://example.com/mcp",
+		"--client", "claude-code",
+		"--header", "x-goog-user-project=example-project",
+		"--header", "Authorization=Bearer sekrit"); result.code != 0 {
 		t.Fatalf("setup add cloud-sql failed: %s", result.stderr)
 	}
 	if result := runCmd(store, "ring", "create", "cloudsql-readonly", "--member", "cloud-sql"); result.code != 0 {
@@ -4532,11 +4559,72 @@ func TestRunWithStoreRingRenderRemoteUnsupportedTarget(t *testing.T) {
 	if result.code != 0 {
 		t.Fatalf("ring render claude-code failed: %s", result.stderr)
 	}
-	if !strings.Contains(result.stdout, `"mcpServers": {}`) {
-		t.Fatalf("expected empty MCP config for unsupported remote target, got:\n%s", result.stdout)
+	want := `{
+  "mcpServers": {
+    "cloud-sql": {
+      "type": "http",
+      "url": "https://example.com/mcp",
+      "headers": {
+        "x-goog-user-project": "example-project"
+      }
+    }
+  }
+}
+`
+	if result.stdout != want {
+		t.Fatalf("render output for claude-code remote drift:\nwant:\n%s\ngot:\n%s", want, result.stdout)
 	}
-	if !strings.Contains(result.stderr, "uses http transport") || !strings.Contains(result.stderr, "does not support yet") {
-		t.Fatalf("expected unsupported remote warning, got: %s", result.stderr)
+	if !strings.Contains(result.stderr, "secret header values omitted from render: Authorization") {
+		t.Fatalf("expected secret header omission warning, got: %s", result.stderr)
+	}
+	if strings.Contains(result.stdout, "sekrit") {
+		t.Fatalf("expected secret header value to stay out of render output, got: %s", result.stdout)
+	}
+}
+
+func TestRunWithStoreRingRenderGeminiRemote(t *testing.T) {
+	store := newTestStore(t)
+
+	if result := runCmd(store, "add", "cloud-sql",
+		"--transport", "http",
+		"--url", "https://example.com/mcp",
+		"--client", "gemini",
+		"--header", "x-goog-user-project=example-project"); result.code != 0 {
+		t.Fatalf("setup add cloud-sql failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "add", "events",
+		"--transport", "sse",
+		"--url", "https://example.com/sse",
+		"--client", "gemini"); result.code != 0 {
+		t.Fatalf("setup add events failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "remote-mix", "--member", "cloud-sql", "--member", "events"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "ring", "render", "remote-mix", "--client", "gemini")
+	if result.code != 0 {
+		t.Fatalf("ring render gemini failed: %s", result.stderr)
+	}
+	want := `{
+  "mcpServers": {
+    "cloud-sql": {
+      "httpUrl": "https://example.com/mcp",
+      "headers": {
+        "x-goog-user-project": "example-project"
+      }
+    },
+    "events": {
+      "url": "https://example.com/sse"
+    }
+  }
+}
+`
+	if result.stdout != want {
+		t.Fatalf("render output for gemini remote drift:\nwant:\n%s\ngot:\n%s", want, result.stdout)
+	}
+	if result.stderr != "" {
+		t.Fatalf("expected no render warnings, got: %s", result.stderr)
 	}
 }
 

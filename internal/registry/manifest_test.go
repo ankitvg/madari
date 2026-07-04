@@ -163,6 +163,41 @@ func TestManifestValidateErrors(t *testing.T) {
 			expects: "url must not have leading or trailing whitespace",
 		},
 		{
+			name: "stdio rejects secret_headers",
+			mutate: func(m *Manifest) {
+				m.SecretHeaders.Keys = []string{"x-routing-key"}
+			},
+			expects: "secret_headers is only supported for remote transports",
+		},
+		{
+			name: "remote rejects invalid secret_headers name",
+			mutate: func(m *Manifest) {
+				*m = Manifest{
+					Name:          "cloud-sql",
+					Transport:     TransportHTTP,
+					URL:           "https://sqladmin.googleapis.com/mcp",
+					SecretHeaders: SecretHeaders{Keys: []string{"bad header"}},
+					Enabled:       true,
+					Clients:       []string{"codex"},
+				}
+			},
+			expects: "invalid secret_headers name",
+		},
+		{
+			name: "remote rejects duplicate secret_headers names",
+			mutate: func(m *Manifest) {
+				*m = Manifest{
+					Name:          "cloud-sql",
+					Transport:     TransportHTTP,
+					URL:           "https://sqladmin.googleapis.com/mcp",
+					SecretHeaders: SecretHeaders{Keys: []string{"x-routing-key", "X-Routing-Key"}},
+					Enabled:       true,
+					Clients:       []string{"codex"},
+				}
+			},
+			expects: "duplicate secret_headers name",
+		},
+		{
 			name: "remote rejects negative timeout",
 			mutate: func(m *Manifest) {
 				*m = Manifest{
@@ -244,5 +279,53 @@ func TestManifestValidateRemoteOK(t *testing.T) {
 	}
 	if !m.IsRemote() {
 		t.Fatalf("expected remote manifest to report IsRemote")
+	}
+}
+
+func TestIsSecretHeaderName(t *testing.T) {
+	secret := []string{
+		"Authorization", "authorization", "Proxy-Authorization", "Cookie",
+		"X-Api-Key", "api-key", "ApiKey", "X-Auth-Token", "X-Goog-Api-Key",
+		"Session-Secret", "X-Access-Token",
+	}
+	for _, name := range secret {
+		if !IsSecretHeaderName(name) {
+			t.Fatalf("expected %q to be a secret header name", name)
+		}
+	}
+	public := []string{"x-goog-user-project", "X-Figma-Region", "Accept", "Content-Type", "X-Request-Id"}
+	for _, name := range public {
+		if IsSecretHeaderName(name) {
+			t.Fatalf("expected %q to be a non-secret header name", name)
+		}
+	}
+}
+
+func TestManifestSecretHeaderDetection(t *testing.T) {
+	m := Manifest{
+		Name:      "cloud-sql",
+		Transport: TransportHTTP,
+		URL:       "https://example.com/mcp",
+		Headers:   map[string]string{"x-goog-user-project": "project-id"},
+		Enabled:   true,
+		Clients:   []string{"claude-code"},
+	}
+	if m.HasSecretValue() {
+		t.Fatalf("expected routing-only headers to be non-secret")
+	}
+
+	m.Headers["Authorization"] = "Bearer token"
+	if !m.HasSecretValue() {
+		t.Fatalf("expected built-in credential header to be secret without annotation")
+	}
+	if names := m.SecretHeaderNames(); len(names) != 1 || names[0] != "Authorization" {
+		t.Fatalf("expected Authorization as the secret header, got: %#v", names)
+	}
+
+	delete(m.Headers, "Authorization")
+	m.Headers["x-routing-key"] = "internal-value"
+	m.SecretHeaders.Keys = []string{"X-Routing-Key"}
+	if !m.HasSecretValue() {
+		t.Fatalf("expected explicitly marked header to be secret (case-insensitive)")
 	}
 }

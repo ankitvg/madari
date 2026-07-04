@@ -557,7 +557,7 @@ func TestAttachRingConflictsOnEqualUnmanagedEntry(t *testing.T) {
 	}
 }
 
-func TestSyncSkipsManagedRemoteManifest(t *testing.T) {
+func TestSyncApplyRemoteHTTP(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, ".gemini", "settings.json")
 	statePath := filepath.Join(tmp, "state", "gemini-managed.json")
@@ -581,6 +581,7 @@ func TestSyncSkipsManagedRemoteManifest(t *testing.T) {
 		Name:      "cloud-sql",
 		Transport: registry.TransportHTTP,
 		URL:       "https://example.com/mcp",
+		Headers:   map[string]string{"x-goog-user-project": "example-project"},
 		Enabled:   true,
 		Clients:   []string{Target},
 	}
@@ -591,20 +592,52 @@ func TestSyncSkipsManagedRemoteManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync failed: %v", err)
 	}
-	if len(result.Added) != 0 || len(result.Updated) != 0 || len(result.Removed) != 0 {
-		t.Fatalf("expected remote manifest to be ineligible until the adapter supports it, got: %+v", result)
+	if len(result.Added) != 1 || result.Added[0] != "cloud-sql" {
+		t.Fatalf("expected remote add result, got: %+v", result)
 	}
 
 	servers := readServers(t, configPath)
-	if _, exists := servers["cloud-sql"]; exists {
-		t.Fatalf("expected remote manifest not to be materialized, got: %#v", servers)
+	got := servers["cloud-sql"]
+	if got.HTTPURL != "https://example.com/mcp" || got.URL != "" || got.Command != "" {
+		t.Fatalf("expected streamable http entry with httpUrl only, got: %#v", got)
+	}
+	if got.Headers["x-goog-user-project"] != "example-project" {
+		t.Fatalf("expected non-secret headers to materialize, got: %#v", got.Headers)
 	}
 	if _, ok := servers["weather"]; !ok {
 		t.Fatalf("expected unmanaged weather entry to be preserved")
 	}
 }
 
-func TestSyncRemoteOnlyDoesNotCreateFiles(t *testing.T) {
+func TestSyncApplyRemoteSSE(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".gemini", "settings.json")
+	statePath := filepath.Join(tmp, "state", "gemini-managed.json")
+
+	remote := registry.Manifest{
+		Name:      "events",
+		Transport: registry.TransportSSE,
+		URL:       "https://example.com/sse",
+		Enabled:   true,
+		Clients:   []string{Target},
+	}
+	result, err := Sync([]registry.Manifest{remote}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+	if len(result.Added) != 1 || result.Added[0] != "events" {
+		t.Fatalf("expected sse add result, got: %+v", result)
+	}
+	got := readServers(t, configPath)["events"]
+	if got.URL != "https://example.com/sse" || got.HTTPURL != "" {
+		t.Fatalf("expected sse entry with url only, got: %#v", got)
+	}
+}
+
+func TestSyncRefusesSecretHeaderAtProjectScope(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, ".gemini", "settings.json")
 	statePath := filepath.Join(tmp, "state", "gemini-managed.json")
@@ -613,6 +646,7 @@ func TestSyncRemoteOnlyDoesNotCreateFiles(t *testing.T) {
 		Name:      "cloud-sql",
 		Transport: registry.TransportHTTP,
 		URL:       "https://example.com/mcp",
+		Headers:   map[string]string{"Authorization": "Bearer sekrit"},
 		Enabled:   true,
 		Clients:   []string{Target},
 	}
@@ -621,16 +655,31 @@ func TestSyncRemoteOnlyDoesNotCreateFiles(t *testing.T) {
 		StatePath:  statePath,
 	})
 	if err != nil {
-		t.Fatalf("sync failed: %v", err)
+		t.Fatalf("project-scope sync failed: %v", err)
 	}
-	if len(result.Added)+len(result.Updated)+len(result.Removed) != 0 {
-		t.Fatalf("expected no-op sync result, got: %+v", result)
+	if len(result.Refused) != 1 || result.Refused[0] != "cloud-sql" {
+		t.Fatalf("expected credential header to refuse at project scope, got: %+v", result)
 	}
 	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected no config file for remote-only no-op sync, got err=%v", err)
+		t.Fatalf("expected no project config for refused-only sync, got err=%v", err)
 	}
-	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected no state file for remote-only no-op sync, got err=%v", err)
+
+	userConfigPath := filepath.Join(tmp, "user-settings.json")
+	userStatePath := filepath.Join(tmp, "state", "gemini-user-managed.json")
+	result, err = Sync([]registry.Manifest{remote}, SyncOptions{
+		ConfigPath: userConfigPath,
+		StatePath:  userStatePath,
+		Scope:      clients.ScopeUser,
+	})
+	if err != nil {
+		t.Fatalf("user-scope sync failed: %v", err)
+	}
+	if len(result.Added) != 1 || len(result.Refused) != 0 {
+		t.Fatalf("expected user scope to materialize secret headers, got: %+v", result)
+	}
+	got := readServers(t, userConfigPath)["cloud-sql"]
+	if got.Headers["Authorization"] != "Bearer sekrit" {
+		t.Fatalf("expected secret header in user-scoped config, got: %#v", got.Headers)
 	}
 }
 

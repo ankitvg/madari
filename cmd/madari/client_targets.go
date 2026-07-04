@@ -51,7 +51,7 @@ var clientTargets = []clientTarget{
 	{
 		target:             gemini.Target,
 		syncAdapter:        gemini.Adapter{},
-		ringConfigRenderer: renderMCPServersJSON,
+		ringConfigRenderer: renderGeminiJSON,
 		userScope:          true,
 		skillRoots: skillTargetRoots{
 			project: defaultProjectSkillRoot(".gemini", "skills"),

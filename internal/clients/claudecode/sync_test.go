@@ -1189,7 +1189,7 @@ func assertJSONEqual(t *testing.T, want, got []byte) {
 	}
 }
 
-func TestSyncSkipsManagedRemoteManifest(t *testing.T) {
+func TestSyncApplyRemoteHTTP(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, ".mcp.json")
 	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
@@ -1210,6 +1210,7 @@ func TestSyncSkipsManagedRemoteManifest(t *testing.T) {
 		Name:      "cloud-sql",
 		Transport: registry.TransportHTTP,
 		URL:       "https://example.com/mcp",
+		Headers:   map[string]string{"x-goog-user-project": "example-project"},
 		Enabled:   true,
 		Clients:   []string{Target},
 	}
@@ -1220,20 +1221,64 @@ func TestSyncSkipsManagedRemoteManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sync failed: %v", err)
 	}
-	if len(result.Added) != 0 || len(result.Updated) != 0 || len(result.Removed) != 0 {
-		t.Fatalf("expected remote manifest to be ineligible until the adapter supports it, got: %+v", result)
+	if len(result.Added) != 1 || result.Added[0] != "cloud-sql" {
+		t.Fatalf("expected remote add result, got: %+v", result)
 	}
 
 	servers := readServers(t, configPath)
-	if _, exists := servers["cloud-sql"]; exists {
-		t.Fatalf("expected remote manifest not to be materialized, got: %#v", servers)
+	got := servers["cloud-sql"]
+	if got.Type != "http" || got.URL != "https://example.com/mcp" || got.Command != "" {
+		t.Fatalf("expected type/url remote entry without command, got: %#v", got)
+	}
+	if got.Headers["x-goog-user-project"] != "example-project" {
+		t.Fatalf("expected non-secret headers to materialize, got: %#v", got.Headers)
 	}
 	if _, ok := servers["weather"]; !ok {
 		t.Fatalf("expected unmanaged weather entry to be preserved")
 	}
+
+	remote.URL = "https://example.com/mcp/v2"
+	result, err = Sync([]registry.Manifest{remote}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("sync url change failed: %v", err)
+	}
+	if len(result.Updated) != 1 || result.Updated[0] != "cloud-sql" {
+		t.Fatalf("expected url change to be an update, got: %+v", result)
+	}
 }
 
-func TestSyncRemoteOnlyDoesNotCreateFiles(t *testing.T) {
+func TestSyncApplyRemoteSSE(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+
+	remote := registry.Manifest{
+		Name:      "events",
+		Transport: registry.TransportSSE,
+		URL:       "https://example.com/sse",
+		Enabled:   true,
+		Clients:   []string{Target},
+	}
+	result, err := Sync([]registry.Manifest{remote}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+	if len(result.Added) != 1 || result.Added[0] != "events" {
+		t.Fatalf("expected sse add result, got: %+v", result)
+	}
+	got := readServers(t, configPath)["events"]
+	if got.Type != "sse" || got.URL != "https://example.com/sse" {
+		t.Fatalf("expected sse type/url entry, got: %#v", got)
+	}
+}
+
+func TestSyncRefusesSecretHeaderAtProjectScope(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, ".mcp.json")
 	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
@@ -1242,6 +1287,7 @@ func TestSyncRemoteOnlyDoesNotCreateFiles(t *testing.T) {
 		Name:      "cloud-sql",
 		Transport: registry.TransportHTTP,
 		URL:       "https://example.com/mcp",
+		Headers:   map[string]string{"Authorization": "Bearer sekrit"},
 		Enabled:   true,
 		Clients:   []string{Target},
 	}
@@ -1250,16 +1296,70 @@ func TestSyncRemoteOnlyDoesNotCreateFiles(t *testing.T) {
 		StatePath:  statePath,
 	})
 	if err != nil {
-		t.Fatalf("sync failed: %v", err)
+		t.Fatalf("project-scope sync failed: %v", err)
 	}
-	if len(result.Added)+len(result.Updated)+len(result.Removed) != 0 {
-		t.Fatalf("expected no-op sync result, got: %+v", result)
+	if len(result.Refused) != 1 || result.Refused[0] != "cloud-sql" {
+		t.Fatalf("expected credential header to refuse at project scope, got: %+v", result)
 	}
 	if _, err := os.Stat(configPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected no config file for remote-only no-op sync, got err=%v", err)
+		t.Fatalf("expected no project config for refused-only sync, got err=%v", err)
 	}
-	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("expected no state file for remote-only no-op sync, got err=%v", err)
+
+	userConfigPath := filepath.Join(tmp, "claude.json")
+	userStatePath := filepath.Join(tmp, "state", "claude-code-user-managed.json")
+	result, err = Sync([]registry.Manifest{remote}, SyncOptions{
+		ConfigPath: userConfigPath,
+		StatePath:  userStatePath,
+		Scope:      clients.ScopeUser,
+	})
+	if err != nil {
+		t.Fatalf("user-scope sync failed: %v", err)
+	}
+	if len(result.Added) != 1 || len(result.Refused) != 0 {
+		t.Fatalf("expected user scope to materialize secret headers, got: %+v", result)
+	}
+	got := readServers(t, userConfigPath)["cloud-sql"]
+	if got.Headers["Authorization"] != "Bearer sekrit" {
+		t.Fatalf("expected secret header in user-scoped config, got: %#v", got.Headers)
+	}
+}
+
+func TestSyncScrubsSecretHeaderFromProjectConfig(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, ".mcp.json")
+	statePath := filepath.Join(tmp, "state", "claude-code-managed.json")
+
+	remote := registry.Manifest{
+		Name:      "cloud-sql",
+		Transport: registry.TransportHTTP,
+		URL:       "https://example.com/mcp",
+		Headers:   map[string]string{"x-goog-user-project": "example-project"},
+		Enabled:   true,
+		Clients:   []string{Target},
+	}
+	if _, err := Sync([]registry.Manifest{remote}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	}); err != nil {
+		t.Fatalf("setup sync failed: %v", err)
+	}
+
+	// The header set later gains a credential: the managed entry must be
+	// removed from the repo config on the next sync, scrubbing the value.
+	remote.Headers["Authorization"] = "Bearer sekrit"
+	result, err := Sync([]registry.Manifest{remote}, SyncOptions{
+		ConfigPath: configPath,
+		StatePath:  statePath,
+	})
+	if err != nil {
+		t.Fatalf("scrub sync failed: %v", err)
+	}
+	if len(result.Refused) != 1 || len(result.Removed) != 1 {
+		t.Fatalf("expected refusal plus removal to scrub, got: %+v", result)
+	}
+	servers := readServers(t, configPath)
+	if _, exists := servers["cloud-sql"]; exists {
+		t.Fatalf("expected secret-header entry scrubbed from project config, got: %#v", servers)
 	}
 }
 

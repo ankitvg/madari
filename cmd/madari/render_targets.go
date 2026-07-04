@@ -5,6 +5,8 @@ import (
 	"io"
 	"sort"
 	"strings"
+
+	"github.com/ankitvg/madari/internal/registry"
 )
 
 // renderedServer is the self-contained client config entry ring render emits.
@@ -14,7 +16,6 @@ type renderedServer struct {
 	Args           []string          `json:"args,omitempty"`
 	URL            string            `json:"url,omitempty"`
 	Headers        map[string]string `json:"headers,omitempty"`
-	TimeoutMS      int               `json:"timeout,omitempty"`
 	OAuthResource  string            `json:"-"`
 	Env            map[string]string `json:"env,omitempty"`
 	RuntimeEnvKeys []string          `json:"-"`
@@ -41,6 +42,38 @@ func supportedRingRenderTargets() []string {
 
 func renderMCPServersJSON(out io.Writer, servers map[string]renderedServer) error {
 	return writeJSON(out, map[string]map[string]renderedServer{"mcpServers": servers})
+}
+
+// geminiRenderedServer mirrors gemini-cli's settings.json server shape:
+// remote transports are distinguished by field (httpUrl = Streamable HTTP,
+// url = SSE) rather than a type key.
+type geminiRenderedServer struct {
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	HTTPURL string            `json:"httpUrl,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+}
+
+func renderGeminiJSON(out io.Writer, servers map[string]renderedServer) error {
+	shaped := make(map[string]geminiRenderedServer, len(servers))
+	for name, entry := range servers {
+		server := geminiRenderedServer{
+			Command: entry.Command,
+			Args:    entry.Args,
+			Headers: entry.Headers,
+			Env:     entry.Env,
+		}
+		switch entry.Transport {
+		case registry.TransportHTTP:
+			server.HTTPURL = entry.URL
+		case registry.TransportSSE:
+			server.URL = entry.URL
+		}
+		shaped[name] = server
+	}
+	return writeJSON(out, map[string]map[string]geminiRenderedServer{"mcpServers": shaped})
 }
 
 func renderCodexTOML(out io.Writer, servers map[string]renderedServer) error {

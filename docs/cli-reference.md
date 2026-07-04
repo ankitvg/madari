@@ -16,11 +16,13 @@ madari remove <name>
 `madari add` defaults to `stdio`, where `--command` is required and is resolved
 to an absolute executable path. Remote manifests use `--transport http` or
 `--transport sse` with `--url`; optional remote metadata includes `--header`,
-`--timeout-ms`, and `--oauth-resource`. Remote `http` manifests materialize
-for `codex`; `sse` manifests and the other sync and render targets skip them
-until per-client support lands. `madari list` and `madari doctor` show each
-server's transport and endpoint so remote entries are visible where
-materialization is pending.
+`--secret-header`, `--timeout-ms`, and `--oauth-resource`. Remote manifests
+materialize for `codex` (`http` only), `claude-code`, and `gemini` (`http`
+and `sse`); the remaining targets and transports skip them until per-client
+support lands. Well-known credential headers, and names marked with
+`--secret-header`, are refused in repo-scoped configs. `madari list` and
+`madari doctor` show each server's transport and endpoint so remote entries
+are visible where materialization is pending.
 
 ## Install Workflow
 
@@ -51,9 +53,16 @@ madari sync vibe
 (`.mcp.json` or `~/.claude.json`) and `gemini` (`.gemini/settings.json` or
 `~/.gemini/settings.json`). `project` is the default. Each scope tracks its
 managed entries independently. Servers carrying static values for
-`[secret_env]` keys are refused per entry at project scope (other servers
-keep syncing; a previously materialized secret entry is scrubbed) and must
-sync with `--scope user`.
+`[secret_env]` keys — or remote header values for credential headers and
+`[secret_headers]` names — are refused per entry at project scope (other
+servers keep syncing; a previously materialized secret entry is scrubbed)
+and must sync with `--scope user`.
+
+`claude-code` and `gemini` also materialize managed remote entries.
+Claude Code writes `type`/`url` entries with `headers` into its config;
+Gemini writes `httpUrl` (Streamable HTTP) or `url` (SSE) entries with
+`headers`. `oauth_resource` and `timeout_ms` have no equivalent in either
+client and are not emitted.
 
 `codex` sync targets Codex's user config (`$CODEX_HOME/config.toml`, or
 `~/.codex/config.toml` when `CODEX_HOME` is unset). Static non-secret `[env]`
@@ -147,9 +156,12 @@ Render targets are independent from sync adapters. `claude-code`,
 Codex render output also emits `env_vars = [...]` for `[required_env]` and
 `[secret_env]` keys so runtime-provided environment values can be forwarded.
 Codex render also emits remote Streamable HTTP members as `url` entries with
-optional `oauth_resource` and `[headers]` as `http_headers`. SSE members and
-the other render targets omit remote ring members with warnings until
-per-client support lands.
+optional `oauth_resource` and `[headers]` as `http_headers`. Claude Code
+render emits remote members as `type`/`url`/`headers`; Gemini render emits
+`httpUrl` (Streamable HTTP) or `url` (SSE) with `headers`. Secret header
+values are never emitted by render — the warning names the headers to
+provide manually. Remote members are omitted with warnings for targets or
+transports without support (codex SSE, claude-desktop, vibe).
 Ring skill members are not embedded in MCP render output; use `ring attach`
 for native skill materialization.
 Ephemeral-session recipe:

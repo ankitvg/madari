@@ -418,11 +418,20 @@ func (a cliApp) cmdRingRender(args []string) error {
 			if manifest.TimeoutMS > 0 {
 				fmt.Fprintf(a.stderr, "warning: ring member %s: timeout_ms is not emitted for %s render\n", member, target)
 			}
+			headers := copyStringMap(manifest.Headers)
+			if secretNames := manifest.SecretHeaderNames(); len(secretNames) > 0 {
+				// Render output is for sharing/ephemeral use: secret header
+				// values are never emitted, mirroring secret_env render
+				// policy. The warning names the headers to provide manually.
+				for _, name := range secretNames {
+					delete(headers, name)
+				}
+				fmt.Fprintf(a.stderr, "warning: ring member %s: secret header values omitted from render: %s\n", member, strings.Join(secretNames, ", "))
+			}
 			servers[member] = renderedServer{
 				Transport:     manifest.TransportType(),
 				URL:           manifest.URL,
-				Headers:       copyStringMap(manifest.Headers),
-				TimeoutMS:     manifest.TimeoutMS,
+				Headers:       headers,
 				OAuthResource: manifest.OAuthResource,
 			}
 			continue

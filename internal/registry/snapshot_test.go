@@ -215,6 +215,25 @@ func TestParseSnapshotV6RejectsRemoteServers(t *testing.T) {
 	}
 }
 
+func TestParseSnapshotV7RejectsSecretHeaders(t *testing.T) {
+	payload := []byte(`{"version":7,"servers":[{"name":"cloud-sql","transport":"http","url":"https://example.com/mcp","secret_headers":{"keys":["x-routing-key"]},"enabled":true,"clients":["claude-code"]}]}`)
+	_, err := ParseSnapshotJSON(payload)
+	if err == nil || !strings.Contains(err.Error(), "does not support secret_headers") {
+		t.Fatalf("expected v7 secret-headers error, got: %v", err)
+	}
+}
+
+func TestParseSnapshotV8AcceptsSecretHeaders(t *testing.T) {
+	payload := []byte(`{"version":8,"servers":[{"name":"cloud-sql","transport":"http","url":"https://example.com/mcp","secret_headers":{"keys":["x-routing-key"]},"enabled":true,"clients":["claude-code"]}]}`)
+	snapshot, err := ParseSnapshotJSON(payload)
+	if err != nil {
+		t.Fatalf("parse v8 snapshot with secret_headers: %v", err)
+	}
+	if len(snapshot.Servers) != 1 || len(snapshot.Servers[0].SecretHeaders.Keys) != 1 {
+		t.Fatalf("expected secret_headers to parse, got: %#v", snapshot.Servers)
+	}
+}
+
 func TestParseSnapshotV7AcceptsRemoteServers(t *testing.T) {
 	payload := []byte(`{"version":7,"servers":[{"name":"cloud-sql","transport":"http","url":"https://example.com/mcp","enabled":true,"clients":["codex"]}]}`)
 	snapshot, err := ParseSnapshotJSON(payload)

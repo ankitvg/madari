@@ -77,7 +77,9 @@ func TestParseAndMarshalRemoteManifestRoundTrip(t *testing.T) {
 		Description:   "Cloud SQL remote MCP",
 		Headers: map[string]string{
 			"x-goog-user-project": "example-project",
+			"x-routing-key":       "internal-value",
 		},
+		SecretHeaders: SecretHeaders{Keys: []string{"x-routing-key"}},
 	}
 
 	encoded, err := MarshalManifest(in)
@@ -91,6 +93,8 @@ func TestParseAndMarshalRemoteManifestRoundTrip(t *testing.T) {
 		`oauth_resource = "https://sqladmin.googleapis.com/"`,
 		"[headers]",
 		`x-goog-user-project = "example-project"`,
+		"[secret_headers]",
+		`keys = ["x-routing-key"]`,
 	} {
 		if !strings.Contains(string(encoded), want) {
 			t.Fatalf("expected encoded manifest to contain %q, got:\n%s", want, encoded)
@@ -109,6 +113,9 @@ func TestParseAndMarshalRemoteManifestRoundTrip(t *testing.T) {
 	}
 	if out.Headers["x-goog-user-project"] != "example-project" {
 		t.Fatalf("expected headers to survive roundtrip, got: %#v", out.Headers)
+	}
+	if len(out.SecretHeaders.Keys) != 1 || out.SecretHeaders.Keys[0] != "x-routing-key" {
+		t.Fatalf("expected secret_headers to survive roundtrip, got: %#v", out.SecretHeaders)
 	}
 }
 
