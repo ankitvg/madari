@@ -1,0 +1,6 @@
+summary = "Read-only Cloud SQL inspection through Google's official remote MCP server."
+good_for = ["row counts and grouped aggregates", "schema and metadata checks", "bounded data samples", "debugging reports answered by read-only SQL"]
+not_for = ["schema changes or data writes", "database user or IAM administration", "backups, restores, and imports", "instance lifecycle operations"]
+required_context = ["GCP project, instance, and database (or the MADARI_CLOUDSQL_* environment variables)"]
+optional_context = ["SQL dialect", "read replica preference for heavier analysis"]
+expected_outputs = ["the SQL that passed the bundled read-only checker", "result summary with row count and any truncation or timeout signal", "the target context used (project, instance, database)"]
