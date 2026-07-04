@@ -1,6 +1,6 @@
-summary = "Read-only Cloud SQL inspection through Google's official remote MCP server."
-good_for = ["row counts and grouped aggregates", "schema and metadata checks", "bounded data samples", "debugging reports answered by read-only SQL"]
-not_for = ["schema changes or data writes", "database user or IAM administration", "backups, restores, and imports", "instance lifecycle operations"]
-required_context = ["GCP project, instance, and database (or the MADARI_CLOUDSQL_* environment variables)"]
-optional_context = ["SQL dialect", "read replica preference for heavier analysis"]
-expected_outputs = ["the SQL that passed the bundled read-only checker", "result summary with row count and any truncation or timeout signal", "the target context used (project, instance, database)"]
+summary = "Read-only Cloud SQL inspection for known targets, using Google's remote MCP server plus a bounded query policy."
+good_for = ["schema and metadata lookup for a specified project, instance, and database", "row counts, grouped aggregates, and trend/debugging questions that can be answered with read-only SQL", "small bounded samples that avoid secrets and unnecessary PII", "incident or product questions where the desired output is a concise report plus the SQL used"]
+not_for = ["schema changes, data writes, migrations, or stored procedure execution", "database user, IAM, backup, restore, import, or instance administration", "unbounded exports, table dumps, broad scans, or ad hoc data scraping", "credential, token, secret, or customer-data hunting beyond the user's explicit need"]
+required_context = ["GCP project, Cloud SQL instance, and database", "SQL dialect or engine when it is not obvious", "the business question or debugging hypothesis to answer"]
+optional_context = ["region, read replica preference, or connection target", "row limits, time windows, tenant/customer filters, and sensitive columns to avoid", "preferred output format such as summary, table, or query-only"]
+expected_outputs = ["target context used (project, instance, database, and dialect if known)", "the SQL that passed the bundled read-only checker", "bounded result summary with row count, limits, truncation, or timeout signals", "caveats and recommended next read-only follow-up when the first query is inconclusive"]

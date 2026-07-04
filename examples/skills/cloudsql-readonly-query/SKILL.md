@@ -1,6 +1,6 @@
 ---
 name: cloudsql-readonly-query
-description: Query Cloud SQL through the official remote MCP server using read-only tools and bounded result sets.
+description: Inspect a known Cloud SQL target with read-only SQL, bounded result sets, and explicit query reporting.
 license: Apache-2.0
 compatibility: Codex, Claude Code, or Gemini with the cloud-sql MCP server managed by Madari.
 metadata:
@@ -10,28 +10,37 @@ allowed-tools: mcp__cloud-sql__list_instances,mcp__cloud-sql__get_instance,mcp__
 
 # Cloud SQL Read-Only Query
 
-Use this skill when the user asks for Cloud SQL inspection, counts, samples, reports, or debugging that can be answered with read-only SQL.
+Use this skill when the user asks for Cloud SQL inspection, counts, schema checks, bounded samples, or debugging reports that can be answered with read-only SQL against a known target.
 
-The `cloud-sql` MCP server advertises broader Cloud SQL tools. For this skill, only use:
+This skill is intentionally narrower than the full `cloud-sql` MCP server. Use only:
 
 - `list_instances`
 - `get_instance`
 - `execute_sql_readonly`
 
-Do not use `execute_sql`, instance admin tools, user admin tools, backup/restore/import tools, or upgrade tools.
+Do not use `execute_sql`, instance admin tools, user admin tools, backup/restore/import tools, upgrade tools, or any tool that changes Cloud SQL state.
 
-Before running SQL (script paths are relative to this skill's directory):
+Workflow (script paths are relative to this skill's directory):
 
 1. Read `references/QUERY_POLICY.md`.
-2. Run `sh scripts/cloudsql_target_context.sh` when target context is not already explicit.
-3. Draft the SQL and check it with `python3 scripts/sql_readonly_check.py`.
-4. Use `execute_sql_readonly` only after the checker passes.
+2. Establish the target project, instance, database, and dialect from the prompt or by running `sh scripts/cloudsql_target_context.sh`.
+3. If the target or question is ambiguous, ask for the missing context before querying.
+4. Draft the narrowest SQL that answers the question and check it with `python3 scripts/sql_readonly_check.py`.
+5. Use `execute_sql_readonly` only after the checker prints `OK`.
 
 Query defaults:
 
-- Prefer `SELECT`, `WITH`, `SHOW`, `DESCRIBE`, and metadata inspection.
-- Include a `LIMIT` for exploratory row queries.
+- Prefer metadata queries, counts, grouped aggregates, and narrow projections.
+- Include `LIMIT 100` or stricter for exploratory row queries.
 - Prefer counts, aggregates, and narrow projections over unrestricted table scans.
-- Report the project, instance, database, SQL, row count, and any truncation or timeout signal in the final answer.
+- Avoid columns that are likely to contain credentials, tokens, secrets, or unnecessary PII.
+- Prefer read replicas for routine analysis when the user gives that option.
 
-If the task requires schema changes, writes, user changes, backups, imports, or IAM setup, stop and explain that this ring is read-only.
+Final response requirements:
+
+- Report the project, instance, database, and dialect when known.
+- Include the SQL that passed the checker.
+- Summarize row count, limits, truncation, timeout, or partial-result signals.
+- Call out caveats and suggest the next read-only follow-up when the result is inconclusive.
+
+If the task requires schema changes, writes, migrations, stored procedure execution, user changes, backups, imports, exports, or IAM setup, stop and explain that this ring is read-only.

@@ -1,21 +1,21 @@
 # cloudsql-readonly Ring
 
-`cloudsql-readonly` is a ring for querying Cloud SQL through Google's
-official remote MCP server. It is designed for routine read-only database
-inspection: counts, samples, schema checks, debugging reports, and small
-analytical queries. It works with every Madari client that materializes
+`cloudsql-readonly` is a ring for inspecting known Cloud SQL targets through
+Google's official remote MCP server. It is designed for routine read-only
+database work: schema checks, counts, grouped aggregates, bounded samples, and
+small debugging reports. It works with every Madari client that materializes
 remote MCP servers: `codex`, `claude-code`, and `gemini`.
 
 The ring contains:
 
 - `cloud-sql`: the remote Cloud SQL MCP server at
   `https://sqladmin.googleapis.com/mcp`
-- `cloudsql-readonly-query`: a local skill package with query rules, a target
-  context helper, a SQL read-only checker, and a short query policy
+- `cloudsql-readonly-query`: a local skill package with target selection,
+  query rules, a SQL read-only checker, and a short policy for bounded results
 
 It intentionally does not include `gcloud-mcp`, fetch, time, filesystem, or
 Database Insights. Those are useful capabilities, but they broaden the tool
-surface beyond everyday read-only database querying.
+surface beyond everyday read-only inspection.
 
 ## Setup
 
@@ -36,7 +36,7 @@ madari add cloud-sql \
 madari ring create cloudsql-readonly \
   --member cloud-sql \
   --skill cloudsql-readonly-query \
-  --description "Read-only Cloud SQL querying"
+  --description "Read-only Cloud SQL inspection"
 
 madari ring contract set cloudsql-readonly \
   --file examples/rings/cloudsql-readonly.contract.toml
@@ -139,7 +139,8 @@ A good prompt (any attached client) is:
 ```text
 Use the cloudsql-readonly-query skill and the cloud-sql MCP server. Inspect the
 configured target context, check this SQL with the bundled read-only checker,
-then run it with execute_sql_readonly:
+then run it with execute_sql_readonly. Include the target context, SQL, row
+count, and any truncation or timeout signal in the final answer:
 
 SELECT COUNT(*) FROM users;
 ```
@@ -159,7 +160,7 @@ Use layered controls:
 - Consider a Google Cloud IAM deny policy that blocks non-read-only MCP tools
   using `tool.isReadOnly`.
 - In prompts and skills, allow only `list_instances`, `get_instance`, and
-  `execute_sql_readonly`.
+  `execute_sql_readonly`, and keep exploratory queries bounded.
 
 The official remote MCP path does not require Cloud SQL Auth Proxy. Auth proxy
 or connector setup is only needed for local database clients or local MCP
