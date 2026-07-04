@@ -3,5 +3,5 @@ transport = "http"
 url = "https://sqladmin.googleapis.com/mcp"
 oauth_resource = "https://sqladmin.googleapis.com/"
 enabled = true
-clients = ["codex", "claude-code", "gemini"]
+clients = ["codex", "claude-code"]
 description = "Official Cloud SQL remote MCP server"

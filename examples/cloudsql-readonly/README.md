@@ -3,8 +3,13 @@
 `cloudsql-readonly` is a self-contained example for inspecting known Cloud SQL
 targets through Google's official remote MCP server. It is designed for routine
 read-only database work: schema checks, counts, grouped aggregates, bounded
-samples, and small debugging reports. It works with every Madari client that
-materializes remote MCP servers: `codex`, `claude-code`, and `gemini`.
+samples, and small debugging reports.
+
+The Madari-managed setup in this example targets `codex` and `claude-code`.
+Gemini CLI can use the same Cloud SQL endpoint and skill guidance, but Google's
+Cloud SQL MCP setup requires Gemini-specific Google credentials and OAuth
+fields that Madari does not model yet; see the Gemini section below before
+using this ring with Gemini.
 
 The example contains:
 
@@ -32,7 +37,6 @@ madari add cloud-sql \
   --url https://sqladmin.googleapis.com/mcp \
   --client codex \
   --client claude-code \
-  --client gemini \
   --oauth-resource https://sqladmin.googleapis.com/
 
 madari ring create cloudsql-readonly \
@@ -77,20 +81,34 @@ usable directly via `claude --mcp-config <(...)`):
 }
 ```
 
-Gemini (`madari ring render cloudsql-readonly --client gemini`):
+Gemini CLI requires additional auth fields. Until Madari models those fields
+directly, configure Gemini as an extension instead of relying on `madari ring
+attach` for this server. Save a file such as
+`~/.gemini/extensions/cloudsql-readonly/gemini-extension.json`:
 
 ```json
 {
+  "name": "cloudsql-readonly",
+  "version": "1.0.0",
   "mcpServers": {
     "cloud-sql": {
-      "httpUrl": "https://sqladmin.googleapis.com/mcp"
+      "httpUrl": "https://sqladmin.googleapis.com/mcp",
+      "authProviderType": "google_credentials",
+      "oauth": {
+        "scopes": ["https://www.googleapis.com/auth/cloud-platform"]
+      },
+      "timeout": 30000,
+      "headers": {
+        "x-goog-user-project": "PROJECT_ID"
+      }
     }
   }
 }
 ```
 
-`oauth_resource` is emitted for Codex only; Claude Code and Gemini run their
-own OAuth flows for remote servers, so their entries carry just the URL.
+Replace `PROJECT_ID` with the Google Cloud project used for quota and billing.
+`oauth_resource` is emitted for Codex only; Claude Code owns its remote-server
+OAuth flow, and Gemini needs the Google credentials extension fields above.
 
 Attach the ring to the client you want it persisted in:
 
@@ -102,9 +120,8 @@ madari ring status
 ```
 
 The skill is materialized as a native skill package on attach (Codex under
-`.agents/skills/`, Claude Code under `.claude/skills/`, Gemini under
-`.gemini/skills/`). `ring render` remains MCP-config-only and does not embed
-skill files.
+`.agents/skills/`, Claude Code under `.claude/skills/`). `ring render` remains
+MCP-config-only and does not embed skill files.
 
 ## Authentication
 
@@ -112,6 +129,13 @@ Madari configures the server entry; each client owns its OAuth token lifecycle.
 After attaching, authenticate once per client, for example
 `codex mcp login cloud-sql`, or the `/mcp` menu in Claude Code. Nothing happens
 at attach time; the client prompts on first connection.
+
+Authentication is not enough for query execution. Before using
+`execute_sql_readonly`, the target instance must allow Data API access, MySQL
+or PostgreSQL IAM database authentication must be enabled, and the caller must
+exist as an IAM database user or service account with enough IAM and database
+privileges for read-only SQL. The `execute_sql_readonly` tool is not supported
+for SQL Server targets.
 
 ## Using the Ring
 

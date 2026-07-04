@@ -1,8 +1,8 @@
 ---
 name: cloudsql-readonly-query
-description: Inspect a known Cloud SQL target with read-only SQL, bounded result sets, and explicit query reporting.
+description: Inspect a known Cloud SQL MySQL or PostgreSQL target with read-only SQL, bounded result sets, and explicit query reporting.
 license: Apache-2.0
-compatibility: Codex, Claude Code, or Gemini with the cloud-sql MCP server managed by Madari.
+compatibility: Codex or Claude Code with the cloud-sql MCP server managed by Madari; Gemini requires equivalent Cloud SQL MCP configuration with Google credentials auth fields.
 metadata:
   ring: cloudsql-readonly
 allowed-tools: mcp__cloud-sql__list_instances,mcp__cloud-sql__get_instance,mcp__cloud-sql__execute_sql_readonly,Bash(python3 scripts/sql_readonly_check.py:*),Bash(sh scripts/cloudsql_target_context.sh:*)
@@ -10,7 +10,7 @@ allowed-tools: mcp__cloud-sql__list_instances,mcp__cloud-sql__get_instance,mcp__
 
 # Cloud SQL Read-Only Query
 
-Use this skill when the user asks for Cloud SQL inspection, counts, schema checks, bounded samples, or debugging reports that can be answered with read-only SQL against a known target.
+Use this skill when the user asks for Cloud SQL MySQL or PostgreSQL inspection, counts, schema checks, bounded samples, or debugging reports that can be answered with read-only SQL against a known target.
 
 This skill is intentionally narrower than the full `cloud-sql` MCP server. Use only:
 
@@ -43,4 +43,4 @@ Final response requirements:
 - Summarize row count, limits, truncation, timeout, or partial-result signals.
 - Call out caveats and suggest the next read-only follow-up when the result is inconclusive.
 
-If the task requires schema changes, writes, migrations, stored procedure execution, user changes, backups, imports, exports, or IAM setup, stop and explain that this ring is read-only.
+If the target is SQL Server, stop and explain that `execute_sql_readonly` is not supported for SQL Server. If the task requires schema changes, writes, migrations, stored procedure execution, user changes, backups, imports, exports, or IAM setup, stop and explain that this ring is read-only.
