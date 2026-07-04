@@ -63,6 +63,20 @@ madari add linear \
 madari sync claude-code --scope user
 ```
 
+Remote servers that expect a bearer token from the runtime environment can
+store only the env var name. Codex materializes this as
+`bearer_token_env_var`, keeping the token value out of Madari and repo files:
+
+```bash
+madari add cloud-sql \
+  --transport http \
+  --url https://sqladmin.googleapis.com/mcp \
+  --bearer-token-env-var CLOUDSQL_MCP_TOKEN \
+  --client codex
+
+madari sync codex
+```
+
 Create a ring when a few capabilities belong together:
 
 ```bash
@@ -122,6 +136,8 @@ is useful for temporary sessions and experiments.
 - Remote header values for credential headers (`Authorization`, api-key and
   token variants) and `--secret-header` names follow the same policy, and
   `ring render` never emits them
+- Bearer token env references store only the env var name; the token value
+  stays in the runtime environment
 - Diagnostics through `madari doctor`, `madari status`, and `madari ring status`
 
 ## Supported Clients
@@ -136,7 +152,8 @@ Madari can sync MCP servers for:
 
 Remote (`http`/`sse`) servers currently materialize for `claude-code` and
 `gemini` (both transports) and `codex` (`http` only); other targets store
-remote manifests and report them as pending.
+remote manifests and report them as pending. Remote entries that require
+`bearer_token_env_var` currently materialize only for `codex`.
 
 Madari can materialize skills for:
 

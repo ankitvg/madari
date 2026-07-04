@@ -19,6 +19,8 @@ Each managed server is stored as a TOML document.
   milliseconds. Emitted only for clients that support it.
 - `oauth_resource` (string, optional for `http`/`sse`): OAuth resource value
   for clients that support it.
+- `bearer_token_env_var` (string, optional for `http`/`sse`): runtime env key
+  containing a bearer token for clients that support env-referenced tokens.
 - `enabled` (bool, required): whether this server should be synced into clients.
 - `clients` (array of strings, required): client IDs.
 - `description` (string, optional): friendly description.
@@ -35,12 +37,19 @@ Known client IDs:
 sync-capable today. All are also render targets for `madari ring render`.
 Remote materialization is per client and per transport:
 
-- `codex`: `http` only, as native `url` entries plus optional OAuth metadata
-  and `[headers]` as `http_headers`.
+- `codex`: `http` only, as native `url` entries plus optional OAuth metadata,
+  optional `bearer_token_env_var`, and `[headers]` as `http_headers`.
 - `claude-code`: `http` and `sse`, as `type`/`url` entries with `headers`.
 - `gemini`: `http` (as `httpUrl`) and `sse` (as `url`), with `headers`.
 - `claude-desktop` and `vibe`: remote entries stay ineligible until their
   auth and config behavior is validated per client.
+
+Remote auth metadata is validated separately from transport support. For
+example, `claude-code` and `gemini` can materialize remote URLs, but entries
+that require `bearer_token_env_var` stay pending for those clients until an
+equivalent auth config shape is validated. `oauth_resource` is for clients and
+servers that support OAuth resource metadata; `bearer_token_env_var` stores
+only the env var name, never the bearer token value.
 
 ### `[headers]`
 
@@ -109,7 +118,7 @@ Remote HTTP server:
 name = "cloud-sql"
 transport = "http"
 url = "https://sqladmin.googleapis.com/mcp"
-oauth_resource = "https://sqladmin.googleapis.com/"
+bearer_token_env_var = "CLOUDSQL_MCP_TOKEN"
 enabled = true
 clients = ["codex"]
 description = "Official Cloud SQL remote MCP server"
@@ -124,6 +133,8 @@ description = "Official Cloud SQL remote MCP server"
 - `url` is required for `http` and `sse`.
 - Remote transports reject `command`, `args`, `[env]`, `[required_env]`, and
   `[secret_env]` because they are local process settings.
+- `bearer_token_env_var` is remote-only and must be a valid env key such as
+  `CLOUDSQL_MCP_TOKEN`.
 - `[secret_headers]` is remote-only; names must be valid header names and
   unique (case-insensitive).
 

@@ -16,13 +16,15 @@ madari remove <name>
 `madari add` defaults to `stdio`, where `--command` is required and is resolved
 to an absolute executable path. Remote manifests use `--transport http` or
 `--transport sse` with `--url`; optional remote metadata includes `--header`,
-`--secret-header`, `--timeout-ms`, and `--oauth-resource`. Remote manifests
-materialize for `codex` (`http` only), `claude-code`, and `gemini` (`http`
-and `sse`); the remaining targets and transports skip them until per-client
-support lands. Well-known credential headers, and names marked with
-`--secret-header`, are refused in repo-scoped configs. `madari list` and
-`madari doctor` show each server's transport and endpoint so remote entries
-are visible where materialization is pending.
+`--secret-header`, `--timeout-ms`, `--oauth-resource`, and
+`--bearer-token-env-var`. Remote manifests materialize for `codex` (`http`
+only), `claude-code`, and `gemini` (`http` and `sse`); the remaining targets,
+transports, and unsupported auth modes skip them until per-client support
+lands. Well-known credential headers, and names marked with `--secret-header`,
+are refused in repo-scoped configs. `--bearer-token-env-var` stores only the
+runtime env key that contains a bearer token. `madari list` and `madari doctor`
+show each server's transport and endpoint so remote entries are visible where
+materialization is pending.
 
 ## Install Workflow
 
@@ -64,7 +66,9 @@ Claude Code writes `type`/`url` entries with `headers` into its config
 Gemini writes `httpUrl` (Streamable HTTP) or `url` (SSE) entries with
 `headers`. `timeout_ms` is carried through as each client's per-server
 `timeout` field (milliseconds). `oauth_resource` has no equivalent in either
-client and is not emitted.
+client and is not emitted. Remote entries that require
+`bearer_token_env_var` stay pending for these clients until an equivalent
+auth config shape is validated.
 
 `codex` sync targets Codex's user config (`$CODEX_HOME/config.toml`, or
 `~/.codex/config.toml` when `CODEX_HOME` is unset). Static non-secret `[env]`
@@ -72,9 +76,10 @@ values are written under `[mcp_servers.<name>.env]`; `[required_env]` and
 `[secret_env]` keys are forwarded through `env_vars`, and static secret
 values are not written into Codex config. Codex also materializes managed
 remote Streamable HTTP entries as native `url` entries with optional
-`oauth_resource`, and manifest `[headers]` as Codex `http_headers`. `sse`
-manifests stay pending (Codex's documented remote support is Streamable
-HTTP), and `timeout_ms` has no Codex equivalent and is not emitted.
+`oauth_resource`, optional `bearer_token_env_var`, and manifest `[headers]`
+as Codex `http_headers`. `sse` manifests stay pending (Codex's documented
+remote support is Streamable HTTP), and `timeout_ms` has no Codex equivalent
+and is not emitted.
 
 `vibe` sync targets Vibe's user config (`$VIBE_HOME/config.toml`, or
 `~/.vibe/config.toml` when `VIBE_HOME` is unset). Static `[env]` values are
@@ -158,12 +163,13 @@ Render targets are independent from sync adapters. `claude-code`,
 Codex render output also emits `env_vars = [...]` for `[required_env]` and
 `[secret_env]` keys so runtime-provided environment values can be forwarded.
 Codex render also emits remote Streamable HTTP members as `url` entries with
-optional `oauth_resource` and `[headers]` as `http_headers`. Claude Code
-render emits remote members as `type`/`url`/`headers`; Gemini render emits
-`httpUrl` (Streamable HTTP) or `url` (SSE) with `headers`. Secret header
-values are never emitted by render — the warning names the headers to
-provide manually. Remote members are omitted with warnings for targets or
-transports without support (codex SSE, claude-desktop, vibe).
+optional `oauth_resource`, optional `bearer_token_env_var`, and `[headers]`
+as `http_headers`. Claude Code render emits remote members as
+`type`/`url`/`headers`; Gemini render emits `httpUrl` (Streamable HTTP) or
+`url` (SSE) with `headers`. Secret header values are never emitted by render —
+the warning names the headers to provide manually. Remote members are omitted
+with warnings for targets, transports, or auth modes without support (codex
+SSE, bearer-token-env auth outside Codex, claude-desktop, vibe).
 Ring skill members are not embedded in MCP render output; use `ring attach`
 for native skill materialization.
 Ephemeral-session recipe:
