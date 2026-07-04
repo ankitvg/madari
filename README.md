@@ -195,8 +195,9 @@ Madari can materialize skills for:
 - `docs/cli-reference.md`
 - `docs/architecture.md`
 - `docs/manifest-spec.md`
-- `docs/cloudsql-readonly.md` (worked example: a read-only Cloud SQL ring)
 - `docs/troubleshooting.md`
+- `examples/README.md` (self-contained example catalog)
+- `examples/cloudsql-readonly/README.md` (worked example: a read-only Cloud SQL ring)
 
 ## Development
 

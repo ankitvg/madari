@@ -1,17 +1,19 @@
-# cloudsql-readonly Ring
+# cloudsql-readonly
 
-`cloudsql-readonly` is a ring for inspecting known Cloud SQL targets through
-Google's official remote MCP server. It is designed for routine read-only
-database work: schema checks, counts, grouped aggregates, bounded samples, and
-small debugging reports. It works with every Madari client that materializes
-remote MCP servers: `codex`, `claude-code`, and `gemini`.
+`cloudsql-readonly` is a self-contained example for inspecting known Cloud SQL
+targets through Google's official remote MCP server. It is designed for routine
+read-only database work: schema checks, counts, grouped aggregates, bounded
+samples, and small debugging reports. It works with every Madari client that
+materializes remote MCP servers: `codex`, `claude-code`, and `gemini`.
 
-The ring contains:
+The example contains:
 
-- `cloud-sql`: the remote Cloud SQL MCP server at
-  `https://sqladmin.googleapis.com/mcp`
-- `cloudsql-readonly-query`: a local skill package with target selection,
-  query rules, a SQL read-only checker, and a short policy for bounded results
+- `servers/cloud-sql.toml`: the equivalent remote MCP server manifest.
+- `rings/cloudsql-readonly.contract.toml`: advisory delegation metadata for the
+  ring.
+- `skills/cloudsql-readonly-query/`: a local skill package with target
+  selection, query rules, a SQL read-only checker, and a short policy for
+  bounded results.
 
 It intentionally does not include `gcloud-mcp`, fetch, time, filesystem, or
 Database Insights. Those are useful capabilities, but they broaden the tool
@@ -19,11 +21,11 @@ surface beyond everyday read-only inspection.
 
 ## Setup
 
-Add the skill package from this repo, add the remote MCP server, create the
+Add the skill package from this example, add the remote MCP server, create the
 ring, and record its delegation contract:
 
 ```bash
-madari skill add --dir examples/skills/cloudsql-readonly-query
+madari skill add --dir examples/cloudsql-readonly/skills/cloudsql-readonly-query
 
 madari add cloud-sql \
   --transport http \
@@ -39,12 +41,13 @@ madari ring create cloudsql-readonly \
   --description "Read-only Cloud SQL inspection"
 
 madari ring contract set cloudsql-readonly \
-  --file examples/rings/cloudsql-readonly.contract.toml
+  --file examples/cloudsql-readonly/rings/cloudsql-readonly.contract.toml
 ```
 
-The contract is advisory metadata for delegation: when this ring is the right
-tool, what context to provide, and what output to expect. `madari ring
-contract show cloudsql-readonly` prints it.
+The `madari add` command above recreates the server manifest shown in
+`servers/cloud-sql.toml`. The contract is advisory metadata for delegation:
+when this ring is the right tool, what context to provide, and what output to
+expect. `madari ring contract show cloudsql-readonly` prints it.
 
 Render an ephemeral MCP config without attaching anything:
 
@@ -52,7 +55,7 @@ Render an ephemeral MCP config without attaching anything:
 madari ring render cloudsql-readonly --client codex
 ```
 
-Expected render shape per client — Codex:
+Expected render shape per client, Codex:
 
 ```toml
 [mcp_servers.cloud-sql]
@@ -60,8 +63,8 @@ url = "https://sqladmin.googleapis.com/mcp"
 oauth_resource = "https://sqladmin.googleapis.com/"
 ```
 
-Claude Code (`madari ring render cloudsql-readonly --client claude-code`,
-also usable directly via `claude --mcp-config <(...)`):
+Claude Code (`madari ring render cloudsql-readonly --client claude-code`, also
+usable directly via `claude --mcp-config <(...)`):
 
 ```json
 {
@@ -105,10 +108,10 @@ skill files.
 
 ## Authentication
 
-Madari configures the server entry; each client owns its OAuth token
-lifecycle. After attaching, authenticate once per client — for example
-`codex mcp login cloud-sql`, or the `/mcp` menu in Claude Code. Nothing
-happens at attach time; the client prompts on first connection.
+Madari configures the server entry; each client owns its OAuth token lifecycle.
+After attaching, authenticate once per client, for example
+`codex mcp login cloud-sql`, or the `/mcp` menu in Claude Code. Nothing happens
+at attach time; the client prompts on first connection.
 
 ## Using the Ring
 
@@ -124,17 +127,17 @@ export MADARI_CLOUDSQL_DIALECT="postgres"
 The bundled helper prints this context without exposing credentials:
 
 ```bash
-sh examples/skills/cloudsql-readonly-query/scripts/cloudsql_target_context.sh
+sh examples/cloudsql-readonly/skills/cloudsql-readonly-query/scripts/cloudsql_target_context.sh
 ```
 
 Check SQL before asking the model to call `execute_sql_readonly`:
 
 ```bash
-python3 examples/skills/cloudsql-readonly-query/scripts/sql_readonly_check.py \
+python3 examples/cloudsql-readonly/skills/cloudsql-readonly-query/scripts/sql_readonly_check.py \
   'SELECT COUNT(*) FROM users'
 ```
 
-A good prompt (any attached client) is:
+A good prompt in any attached client is:
 
 ```text
 Use the cloudsql-readonly-query skill and the cloud-sql MCP server. Inspect the
