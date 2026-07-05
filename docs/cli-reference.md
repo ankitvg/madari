@@ -111,6 +111,8 @@ madari ring render research --client gemini
 madari ring render research --client codex
 madari ring render research --client vibe
 madari ring status
+madari run codex --ring research --dry-run -- "Use this ring"
+madari run codex --ring research --ring release --dry-run --json -- "Use both rings"
 ```
 
 Rings are named capability sets of servers and skills stored at
@@ -188,6 +190,30 @@ ring was attached to a custom config. `madari doctor` reports
 the same conditions as `ring_issues` (missing ring file = error, dangling
 server member = warning).
 
+## Run Planner
+
+```bash
+madari run <client> --ring <ring> [--ring <ring> ...] --dry-run -- <prompt>
+madari run codex --ring cloudsql-readonly --dry-run -- "Who are the top 5 ebook creators?"
+madari run codex --ring cloudsql-readonly --ring research --dry-run --json -- "Inspect the combined plan"
+```
+
+`madari run` is the launch primitive for using one or more rings with a target
+client. In this first implementation it is planner-only and requires
+`--dry-run`; omitting `--dry-run` exits non-zero with guidance instead of
+starting a client.
+
+The planner resolves every selected ring, deduplicates shared server and skill
+members, validates the selected client can express each required capability,
+checks runtime env keys by name, and reports the launch plan. It does not write
+client config, create managed state, materialize skill packages, or start the
+client yet.
+
+Unlike `ring render`, `run` is fail-closed. A disabled member, missing member,
+unsupported remote transport or auth mode, missing runtime env key, or
+unsupported skill target blocks the plan instead of silently omitting that
+capability.
+
 ## Skills
 
 ```bash
@@ -226,7 +252,7 @@ releases direct ownership and removes the package only when no source owns it
 anymore; it refuses to delete packages modified since Madari last wrote them.
 Ring attach uses the same native skill materialization state with
 `ring:<name>` ownership sources. Skills are not written into MCP client configs
-and are not consumed by `run`.
+and are not materialized by the dry-run planner yet.
 
 ## Diagnostics
 
@@ -259,8 +285,8 @@ the next sync, attach, or detach.
 
 ## JSON Output
 
-`list`, `status`, `doctor`, `sync --dry-run`, `ring list`, `ring show`,
-`ring status`, `skill list`, and `skill show` accept `--json` and emit a
+`list`, `status`, `doctor`, `sync --dry-run`, `run --dry-run`, `ring list`,
+`ring show`, `ring status`, `skill list`, and `skill show` accept `--json` and emit a
 single JSON document on stdout with nothing else.
 Every payload carries the envelope fields `schema_version` (currently `1`)
 and `command`. Field additions are backward-compatible; renames or removals
@@ -273,6 +299,7 @@ madari list --json
 madari status --json
 madari doctor --json
 madari sync claude-code --dry-run --json
+madari run codex --ring research --dry-run --json -- "Use this ring"
 madari ring list --json
 madari ring show research --json
 madari ring status --json
@@ -281,7 +308,7 @@ madari skill show release --json
 ```
 
 `sync --json` requires `--dry-run`; the apply-mode output contract is not yet
-defined.
+defined. `run --json` also requires `--dry-run` until client execution lands.
 
 ### Schemas (schema_version 1)
 
@@ -422,6 +449,45 @@ itself.
   "skills_updated": [],
   "skills_removed": [],
   "skills_unchanged": []
+}
+```
+
+`madari run <client> --ring <ring> --dry-run --json`:
+
+```json
+{
+  "schema_version": 1,
+  "command": "run",
+  "target": "codex",
+  "rings": ["cloudsql-readonly"],
+  "ready": true,
+  "runner_available": false,
+  "prompt_provided": true,
+  "servers": [
+    {
+      "name": "cloud-sql",
+      "transport": "http",
+      "endpoint": "https://sqladmin.googleapis.com/mcp",
+      "status": "ready",
+      "auth": "bearer_token_env_var",
+      "runtime_env": ["CLOUDSQL_MCP_TOKEN"],
+      "rings": ["cloudsql-readonly"],
+      "issues": []
+    }
+  ],
+  "skills": [
+    {
+      "name": "cloudsql-readonly-query",
+      "status": "ready",
+      "rings": ["cloudsql-readonly"],
+      "issues": []
+    }
+  ],
+  "env": [
+    {"key": "CLOUDSQL_MCP_TOKEN", "present": true, "servers": ["cloud-sql"]}
+  ],
+  "warnings": [],
+  "errors": []
 }
 ```
 
