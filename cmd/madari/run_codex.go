@@ -22,18 +22,29 @@ func runCodex(a cliApp, plan runLaunchPlan, prompt string) error {
 	if err != nil {
 		return err
 	}
-	augmentedPrompt, err := codexRunPrompt(a.store, plan.Rings, prompt)
+	workingDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("resolve current working directory: %w", err)
+	}
+	runRoot, err := os.MkdirTemp("", "madari-codex-run-*")
+	if err != nil {
+		return fmt.Errorf("create isolated codex run directory: %w", err)
+	}
+	defer os.RemoveAll(runRoot)
+
+	augmentedPrompt, err := codexRunPrompt(a.store, plan.Rings, prompt, workingDir)
 	if err != nil {
 		return err
 	}
 
-	args := []string{"exec", "--ephemeral", "--ignore-user-config", "--sandbox", "read-only"}
+	args := []string{"exec", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--cd", runRoot}
 	for _, override := range overrides {
 		args = append(args, "-c", override)
 	}
 	args = append(args, "--", augmentedPrompt)
 
 	cmd := exec.Command(codexPath, args...)
+	cmd.Dir = runRoot
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = a.stdout
 	cmd.Stderr = a.stderr
@@ -79,7 +90,7 @@ func codexRunServerConfigValue(manifest registry.Manifest) (string, error) {
 		if secretNames := manifest.SecretHeaderNames(); len(secretNames) > 0 {
 			return "", fmt.Errorf("static secret header values cannot be passed to codex run: %s", strings.Join(secretNames, ", "))
 		}
-		fields := []string{fmt.Sprintf("url = %s", tomlString(manifest.URL))}
+		fields := []string{fmt.Sprintf("url = %s", tomlString(manifest.URL)), "required = true"}
 		if strings.TrimSpace(manifest.OAuthResource) != "" {
 			fields = append(fields, fmt.Sprintf("oauth_resource = %s", tomlString(manifest.OAuthResource)))
 		}
@@ -92,7 +103,7 @@ func codexRunServerConfigValue(manifest registry.Manifest) (string, error) {
 		return "{ " + strings.Join(fields, ", ") + " }", nil
 	}
 
-	fields := []string{fmt.Sprintf("command = %s", tomlString(manifest.Command))}
+	fields := []string{fmt.Sprintf("command = %s", tomlString(manifest.Command)), "required = true"}
 	if len(manifest.Args) > 0 {
 		fields = append(fields, fmt.Sprintf("args = %s", tomlStringArray(manifest.Args)))
 	}
@@ -127,10 +138,12 @@ func codexRunStaticEnv(manifest registry.Manifest) map[string]string {
 	return env
 }
 
-func codexRunPrompt(store *registry.Store, ringNames []string, prompt string) (string, error) {
+func codexRunPrompt(store *registry.Store, ringNames []string, prompt string, workingDir string) (string, error) {
 	var b strings.Builder
 	fmt.Fprintln(&b, "You are running through Madari with MCP capability rings selected for this session.")
 	fmt.Fprintln(&b, "Use only external MCP capabilities made available by the selected Madari rings.")
+	fmt.Fprintf(&b, "Original working directory: %s\n", workingDir)
+	fmt.Fprintln(&b, "Codex is launched from an isolated temporary working directory so project-scoped Codex config cannot add capabilities outside these rings.")
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "Selected rings:")
 	for _, name := range ringNames {

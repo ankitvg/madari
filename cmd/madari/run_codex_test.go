@@ -84,19 +84,33 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 	}
 
 	args := readNULArgs(t, logPath)
-	wantPrefix := []string{"exec", "--ephemeral", "--ignore-user-config", "--sandbox", "read-only"}
+	wantPrefix := []string{"exec", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--cd"}
 	if len(args) < len(wantPrefix) || !slices.Equal(args[:len(wantPrefix)], wantPrefix) {
 		t.Fatalf("unexpected codex args prefix:\n%#v", args)
+	}
+	if len(args) <= len(wantPrefix) {
+		t.Fatalf("expected isolated codex run root after --cd, got %#v", args)
+	}
+	runRoot := args[len(wantPrefix)]
+	pwdPayload, err := os.ReadFile(logPath + ".pwd")
+	if err != nil {
+		t.Fatalf("read fake codex cwd: %v", err)
+	}
+	if got := string(pwdPayload); got != runRoot {
+		t.Fatalf("expected fake codex to run from isolated root %q, got %q", runRoot, got)
+	}
+	if _, err := os.Stat(runRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected isolated codex run root to be cleaned up, stat err=%v", err)
 	}
 	overrides := collectConfigOverrides(args)
 	if len(overrides) != 2 {
 		t.Fatalf("expected two config overrides, got %#v from args %#v", overrides, args)
 	}
-	wantCloud := `mcp_servers.cloud-sql={ url = "https://sqladmin.googleapis.com/mcp", oauth_resource = "https://sqladmin.googleapis.com/", bearer_token_env_var = "CLOUDSQL_MCP_TOKEN", http_headers = { x-goog-user-project = "stewreads" } }`
+	wantCloud := `mcp_servers.cloud-sql={ url = "https://sqladmin.googleapis.com/mcp", required = true, oauth_resource = "https://sqladmin.googleapis.com/", bearer_token_env_var = "CLOUDSQL_MCP_TOKEN", http_headers = { x-goog-user-project = "stewreads" } }`
 	if overrides[0] != wantCloud {
 		t.Fatalf("unexpected cloud-sql override:\nwant %s\ngot  %s", wantCloud, overrides[0])
 	}
-	wantLocal := `mcp_servers.local-helper={ command = ` + tomlString(commandPath) + `, args = ["--stdio"], env_vars = ["LOCAL_SECRET", "LOCAL_TOKEN"], env = { LOCAL_MODE = "test" } }`
+	wantLocal := `mcp_servers.local-helper={ command = ` + tomlString(commandPath) + `, required = true, args = ["--stdio"], env_vars = ["LOCAL_SECRET", "LOCAL_TOKEN"], env = { LOCAL_MODE = "test" } }`
 	if overrides[1] != wantLocal {
 		t.Fatalf("unexpected local-helper override:\nwant %s\ngot  %s", wantLocal, overrides[1])
 	}
@@ -116,6 +130,8 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 		"- aggregate reporting",
 		"- helpers",
 		"Use only external MCP capabilities made available by the selected Madari rings.",
+		"Original working directory:",
+		"project-scoped Codex config cannot add capabilities outside these rings.",
 		"User prompt:\nwho are top 5 ebook creators?",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -192,6 +208,7 @@ func installFakeCodex(t *testing.T, exitCode int) string {
 	logPath := filepath.Join(t.TempDir(), "codex-args.bin")
 	codexPath := filepath.Join(binDir, "codex")
 	script := "#!/bin/sh\n" +
+		"printf '%s' \"$PWD\" > '" + logPath + ".pwd'\n" +
 		"for arg in \"$@\"; do printf '%s\\0' \"$arg\" >> '" + logPath + "'; done\n" +
 		"printf 'codex stdout\\n'\n" +
 		"printf 'codex stderr\\n' >&2\n" +

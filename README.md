@@ -136,8 +136,10 @@ is useful for temporary sessions and experiments.
 
 **Run** starts or plans an ephemeral client launch from one or more rings.
 Codex execution injects selected server members into `codex exec` without
-writing client config or managed state. Other clients, and rings containing
-skills, are dry-run only for now.
+writing client config or managed state. The injected Codex servers are marked
+required and the process runs from an isolated working root so project-scoped
+Codex config cannot add unselected capabilities. Other clients, and rings
+containing skills, are dry-run only for now.
 
 ## Safety Model
 

@@ -200,8 +200,9 @@ madari run codex --ring cloudsql-readonly --ring research --dry-run --json -- "I
 
 `madari run` is the launch primitive for using one or more rings with a target
 client. Codex execution starts `codex exec --ephemeral --ignore-user-config
---sandbox read-only` with selected ring MCP servers injected as config
-overrides. Other clients remain dry-run only for now.
+--skip-git-repo-check --sandbox read-only` with selected ring MCP servers
+injected as required config overrides from an isolated working root. Other
+clients remain dry-run only for now.
 
 The planner resolves every selected ring, deduplicates shared server and skill
 members, validates the selected client can express each required capability,
