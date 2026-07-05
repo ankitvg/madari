@@ -13,7 +13,7 @@ import (
 	"github.com/ankitvg/madari/internal/registry"
 )
 
-const runDryRunOnlyMessage = "madari run execution is not implemented yet; pass --dry-run to inspect the launch plan"
+const runDryRunOnlyMessage = "madari run execution is only implemented for codex; pass --dry-run to inspect the launch plan"
 
 type runPlanJSON struct {
 	SchemaVersion   int             `json:"schema_version"`
@@ -96,8 +96,8 @@ func (a cliApp) cmdRun(args []string) error {
 	if target == "" {
 		return commandInputError("run", "client is required")
 	}
-	if !dryRun {
-		return commandInputError("run", runDryRunOnlyMessage)
+	if jsonOutput && !dryRun {
+		return commandInputError("run", "--json is only supported with --dry-run")
 	}
 	normalizedRings := normalizedRingNames(rings)
 	if len(normalizedRings) == 0 {
@@ -112,15 +112,28 @@ func (a cliApp) cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
-	if jsonOutput {
+	if dryRun && jsonOutput {
 		if err := writeJSON(a.stdout, plan.toJSON()); err != nil {
 			return err
 		}
-	} else {
+	} else if dryRun {
 		printRunPlan(a.stdout, plan)
 	}
 	if !plan.Ready {
+		if !dryRun {
+			printRunPlan(a.stdout, plan)
+		}
 		return commandInputError("run", "launch plan is not ready")
+	}
+	if dryRun {
+		return nil
+	}
+	executor, ok := runExecutorForTarget(target)
+	if !ok {
+		return commandInputError("run", runDryRunOnlyMessage)
+	}
+	if err := executor(a, plan, prompt); err != nil {
+		return err
 	}
 	return nil
 }
@@ -136,11 +149,13 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 		plan.Errors = append(plan.Errors, message)
 	}
 
-	if _, ok := clientTargetByName(target); !ok {
+	ct, ok := clientTargetByName(target)
+	if !ok {
 		addPlanError(fmt.Sprintf("unsupported run target %q (supported: %s)", target, strings.Join(sortedClientTargetNames(), ", ")))
 		plan.finish()
 		return plan, nil
 	}
+	plan.RunnerAvailable = ct.runExecutor != nil
 	for ring, count := range countStrings(plan.Rings) {
 		if count > 1 {
 			addPlanError(fmt.Sprintf("duplicate ring %q", ring))
@@ -222,6 +237,11 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 					server.Issues = append(server.Issues, fmt.Sprintf("uses %s transport, which %s run does not support yet", detail.Transport, target))
 				}
 			}
+			if plan.RunnerAvailable {
+				if secretNames := manifest.SecretHeaderNames(); len(secretNames) > 0 {
+					server.Issues = append(server.Issues, fmt.Sprintf("static secret header values cannot be passed to %s run: %s", target, strings.Join(secretNames, ", ")))
+				}
+			}
 		} else if err := clients.ValidateCommandPath(manifest.Command); err != nil {
 			server.Issues = append(server.Issues, err.Message)
 		}
@@ -242,7 +262,9 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 		plan.Servers = append(plan.Servers, server)
 	}
 
-	if len(skillRings) > 0 && !supportsSkillMaterialization(target) {
+	if len(skillRings) > 0 && plan.RunnerAvailable {
+		addPlanError(fmt.Sprintf("%s run does not support ring skills yet", target))
+	} else if len(skillRings) > 0 && !supportsSkillMaterialization(target) {
 		addPlanError(fmt.Sprintf("%s does not support skill materialization (supported skill targets: %s)", target, strings.Join(supportedSkillTargets(), ", ")))
 	}
 	skillNames := sortedStringSliceMapKeys(skillRings)
@@ -260,7 +282,9 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 				return runLaunchPlan{}, err
 			}
 		}
-		if !supportsSkillMaterialization(target) {
+		if plan.RunnerAvailable {
+			skill.Issues = append(skill.Issues, fmt.Sprintf("%s run does not support ring skills yet", target))
+		} else if !supportsSkillMaterialization(target) {
 			skill.Issues = append(skill.Issues, fmt.Sprintf("%s does not support skill materialization", target))
 		}
 		if len(skill.Issues) > 0 {
@@ -398,7 +422,11 @@ func printRunPlan(out io.Writer, plan runLaunchPlan) {
 	fmt.Fprintf(out, "run target: %s\n", plan.Target)
 	fmt.Fprintf(out, "rings: %s\n", formatNameList(plan.Rings))
 	fmt.Fprintf(out, "status: %s\n", status)
-	fmt.Fprintln(out, "runner: unavailable (dry-run only)")
+	if plan.RunnerAvailable {
+		fmt.Fprintln(out, "runner: available")
+	} else {
+		fmt.Fprintln(out, "runner: unavailable")
+	}
 	fmt.Fprintln(out)
 
 	fmt.Fprintln(out, "servers:")
@@ -457,7 +485,11 @@ func printRunPlan(out io.Writer, plan runLaunchPlan) {
 	}
 
 	fmt.Fprintln(out, "prompt: provided")
-	fmt.Fprintln(out, "execution: not implemented in this PR; dry-run only")
+	if plan.RunnerAvailable {
+		fmt.Fprintln(out, "execution: available when --dry-run is omitted")
+	} else {
+		fmt.Fprintln(out, "execution: not implemented for this target; dry-run only")
+	}
 	if len(plan.Warnings) > 0 {
 		fmt.Fprintln(out, "warnings:")
 		for _, warning := range plan.Warnings {
@@ -474,20 +506,21 @@ func printRunPlan(out io.Writer, plan runLaunchPlan) {
 
 func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  madari run <client> --ring <ring> [--ring <ring> ...] --dry-run -- <prompt>")
+	fmt.Fprintln(out, "  madari run <client> --ring <ring> [--ring <ring> ...] [--dry-run] -- <prompt>")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
 	fmt.Fprintln(out, "  --ring <ring>             Ring to include in the launch plan (repeatable)")
 	fmt.Fprintln(out, "  --dry-run                 Inspect the launch plan without starting the client")
-	fmt.Fprintln(out, "  --json                    Emit JSON instead of text")
+	fmt.Fprintln(out, "  --json                    Emit JSON instead of text (requires --dry-run)")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Plan an ephemeral client launch from one or more rings. This first")
-	fmt.Fprintln(out, "  implementation is dry-run only: it validates ring members, target support,")
-	fmt.Fprintln(out, "  runtime env requirements, and skill materialization support, but does not")
-	fmt.Fprintln(out, "  write config files or start the client yet.")
+	fmt.Fprintln(out, "  Plan or start an ephemeral client launch from one or more rings. Codex")
+	fmt.Fprintln(out, "  execution starts `codex exec --ephemeral --ignore-user-config --sandbox")
+	fmt.Fprintln(out, "  read-only` with selected ring MCP servers injected as config overrides.")
+	fmt.Fprintln(out, "  Other clients are dry-run only for now. Run never writes client config,")
+	fmt.Fprintln(out, "  managed state, or skill package files.")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Examples:")
-	fmt.Fprintln(out, "  madari run codex --ring cloudsql-readonly --dry-run -- \"Who are the top 5 ebook creators?\"")
+	fmt.Fprintln(out, "  madari run codex --ring cloudsql-readonly -- \"Who are the top 5 ebook creators?\"")
 	fmt.Fprintln(out, "  madari run codex --ring cloudsql-readonly --ring research --dry-run --json -- \"Summarize the target plan\"")
 }

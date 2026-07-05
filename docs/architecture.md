@@ -19,15 +19,17 @@ Madari keeps four concepts separate:
   capabilities. Skills are official Agent Skill package directories with
   `SKILL.md` metadata, bundled files, and a render surface.
 - Run: ephemeral execution that combines a task, selected capabilities, client
-  target, optional skills/context, and result capture. Run is not implemented
-  yet and should not be modeled as persistent client sync.
+  target, optional skills/context, and result capture. Codex server-only run is
+  implemented as ephemeral execution and should not be modeled as persistent
+  client sync.
 
 Current behavior follows this boundary: `sync` and `ring attach` persist MCP
 server config, `ring attach` also materializes ring skill members as native
 skill package directories for supported targets, `ring render` emits MCP config
-only, plain `skill render` emits managed `SKILL.md` only, and `skill attach`
-materializes client-native skill packages without changing MCP client configs.
-Skills are not run inputs yet.
+only, `madari run codex` injects selected server members into `codex exec`
+without writing config/state, plain `skill render` emits managed `SKILL.md`
+only, and `skill attach` materializes client-native skill packages without
+changing MCP client configs. Skills are not executable run inputs yet.
 
 ## Components
 
@@ -105,9 +107,9 @@ Skills are not run inputs yet.
   render-only output before persistent sync/attach support exists. `ring
   status` reports attachments, per-server and per-skill sources, and
   pending/stale reconciliation work.
-- Contracts are distinct from future run/session/context primitives. Future
-  execution may render the contract into subagent initialization, but the ring
-  definition does not embed task context or result transport.
+- Contracts are distinct from run/session/context primitives. Codex run renders
+  contract metadata into the prompt preamble, but the ring definition does not
+  embed task context or result transport.
 - `ring delete` refuses while any target/scope still records the ring as an
   ownership source, and never edits client configs or managed state.
 

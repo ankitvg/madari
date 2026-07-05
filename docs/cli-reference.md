@@ -111,7 +111,7 @@ madari ring render research --client gemini
 madari ring render research --client codex
 madari ring render research --client vibe
 madari ring status
-madari run codex --ring research --dry-run -- "Use this ring"
+madari run codex --ring research -- "Use this ring"
 madari run codex --ring research --ring release --dry-run --json -- "Use both rings"
 ```
 
@@ -190,29 +190,29 @@ ring was attached to a custom config. `madari doctor` reports
 the same conditions as `ring_issues` (missing ring file = error, dangling
 server member = warning).
 
-## Run Planner
+## Run
 
 ```bash
-madari run <client> --ring <ring> [--ring <ring> ...] --dry-run -- <prompt>
-madari run codex --ring cloudsql-readonly --dry-run -- "Who are the top 5 ebook creators?"
+madari run <client> --ring <ring> [--ring <ring> ...] [--dry-run] -- <prompt>
+madari run codex --ring cloudsql-readonly -- "Who are the top 5 ebook creators?"
 madari run codex --ring cloudsql-readonly --ring research --dry-run --json -- "Inspect the combined plan"
 ```
 
 `madari run` is the launch primitive for using one or more rings with a target
-client. In this first implementation it is planner-only and requires
-`--dry-run`; omitting `--dry-run` exits non-zero with guidance instead of
-starting a client.
+client. Codex execution starts `codex exec --ephemeral --ignore-user-config
+--sandbox read-only` with selected ring MCP servers injected as config
+overrides. Other clients remain dry-run only for now.
 
 The planner resolves every selected ring, deduplicates shared server and skill
 members, validates the selected client can express each required capability,
-checks runtime env keys by name, and reports the launch plan. It does not write
-client config, create managed state, materialize skill packages, or start the
-client yet.
+checks runtime env keys by name, and reports the launch plan. Run never writes
+client config, creates managed state, or materializes skill packages.
 
 Unlike `ring render`, `run` is fail-closed. A disabled member, missing member,
 unsupported remote transport or auth mode, missing runtime env key, or
 unsupported skill target blocks the plan instead of silently omitting that
-capability.
+capability. Rings containing skills also block Codex execution until a later
+skill-run implementation.
 
 ## Skills
 
@@ -461,7 +461,7 @@ itself.
   "target": "codex",
   "rings": ["cloudsql-readonly"],
   "ready": true,
-  "runner_available": false,
+  "runner_available": true,
   "prompt_provided": true,
   "servers": [
     {
@@ -475,14 +475,7 @@ itself.
       "issues": []
     }
   ],
-  "skills": [
-    {
-      "name": "cloudsql-readonly-query",
-      "status": "ready",
-      "rings": ["cloudsql-readonly"],
-      "issues": []
-    }
-  ],
+  "skills": [],
   "env": [
     {"key": "CLOUDSQL_MCP_TOKEN", "present": true, "servers": ["cloud-sql"]}
   ],
