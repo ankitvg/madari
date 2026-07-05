@@ -66,9 +66,9 @@ Claude Code writes `type`/`url` entries with `headers` into its config
 Gemini writes `httpUrl` (Streamable HTTP) or `url` (SSE) entries with
 `headers`. `timeout_ms` is carried through as each client's per-server
 `timeout` field (milliseconds). `oauth_resource` has no equivalent in either
-client and is not emitted. Remote entries that require
-`bearer_token_env_var` stay pending for these clients until an equivalent
-auth config shape is validated.
+client, and neither client has a validated `bearer_token_env_var` equivalent.
+Remote entries that require either auth metadata shape stay pending for these
+clients until an equivalent config shape is validated.
 
 `codex` sync targets Codex's user config (`$CODEX_HOME/config.toml`, or
 `~/.codex/config.toml` when `CODEX_HOME` is unset). Static non-secret `[env]`

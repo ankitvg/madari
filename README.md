@@ -168,7 +168,8 @@ Madari can sync MCP servers for:
 Remote (`http`/`sse`) servers currently materialize for `claude-code` and
 `gemini` (both transports) and `codex` (`http` only); other targets store
 remote manifests and report them as pending. Remote entries that require
-`bearer_token_env_var` currently materialize only for `codex`.
+`oauth_resource` or `bearer_token_env_var` currently materialize only for
+`codex`.
 
 Madari can materialize skills for:
 

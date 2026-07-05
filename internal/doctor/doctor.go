@@ -45,6 +45,7 @@ type ServerReport struct {
 	Transport         string
 	Command           string
 	URL               string
+	OAuthResource     string
 	BearerTokenEnvVar string
 	Status            Status
 	Issues            []Issue
@@ -378,6 +379,7 @@ func inspectServer(manifest registry.Manifest, envLookup func(string) string, ta
 		Transport:         manifest.TransportType(),
 		Command:           manifest.Command,
 		URL:               manifest.URL,
+		OAuthResource:     manifest.OAuthResource,
 		BearerTokenEnvVar: manifest.BearerTokenEnvVar,
 		Status:            StatusSkipped,
 		Issues:            []Issue{},

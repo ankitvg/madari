@@ -168,6 +168,37 @@ func TestRunWithStoreRunPlanBlocksUnsupportedBearerAuth(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreRunPlanBlocksUnsupportedOAuthResource(t *testing.T) {
+	store := newTestStore(t)
+
+	if result := runCmd(store, "add", "cloud-sql",
+		"--transport", "http",
+		"--url", "https://sqladmin.googleapis.com/mcp",
+		"--client", "claude-code",
+		"--oauth-resource", "https://sqladmin.googleapis.com/"); result.code != 0 {
+		t.Fatalf("setup cloud-sql failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "cloudsql-readonly", "--member", "cloud-sql"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "run", "claude-code", "--ring", "cloudsql-readonly", "--dry-run", "--json", "--", "prompt")
+	if result.code == 0 || !strings.Contains(result.stderr, "launch plan is not ready") {
+		t.Fatalf("expected blocked plan, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	if plan.Ready {
+		t.Fatalf("expected blocked plan, got: %#v", plan)
+	}
+	cloud := findRunPlanServer(t, plan, "cloud-sql")
+	if cloud.Auth != "oauth_resource" || cloud.Status != "blocked" {
+		t.Fatalf("expected blocked oauth_resource server, got: %#v", cloud)
+	}
+	if !strings.Contains(strings.Join(plan.Errors, "\n"), "requires oauth_resource auth") {
+		t.Fatalf("expected unsupported oauth_resource error, got: %#v", plan.Errors)
+	}
+}
+
 func TestRunWithStoreRunPlanBlocksUnsupportedSkillTarget(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)

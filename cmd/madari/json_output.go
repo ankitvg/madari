@@ -118,6 +118,7 @@ type doctorServerJSON struct {
 	Clients           []string    `json:"clients"`
 	Command           string      `json:"command"`
 	URL               string      `json:"url,omitempty"`
+	OAuthResource     string      `json:"oauth_resource,omitempty"`
 	BearerTokenEnvVar string      `json:"bearer_token_env_var,omitempty"`
 	Status            string      `json:"status"`
 	Issues            []issueJSON `json:"issues"`

@@ -22,6 +22,9 @@ type clientTarget struct {
 	// ringRenderTimeout marks renderers that emit timeout_ms as the
 	// client's per-server timeout field for remote entries.
 	ringRenderTimeout bool
+	// remoteOAuthResource marks clients that can carry OAuth resource metadata
+	// for remote entries instead of dropping it from the materialized config.
+	remoteOAuthResource bool
 	// remoteBearerTokenEnv marks clients that can read remote bearer tokens
 	// from an env var reference without Madari storing the token value.
 	remoteBearerTokenEnv bool
@@ -50,6 +53,7 @@ var clientTargets = []clientTarget{
 		target:               codex.Target,
 		syncAdapter:          codex.Adapter{},
 		ringConfigRenderer:   renderCodexTOML,
+		remoteOAuthResource:  true,
 		remoteBearerTokenEnv: true,
 		skillRoots: skillTargetRoots{
 			project: defaultProjectSkillRoot(".agents", "skills"),
@@ -143,4 +147,9 @@ func supportsSkillMaterialization(target string) bool {
 func supportsRemoteBearerTokenEnv(target string) bool {
 	ct, ok := clientTargetByName(target)
 	return ok && ct.remoteBearerTokenEnv
+}
+
+func supportsRemoteOAuthResource(target string) bool {
+	ct, ok := clientTargetByName(target)
+	return ok && ct.remoteOAuthResource
 }
