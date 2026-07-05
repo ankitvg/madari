@@ -26,11 +26,11 @@ Madari keeps four concepts separate:
 Current behavior follows this boundary: `sync` and `ring attach` persist MCP
 server config, `ring attach` also materializes ring skill members as native
 skill package directories for supported targets, `ring render` emits MCP config
-only, `madari run codex` injects selected required server members into
-`codex exec` from an isolated working root without writing config/state, plain
-`skill render` emits managed `SKILL.md` only, and `skill attach` materializes
-client-native skill packages without changing MCP client configs. Skills are
-not executable run inputs yet.
+only, `madari run codex` clears inherited MCP config and injects selected
+required server members into `codex exec` from an isolated working root without
+writing config/state, plain `skill render` emits managed `SKILL.md` only, and
+`skill attach` materializes client-native skill packages without changing MCP
+client configs. Skills are not executable run inputs yet.
 
 ## Components
 

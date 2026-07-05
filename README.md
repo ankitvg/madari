@@ -82,6 +82,9 @@ Create a ring when a few capabilities belong together:
 
 ```bash
 madari skill add --dir ./release
+madari ring create thinking \
+  --member sequential-thinking \
+  --description "Sequential thinking helper"
 madari ring create research \
   --member sequential-thinking \
   --skill release \
@@ -102,7 +105,7 @@ claude --mcp-config <(madari ring render research --client claude-code)
 Or run Codex with one or more server-only rings without mutating Codex config:
 
 ```bash
-madari run codex --ring research -- \
+madari run codex --ring thinking -- \
   "Use this ring to inspect the target context."
 ```
 
@@ -136,10 +139,10 @@ is useful for temporary sessions and experiments.
 
 **Run** starts or plans an ephemeral client launch from one or more rings.
 Codex execution injects selected server members into `codex exec` without
-writing client config or managed state. The injected Codex servers are marked
-required and the process runs from an isolated working root so project-scoped
-Codex config cannot add unselected capabilities. Other clients, and rings
-containing skills, are dry-run only for now.
+writing client config or managed state. Codex run clears inherited MCP config,
+marks the selected servers required, and runs from an isolated working root so
+project-scoped Codex config cannot add unselected capabilities. Other clients,
+and rings containing skills, are dry-run only for now.
 
 ## Safety Model
 

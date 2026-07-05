@@ -18,13 +18,13 @@ func runCodex(a cliApp, plan runLaunchPlan, prompt string) error {
 		return fmt.Errorf("codex not found in PATH; install Codex CLI or use --dry-run to inspect the launch plan")
 	}
 
-	overrides, err := codexRunConfigOverrides(a.store, plan)
-	if err != nil {
-		return err
-	}
 	workingDir, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("resolve current working directory: %w", err)
+	}
+	overrides, err := codexRunConfigOverrides(a.store, plan, workingDir)
+	if err != nil {
+		return err
 	}
 	runRoot, err := os.MkdirTemp("", "madari-codex-run-*")
 	if err != nil {
@@ -37,7 +37,7 @@ func runCodex(a cliApp, plan runLaunchPlan, prompt string) error {
 		return err
 	}
 
-	args := []string{"exec", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--cd", runRoot}
+	args := []string{"exec", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--cd", runRoot, "-c", "mcp_servers={}"}
 	for _, override := range overrides {
 		args = append(args, "-c", override)
 	}
@@ -54,7 +54,7 @@ func runCodex(a cliApp, plan runLaunchPlan, prompt string) error {
 	return nil
 }
 
-func codexRunConfigOverrides(store *registry.Store, plan runLaunchPlan) ([]string, error) {
+func codexRunConfigOverrides(store *registry.Store, plan runLaunchPlan, workingDir string) ([]string, error) {
 	manifests, err := store.List()
 	if err != nil {
 		return nil, err
@@ -76,7 +76,7 @@ func codexRunConfigOverrides(store *registry.Store, plan runLaunchPlan) ([]strin
 		if !ok {
 			return nil, fmt.Errorf("server %s no longer exists in the registry", name)
 		}
-		value, err := codexRunServerConfigValue(manifest)
+		value, err := codexRunServerConfigValue(manifest, workingDir)
 		if err != nil {
 			return nil, fmt.Errorf("server %s: %w", name, err)
 		}
@@ -85,7 +85,7 @@ func codexRunConfigOverrides(store *registry.Store, plan runLaunchPlan) ([]strin
 	return overrides, nil
 }
 
-func codexRunServerConfigValue(manifest registry.Manifest) (string, error) {
+func codexRunServerConfigValue(manifest registry.Manifest, workingDir string) (string, error) {
 	if manifest.IsRemote() {
 		if secretNames := manifest.SecretHeaderNames(); len(secretNames) > 0 {
 			return "", fmt.Errorf("static secret header values cannot be passed to codex run: %s", strings.Join(secretNames, ", "))
@@ -103,7 +103,7 @@ func codexRunServerConfigValue(manifest registry.Manifest) (string, error) {
 		return "{ " + strings.Join(fields, ", ") + " }", nil
 	}
 
-	fields := []string{fmt.Sprintf("command = %s", tomlString(manifest.Command)), "required = true"}
+	fields := []string{fmt.Sprintf("command = %s", tomlString(manifest.Command)), "required = true", fmt.Sprintf("cwd = %s", tomlString(workingDir))}
 	if len(manifest.Args) > 0 {
 		fields = append(fields, fmt.Sprintf("args = %s", tomlStringArray(manifest.Args)))
 	}

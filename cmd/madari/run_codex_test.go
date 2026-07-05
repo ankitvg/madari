@@ -103,16 +103,23 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 		t.Fatalf("expected isolated codex run root to be cleaned up, stat err=%v", err)
 	}
 	overrides := collectConfigOverrides(args)
-	if len(overrides) != 2 {
-		t.Fatalf("expected two config overrides, got %#v from args %#v", overrides, args)
+	if len(overrides) != 3 {
+		t.Fatalf("expected three config overrides, got %#v from args %#v", overrides, args)
+	}
+	if overrides[0] != "mcp_servers={}" {
+		t.Fatalf("expected inherited MCP config clear first, got %#v", overrides)
 	}
 	wantCloud := `mcp_servers.cloud-sql={ url = "https://sqladmin.googleapis.com/mcp", required = true, oauth_resource = "https://sqladmin.googleapis.com/", bearer_token_env_var = "CLOUDSQL_MCP_TOKEN", http_headers = { x-goog-user-project = "stewreads" } }`
-	if overrides[0] != wantCloud {
-		t.Fatalf("unexpected cloud-sql override:\nwant %s\ngot  %s", wantCloud, overrides[0])
+	if overrides[1] != wantCloud {
+		t.Fatalf("unexpected cloud-sql override:\nwant %s\ngot  %s", wantCloud, overrides[1])
 	}
-	wantLocal := `mcp_servers.local-helper={ command = ` + tomlString(commandPath) + `, required = true, args = ["--stdio"], env_vars = ["LOCAL_SECRET", "LOCAL_TOKEN"], env = { LOCAL_MODE = "test" } }`
-	if overrides[1] != wantLocal {
-		t.Fatalf("unexpected local-helper override:\nwant %s\ngot  %s", wantLocal, overrides[1])
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	wantLocal := `mcp_servers.local-helper={ command = ` + tomlString(commandPath) + `, required = true, cwd = ` + tomlString(workingDir) + `, args = ["--stdio"], env_vars = ["LOCAL_SECRET", "LOCAL_TOKEN"], env = { LOCAL_MODE = "test" } }`
+	if overrides[2] != wantLocal {
+		t.Fatalf("unexpected local-helper override:\nwant %s\ngot  %s", wantLocal, overrides[2])
 	}
 	if strings.Contains(strings.Join(overrides, "\n"), "inline-secret") {
 		t.Fatalf("static secret env value leaked into codex args: %#v", overrides)
@@ -197,8 +204,10 @@ func TestRunWithStoreCodexRunRequiresCodexBinary(t *testing.T) {
 	}
 
 	result := runCmd(store, "run", "codex", "--ring", "helpers", "--", "prompt")
-	if result.code == 0 || !strings.Contains(result.stderr, "codex not found in PATH") {
-		t.Fatalf("expected missing codex error, code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	if result.code == 0 ||
+		!strings.Contains(result.stderr, "launch plan is not ready") ||
+		!strings.Contains(result.stdout, "codex executable not found in PATH") {
+		t.Fatalf("expected missing codex plan error, code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
 	}
 }
 
@@ -206,14 +215,19 @@ func installFakeCodex(t *testing.T, exitCode int) string {
 	t.Helper()
 	binDir := t.TempDir()
 	logPath := filepath.Join(t.TempDir(), "codex-args.bin")
-	codexPath := filepath.Join(binDir, "codex")
-	script := "#!/bin/sh\n" +
+	name := "codex"
+	script := []byte("#!/bin/sh\n" +
 		"printf '%s' \"$PWD\" > '" + logPath + ".pwd'\n" +
 		"for arg in \"$@\"; do printf '%s\\0' \"$arg\" >> '" + logPath + "'; done\n" +
 		"printf 'codex stdout\\n'\n" +
 		"printf 'codex stderr\\n' >&2\n" +
-		"exit " + strconv.Itoa(exitCode) + "\n"
-	if err := os.WriteFile(codexPath, []byte(script), 0o755); err != nil {
+		"exit " + strconv.Itoa(exitCode) + "\n")
+	if runtime.GOOS == "windows" {
+		name = "codex.bat"
+		script = []byte("@echo off\r\nexit /b " + strconv.Itoa(exitCode) + "\r\n")
+	}
+	codexPath := filepath.Join(binDir, name)
+	if err := os.WriteFile(codexPath, script, 0o755); err != nil {
 		t.Fatalf("write fake codex: %v", err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))

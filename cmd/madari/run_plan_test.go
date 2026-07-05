@@ -15,6 +15,7 @@ import (
 func TestRunWithStoreRunPlanMultipleRings(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
+	installFakeCodex(t, 0)
 	t.Setenv("CLOUDSQL_MCP_TOKEN", "test-token")
 	t.Setenv("LOCAL_TOKEN", "test-token")
 
@@ -125,9 +126,40 @@ func TestRunWithStoreRunPlanRequiresDryRunRingAndPrompt(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreRunPlanBlocksMissingCodexBinary(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+	t.Setenv("PATH", t.TempDir())
+
+	if err := store.Save(registry.Manifest{
+		Name:    "helper",
+		Command: commandPath,
+		Enabled: true,
+		Clients: []string{"codex"},
+	}); err != nil {
+		t.Fatalf("setup helper failed: %v", err)
+	}
+	if err := store.SaveRing(registry.Ring{Name: "helpers", Members: []string{"helper"}}); err != nil {
+		t.Fatalf("setup ring failed: %v", err)
+	}
+
+	result := runCmd(store, "run", "codex", "--ring", "helpers", "--dry-run", "--json", "--", "prompt")
+	if result.code == 0 || !strings.Contains(result.stderr, "launch plan is not ready") {
+		t.Fatalf("expected blocked plan, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	if plan.RunnerAvailable {
+		t.Fatalf("expected runner unavailable without codex binary, got: %#v", plan)
+	}
+	if !strings.Contains(strings.Join(plan.Errors, "\n"), "codex executable not found in PATH") {
+		t.Fatalf("expected missing codex error, got: %#v", plan.Errors)
+	}
+}
+
 func TestRunWithStoreRunPlanBlocksCodexRingSkills(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
+	installFakeCodex(t, 0)
 
 	if result := runCmd(store, "add", "helper", "--command", commandPath, "--client", "codex"); result.code != 0 {
 		t.Fatalf("setup helper failed: %s", result.stderr)
@@ -158,6 +190,7 @@ func TestRunWithStoreRunPlanBlocksCodexRingSkills(t *testing.T) {
 
 func TestRunWithStoreRunPlanBlocksMissingEnv(t *testing.T) {
 	store := newTestStore(t)
+	installFakeCodex(t, 0)
 	t.Setenv("CLOUDSQL_MCP_TOKEN", "")
 
 	if result := runCmd(store, "add", "cloud-sql",
@@ -248,6 +281,7 @@ func TestRunWithStoreRunPlanBlocksUnsupportedOAuthResource(t *testing.T) {
 
 func TestRunWithStoreRunPlanBlocksCodexSecretRemoteHeaders(t *testing.T) {
 	store := newTestStore(t)
+	installFakeCodex(t, 0)
 
 	if err := store.Save(registry.Manifest{
 		Name:      "cloud-sql",
@@ -282,6 +316,7 @@ func TestRunWithStoreRunPlanBlocksCodexSecretRemoteHeaders(t *testing.T) {
 func TestRunWithStoreRunPlanMissingServerRuntimeEnvIsEmptyArray(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
+	installFakeCodex(t, 0)
 
 	if err := store.Save(registry.Manifest{
 		Name:    "helper",
@@ -351,6 +386,7 @@ func TestRunWithStoreRunPlanBlocksUnsupportedSkillTarget(t *testing.T) {
 func TestRunWithStoreRunPlanBlocksDisabledServerAndDuplicateRing(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
+	installFakeCodex(t, 0)
 
 	if result := runCmd(store, "add", "helper", "--command", commandPath, "--client", "codex"); result.code != 0 {
 		t.Fatalf("setup add failed: %s", result.stderr)

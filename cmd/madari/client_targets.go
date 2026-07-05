@@ -20,6 +20,7 @@ type clientTarget struct {
 	syncAdapter        clients.ClientAdapter
 	ringConfigRenderer func(io.Writer, map[string]renderedServer) error
 	runExecutor        runExecutor
+	runExecutable      string
 	// ringRenderTimeout marks renderers that emit timeout_ms as the
 	// client's per-server timeout field for remote entries.
 	ringRenderTimeout bool
@@ -55,6 +56,7 @@ var clientTargets = []clientTarget{
 		syncAdapter:          codex.Adapter{},
 		ringConfigRenderer:   renderCodexTOML,
 		runExecutor:          runCodex,
+		runExecutable:        "codex",
 		remoteOAuthResource:  true,
 		remoteBearerTokenEnv: true,
 		skillRoots: skillTargetRoots{
