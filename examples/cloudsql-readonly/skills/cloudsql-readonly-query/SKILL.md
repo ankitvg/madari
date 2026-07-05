@@ -2,7 +2,7 @@
 name: cloudsql-readonly-query
 description: Inspect a known Cloud SQL MySQL or PostgreSQL target with read-only SQL, bounded result sets, and explicit query reporting.
 license: Apache-2.0
-compatibility: Codex or Claude Code with the cloud-sql MCP server managed by Madari; Gemini requires equivalent Cloud SQL MCP configuration with Google credentials auth fields.
+compatibility: Codex with the cloud-sql MCP server managed by Madari; other clients require equivalent Cloud SQL MCP auth configuration outside this example.
 metadata:
   ring: cloudsql-readonly
 allowed-tools: mcp__cloud-sql__list_instances,mcp__cloud-sql__get_instance,mcp__cloud-sql__execute_sql_readonly,Bash(python3 scripts/sql_readonly_check.py:*),Bash(sh scripts/cloudsql_target_context.sh:*)

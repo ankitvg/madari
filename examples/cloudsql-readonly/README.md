@@ -5,11 +5,11 @@ targets through Google's official remote MCP server. It is designed for routine
 read-only database work: schema checks, counts, grouped aggregates, bounded
 samples, and small debugging reports.
 
-The Madari-managed setup in this example targets `codex` and `claude-code`.
-Gemini CLI can use the same Cloud SQL endpoint and skill guidance, but Google's
-Cloud SQL MCP setup requires Gemini-specific Google credentials and OAuth
-fields that Madari does not model yet; see the Gemini section below before
-using this ring with Gemini.
+The Madari-managed setup in this example targets `codex`, because Codex is the
+client path where Madari currently has a verified native mapping for
+environment-referenced bearer tokens. Other clients can use the same Cloud SQL
+endpoint in principle, but keep them out of this ring until Madari has a
+verified auth mapping for their config format.
 
 The example contains:
 
@@ -36,8 +36,7 @@ madari add cloud-sql \
   --transport http \
   --url https://sqladmin.googleapis.com/mcp \
   --client codex \
-  --client claude-code \
-  --oauth-resource https://sqladmin.googleapis.com/
+  --bearer-token-env-var CLOUDSQL_MCP_TOKEN
 
 madari ring create cloudsql-readonly \
   --member cloud-sql \
@@ -64,71 +63,51 @@ Expected render shape per client, Codex:
 ```toml
 [mcp_servers.cloud-sql]
 url = "https://sqladmin.googleapis.com/mcp"
-oauth_resource = "https://sqladmin.googleapis.com/"
+bearer_token_env_var = "CLOUDSQL_MCP_TOKEN"
 ```
 
-Claude Code (`madari ring render cloudsql-readonly --client claude-code`, also
-usable directly via `claude --mcp-config <(...)`):
+Claude Code is intentionally not listed as a client in this example manifest.
+If you render for Claude Code without changing the manifest, Madari omits the
+server because it is not targeted:
 
 ```json
 {
-  "mcpServers": {
-    "cloud-sql": {
-      "type": "http",
-      "url": "https://sqladmin.googleapis.com/mcp"
-    }
-  }
+  "mcpServers": {}
 }
 ```
 
-Gemini CLI requires additional auth fields. Until Madari models those fields
-directly, configure Gemini as an extension instead of relying on `madari ring
-attach` for this server. Save a file such as
-`~/.gemini/extensions/cloudsql-readonly/gemini-extension.json`:
-
-```json
-{
-  "name": "cloudsql-readonly",
-  "version": "1.0.0",
-  "mcpServers": {
-    "cloud-sql": {
-      "httpUrl": "https://sqladmin.googleapis.com/mcp",
-      "authProviderType": "google_credentials",
-      "oauth": {
-        "scopes": ["https://www.googleapis.com/auth/cloud-platform"]
-      },
-      "timeout": 30000,
-      "headers": {
-        "x-goog-user-project": "PROJECT_ID"
-      }
-    }
-  }
-}
-```
-
-Replace `PROJECT_ID` with the Google Cloud project used for quota and billing.
-`oauth_resource` is emitted for Codex only; Claude Code owns its remote-server
-OAuth flow, and Gemini needs the Google credentials extension fields above.
+Madari's `bearer_token_env_var` field is currently materialized for Codex. If
+another client gets a verified env-referenced bearer-token config shape, Madari
+should translate this same manifest capability to that native format and this
+example can add that client.
 
 Attach the ring to the client you want it persisted in:
 
 ```bash
 madari ring attach cloudsql-readonly codex --dry-run
 madari ring attach cloudsql-readonly codex
-madari ring attach cloudsql-readonly claude-code
 madari ring status
 ```
 
 The skill is materialized as a native skill package on attach (Codex under
-`.agents/skills/`, Claude Code under `.claude/skills/`). `ring render` remains
-MCP-config-only and does not embed skill files.
+`.agents/skills/`). `ring render` remains MCP-config-only and does not embed
+skill files.
 
 ## Authentication
 
-Madari configures the server entry; each client owns its OAuth token lifecycle.
-After attaching, authenticate once per client, for example
-`codex mcp login cloud-sql`, or the `/mcp` menu in Claude Code. Nothing happens
-at attach time; the client prompts on first connection.
+Madari configures the server entry; it does not mint or store tokens. For
+Codex, provide a short-lived bearer token in the env var named by the manifest:
+
+```bash
+export CLOUDSQL_MCP_TOKEN="$(
+  gcloud auth print-access-token \
+    --impersonate-service-account=madari-cloudsql-reader@PROJECT_ID.iam.gserviceaccount.com
+)"
+```
+
+Replace `PROJECT_ID` and the service account with your target project's
+read-only Cloud SQL MCP identity. Codex reads the token from
+`CLOUDSQL_MCP_TOKEN` at runtime through `bearer_token_env_var`.
 
 Authentication is not enough for query execution. Before using
 `execute_sql_readonly`, the target instance must allow Data API access, MySQL
@@ -199,7 +178,6 @@ Detach the ring from every client it was attached to before deleting it:
 
 ```bash
 madari ring detach cloudsql-readonly codex
-madari ring detach cloudsql-readonly claude-code
 madari ring delete cloudsql-readonly
 madari remove cloud-sql
 madari skill remove cloudsql-readonly-query
