@@ -23,7 +23,10 @@ const (
 	snapshotVersionV7 = 7
 	// SnapshotVersion 8 adds [secret_headers]; older importers reject by
 	// version instead of silently dropping the secrecy annotation.
-	SnapshotVersion = 8
+	snapshotVersionV8 = 8
+	// SnapshotVersion 9 adds bearer_token_env_var; older importers reject by
+	// version instead of silently dropping the runtime auth env reference.
+	SnapshotVersion = 9
 )
 
 type Snapshot struct {
@@ -317,7 +320,7 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 }
 
 func (s Snapshot) Validate() error {
-	if s.Version != snapshotVersionV1 && s.Version != snapshotVersionV2 && s.Version != snapshotVersionV3 && s.Version != snapshotVersionV4 && s.Version != snapshotVersionV5 && s.Version != snapshotVersionV6 && s.Version != snapshotVersionV7 && s.Version != SnapshotVersion {
+	if s.Version != snapshotVersionV1 && s.Version != snapshotVersionV2 && s.Version != snapshotVersionV3 && s.Version != snapshotVersionV4 && s.Version != snapshotVersionV5 && s.Version != snapshotVersionV6 && s.Version != snapshotVersionV7 && s.Version != snapshotVersionV8 && s.Version != SnapshotVersion {
 		return fmt.Errorf("unsupported snapshot version %d (supported: %d)", s.Version, SnapshotVersion)
 	}
 	if s.Version == snapshotVersionV1 && len(s.Rings) > 0 {
@@ -335,8 +338,11 @@ func (s Snapshot) Validate() error {
 	if s.Version < snapshotVersionV7 && snapshotHasRemoteServers(s) {
 		return fmt.Errorf("snapshot version %d does not support remote transports", s.Version)
 	}
-	if s.Version < SnapshotVersion && snapshotHasSecretHeaders(s) {
+	if s.Version < snapshotVersionV8 && snapshotHasSecretHeaders(s) {
 		return fmt.Errorf("snapshot version %d does not support secret_headers", s.Version)
+	}
+	if s.Version < SnapshotVersion && snapshotHasBearerTokenEnv(s) {
+		return fmt.Errorf("snapshot version %d does not support bearer_token_env_var", s.Version)
 	}
 
 	seen := map[string]struct{}{}
@@ -413,7 +419,8 @@ func manifestsEqual(a, b Manifest) bool {
 	}
 
 	if a.TransportType() != b.TransportType() || a.URL != b.URL ||
-		a.TimeoutMS != b.TimeoutMS || a.OAuthResource != b.OAuthResource {
+		a.TimeoutMS != b.TimeoutMS || a.OAuthResource != b.OAuthResource ||
+		a.BearerTokenEnvVar != b.BearerTokenEnvVar {
 		return false
 	}
 
@@ -632,6 +639,15 @@ func snapshotHasRemoteServers(snapshot Snapshot) bool {
 func snapshotHasSecretHeaders(snapshot Snapshot) bool {
 	for _, server := range snapshot.Servers {
 		if len(server.SecretHeaders.Keys) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func snapshotHasBearerTokenEnv(snapshot Snapshot) bool {
+	for _, server := range snapshot.Servers {
+		if strings.TrimSpace(server.BearerTokenEnvVar) != "" {
 			return true
 		}
 	}

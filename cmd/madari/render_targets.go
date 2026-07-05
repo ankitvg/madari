@@ -11,22 +11,20 @@ import (
 
 // renderedServer is the self-contained client config entry ring render emits.
 type renderedServer struct {
-	Transport      string            `json:"type,omitempty"`
-	Command        string            `json:"command,omitempty"`
-	Args           []string          `json:"args,omitempty"`
-	URL            string            `json:"url,omitempty"`
-	Headers        map[string]string `json:"headers,omitempty"`
-	TimeoutMS      int               `json:"timeout,omitempty"`
-	OAuthResource  string            `json:"-"`
-	Env            map[string]string `json:"env,omitempty"`
-	RuntimeEnvKeys []string          `json:"-"`
+	Transport         string            `json:"type,omitempty"`
+	Command           string            `json:"command,omitempty"`
+	Args              []string          `json:"args,omitempty"`
+	URL               string            `json:"url,omitempty"`
+	Headers           map[string]string `json:"headers,omitempty"`
+	TimeoutMS         int               `json:"timeout,omitempty"`
+	OAuthResource     string            `json:"-"`
+	BearerTokenEnvVar string            `json:"-"`
+	Env               map[string]string `json:"env,omitempty"`
+	RuntimeEnvKeys    []string          `json:"-"`
 }
 
 type ringRenderTarget struct {
 	target string
-	// supportsRemote mirrors the sync adapter's per-transport remote
-	// capability so render and sync never disagree about materialization.
-	supportsRemote func(transport string) bool
 	// emitsRemoteTimeout is true when the renderer carries timeout_ms into
 	// the client's per-server timeout field; targets without an equivalent
 	// (codex) warn instead.
@@ -95,6 +93,9 @@ func renderCodexTOML(out io.Writer, servers map[string]renderedServer) error {
 			fmt.Fprintf(out, "url = %s\n", tomlString(entry.URL))
 			if entry.OAuthResource != "" {
 				fmt.Fprintf(out, "oauth_resource = %s\n", tomlString(entry.OAuthResource))
+			}
+			if entry.BearerTokenEnvVar != "" {
+				fmt.Fprintf(out, "bearer_token_env_var = %s\n", tomlString(entry.BearerTokenEnvVar))
 			}
 			if len(entry.Headers) > 0 {
 				fmt.Fprintln(out)

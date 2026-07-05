@@ -22,8 +22,11 @@ type clientTarget struct {
 	// ringRenderTimeout marks renderers that emit timeout_ms as the
 	// client's per-server timeout field for remote entries.
 	ringRenderTimeout bool
-	userScope         bool
-	skillRoots        skillTargetRoots
+	// remoteBearerTokenEnv marks clients that can read remote bearer tokens
+	// from an env var reference without Madari storing the token value.
+	remoteBearerTokenEnv bool
+	userScope            bool
+	skillRoots           skillTargetRoots
 }
 
 var clientTargets = []clientTarget{
@@ -44,9 +47,10 @@ var clientTargets = []clientTarget{
 		},
 	},
 	{
-		target:             codex.Target,
-		syncAdapter:        codex.Adapter{},
-		ringConfigRenderer: renderCodexTOML,
+		target:               codex.Target,
+		syncAdapter:          codex.Adapter{},
+		ringConfigRenderer:   renderCodexTOML,
+		remoteBearerTokenEnv: true,
 		skillRoots: skillTargetRoots{
 			project: defaultProjectSkillRoot(".agents", "skills"),
 			user:    defaultHomeSkillRoot(".agents", "skills"),
@@ -101,13 +105,8 @@ func ringRenderTargetsFromClientTargets() map[string]ringRenderTarget {
 	targets := map[string]ringRenderTarget{}
 	for _, ct := range clientTargets {
 		if ct.ringConfigRenderer != nil {
-			supportsRemote := func(string) bool { return false }
-			if ct.syncAdapter != nil {
-				supportsRemote = ct.syncAdapter.SupportsRemote
-			}
 			targets[ct.target] = ringRenderTarget{
 				target:             ct.target,
-				supportsRemote:     supportsRemote,
 				emitsRemoteTimeout: ct.ringRenderTimeout,
 				render:             ct.ringConfigRenderer,
 			}
@@ -139,4 +138,9 @@ func supportedSkillTargets() []string {
 func supportsSkillMaterialization(target string) bool {
 	ct, ok := clientTargetByName(target)
 	return ok && ct.skillRoots.supported()
+}
+
+func supportsRemoteBearerTokenEnv(target string) bool {
+	ct, ok := clientTargetByName(target)
+	return ok && ct.remoteBearerTokenEnv
 }

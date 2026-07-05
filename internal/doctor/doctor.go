@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ankitvg/madari/internal/clients"
+	"github.com/ankitvg/madari/internal/clients/codex"
 	"github.com/ankitvg/madari/internal/clients/syncshared"
 	"github.com/ankitvg/madari/internal/registry"
 	"github.com/pelletier/go-toml/v2"
@@ -38,14 +39,15 @@ type Issue struct {
 }
 
 type ServerReport struct {
-	Name      string
-	Enabled   bool
-	Clients   []string
-	Transport string
-	Command   string
-	URL       string
-	Status    Status
-	Issues    []Issue
+	Name              string
+	Enabled           bool
+	Clients           []string
+	Transport         string
+	Command           string
+	URL               string
+	BearerTokenEnvVar string
+	Status            Status
+	Issues            []Issue
 }
 
 type ManifestError struct {
@@ -370,14 +372,15 @@ func summarize(report Report) Summary {
 
 func inspectServer(manifest registry.Manifest, envLookup func(string) string, targets []string) ServerReport {
 	report := ServerReport{
-		Name:      manifest.Name,
-		Enabled:   manifest.Enabled,
-		Clients:   append([]string(nil), manifest.Clients...),
-		Transport: manifest.TransportType(),
-		Command:   manifest.Command,
-		URL:       manifest.URL,
-		Status:    StatusSkipped,
-		Issues:    []Issue{},
+		Name:              manifest.Name,
+		Enabled:           manifest.Enabled,
+		Clients:           append([]string(nil), manifest.Clients...),
+		Transport:         manifest.TransportType(),
+		Command:           manifest.Command,
+		URL:               manifest.URL,
+		BearerTokenEnvVar: manifest.BearerTokenEnvVar,
+		Status:            StatusSkipped,
+		Issues:            []Issue{},
 	}
 
 	if !manifest.Enabled || !hasTarget(manifest, targets) {
@@ -399,6 +402,17 @@ func inspectServer(manifest registry.Manifest, envLookup func(string) string, ta
 			Message:  "remote transport requires url",
 		})
 		report.Status = StatusError
+	}
+
+	if manifest.IsRemote() && manifest.RequiresBearerTokenEnv() && strings.TrimSpace(envLookup(manifest.BearerTokenEnvVar)) == "" {
+		report.Issues = append(report.Issues, Issue{
+			Severity: SeverityWarning,
+			Code:     "missing_bearer_token_env",
+			Message:  fmt.Sprintf("missing bearer token env key %s", manifest.BearerTokenEnvVar),
+		})
+		if report.Status == StatusReady {
+			report.Status = StatusWarning
+		}
 	}
 
 	for _, key := range manifest.RequiredEnv.Keys {
@@ -654,7 +668,7 @@ func hasTargetInManifests(manifests []registry.Manifest, target string, supports
 	for _, manifest := range manifests {
 		// Remote manifests only warrant a client config on disk when the
 		// target's adapter materializes their transport.
-		if manifest.IsRemote() && !supportsRemote(manifest.TransportType()) {
+		if manifest.IsRemote() && (!supportsRemote(manifest.TransportType()) || (manifest.RequiresBearerTokenEnv() && target != codex.Target)) {
 			continue
 		}
 		if manifest.HasClient(target) {

@@ -170,6 +170,13 @@ func TestManifestValidateErrors(t *testing.T) {
 			expects: "secret_headers is only supported for remote transports",
 		},
 		{
+			name: "stdio rejects bearer_token_env_var",
+			mutate: func(m *Manifest) {
+				m.BearerTokenEnvVar = "CLOUDSQL_MCP_TOKEN"
+			},
+			expects: "bearer_token_env_var is only supported for remote transports",
+		},
+		{
 			name: "remote rejects invalid secret_headers name",
 			mutate: func(m *Manifest) {
 				*m = Manifest{
@@ -210,6 +217,34 @@ func TestManifestValidateErrors(t *testing.T) {
 				}
 			},
 			expects: "timeout_ms must be positive",
+		},
+		{
+			name: "remote rejects invalid bearer_token_env_var",
+			mutate: func(m *Manifest) {
+				*m = Manifest{
+					Name:              "cloud-sql",
+					Transport:         TransportHTTP,
+					URL:               "https://sqladmin.googleapis.com/mcp",
+					BearerTokenEnvVar: "cloudsql-token",
+					Enabled:           true,
+					Clients:           []string{"codex"},
+				}
+			},
+			expects: "invalid bearer_token_env_var key",
+		},
+		{
+			name: "remote rejects padded bearer_token_env_var",
+			mutate: func(m *Manifest) {
+				*m = Manifest{
+					Name:              "cloud-sql",
+					Transport:         TransportHTTP,
+					URL:               "https://sqladmin.googleapis.com/mcp",
+					BearerTokenEnvVar: " CLOUDSQL_MCP_TOKEN ",
+					Enabled:           true,
+					Clients:           []string{"codex"},
+				}
+			},
+			expects: "bearer_token_env_var must not have leading or trailing whitespace",
 		},
 		{
 			name: "duplicate clients",
@@ -265,14 +300,15 @@ func TestManifestValidateErrors(t *testing.T) {
 
 func TestManifestValidateRemoteOK(t *testing.T) {
 	m := Manifest{
-		Name:          "cloud-sql",
-		Transport:     TransportHTTP,
-		URL:           "https://sqladmin.googleapis.com/mcp",
-		OAuthResource: "https://sqladmin.googleapis.com/",
-		TimeoutMS:     30000,
-		Headers:       map[string]string{"x-goog-user-project": "project-id"},
-		Enabled:       true,
-		Clients:       []string{"codex"},
+		Name:              "cloud-sql",
+		Transport:         TransportHTTP,
+		URL:               "https://sqladmin.googleapis.com/mcp",
+		OAuthResource:     "https://sqladmin.googleapis.com/",
+		BearerTokenEnvVar: "CLOUDSQL_MCP_TOKEN",
+		TimeoutMS:         30000,
+		Headers:           map[string]string{"x-goog-user-project": "project-id"},
+		Enabled:           true,
+		Clients:           []string{"codex"},
 	}
 	if err := m.Validate(); err != nil {
 		t.Fatalf("expected remote manifest to validate, got: %v", err)

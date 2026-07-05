@@ -22,13 +22,14 @@ type listJSON struct {
 }
 
 type serverJSON struct {
-	Name      string   `json:"name"`
-	Enabled   bool     `json:"enabled"`
-	Transport string   `json:"transport"`
-	Command   string   `json:"command"`
-	URL       string   `json:"url,omitempty"`
-	Clients   []string `json:"clients"`
-	Sources   []string `json:"sources"`
+	Name              string   `json:"name"`
+	Enabled           bool     `json:"enabled"`
+	Transport         string   `json:"transport"`
+	Command           string   `json:"command"`
+	URL               string   `json:"url,omitempty"`
+	BearerTokenEnvVar string   `json:"bearer_token_env_var,omitempty"`
+	Clients           []string `json:"clients"`
+	Sources           []string `json:"sources"`
 }
 
 type statusJSON struct {
@@ -111,14 +112,15 @@ type driftJSON struct {
 }
 
 type doctorServerJSON struct {
-	Name      string      `json:"name"`
-	Enabled   bool        `json:"enabled"`
-	Transport string      `json:"transport"`
-	Clients   []string    `json:"clients"`
-	Command   string      `json:"command"`
-	URL       string      `json:"url,omitempty"`
-	Status    string      `json:"status"`
-	Issues    []issueJSON `json:"issues"`
+	Name              string      `json:"name"`
+	Enabled           bool        `json:"enabled"`
+	Transport         string      `json:"transport"`
+	Clients           []string    `json:"clients"`
+	Command           string      `json:"command"`
+	URL               string      `json:"url,omitempty"`
+	BearerTokenEnvVar string      `json:"bearer_token_env_var,omitempty"`
+	Status            string      `json:"status"`
+	Issues            []issueJSON `json:"issues"`
 }
 
 type issueJSON struct {

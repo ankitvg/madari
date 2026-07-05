@@ -194,6 +194,7 @@ func TestRunWithStoreAddRemoteHTTP(t *testing.T) {
 		"--url", "https://sqladmin.googleapis.com/mcp",
 		"--client", "codex",
 		"--oauth-resource", "https://sqladmin.googleapis.com/",
+		"--bearer-token-env-var", "CLOUDSQL_MCP_TOKEN",
 		"--timeout-ms", "30000",
 		"--header", "x-goog-user-project=example-project",
 	)
@@ -216,6 +217,9 @@ func TestRunWithStoreAddRemoteHTTP(t *testing.T) {
 	}
 	if manifest.OAuthResource != "https://sqladmin.googleapis.com/" {
 		t.Fatalf("unexpected oauth resource: %q", manifest.OAuthResource)
+	}
+	if manifest.BearerTokenEnvVar != "CLOUDSQL_MCP_TOKEN" {
+		t.Fatalf("unexpected bearer token env var: %q", manifest.BearerTokenEnvVar)
 	}
 	if manifest.TimeoutMS != 30000 {
 		t.Fatalf("unexpected timeout: %d", manifest.TimeoutMS)
@@ -2745,6 +2749,64 @@ func TestRunWithStoreSyncReportsUnsupportedRemote(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreSyncReportsUnsupportedRemoteAuth(t *testing.T) {
+	store := newTestStore(t)
+
+	if result := runCmd(store, "add", "cloud-sql",
+		"--transport", "http",
+		"--url", "https://sqladmin.googleapis.com/mcp",
+		"--client", "claude-code",
+		"--bearer-token-env-var", "CLOUDSQL_MCP_TOKEN"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), ".mcp.json")
+	result := runCmd(store, "sync", "claude-code", "--dry-run", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("sync dry-run failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	if !strings.Contains(result.stdout, "unsupported remote: cloud-sql") {
+		t.Fatalf("expected unsupported remote summary, got: %s", result.stdout)
+	}
+	if strings.Contains(result.stdout, "added: cloud-sql") {
+		t.Fatalf("expected auth-unsupported remote not to be added, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stderr, "cloud-sql requires bearer_token_env_var auth") ||
+		!strings.Contains(result.stderr, "stored in registry") ||
+		!strings.Contains(result.stderr, "claude-code sync does not materialize bearer_token_env_var auth yet") {
+		t.Fatalf("expected unsupported remote auth warning, got: %s", result.stderr)
+	}
+
+	result = runCmd(store, "sync", "claude-code", "--dry-run", "--json", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("sync dry-run --json failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	expected := fmt.Sprintf(`{
+  "schema_version": 1,
+  "command": "sync",
+  "target": "claude-code",
+  "config_path": %q,
+  "dry_run": true,
+  "added": [],
+  "updated": [],
+  "removed": [],
+  "unchanged": [],
+  "skipped": [],
+  "unsupported_remote": [
+    "cloud-sql"
+  ],
+  "refused": [],
+  "skills_added": [],
+  "skills_updated": [],
+  "skills_removed": [],
+  "skills_unchanged": []
+}
+`, configPath)
+	if result.stdout != expected {
+		t.Fatalf("sync --json unsupported remote auth schema drift:\nwant:\n%s\ngot:\n%s", expected, result.stdout)
+	}
+}
+
 func TestRunWithStoreSyncCodexMaterializesRemote(t *testing.T) {
 	store := newTestStore(t)
 
@@ -2752,7 +2814,8 @@ func TestRunWithStoreSyncCodexMaterializesRemote(t *testing.T) {
 		"--transport", "http",
 		"--url", "https://sqladmin.googleapis.com/mcp",
 		"--client", "codex",
-		"--oauth-resource", "https://sqladmin.googleapis.com/"); result.code != 0 {
+		"--oauth-resource", "https://sqladmin.googleapis.com/",
+		"--bearer-token-env-var", "CLOUDSQL_MCP_TOKEN"); result.code != 0 {
 		t.Fatalf("setup add failed: %s", result.stderr)
 	}
 
@@ -2778,6 +2841,7 @@ func TestRunWithStoreSyncCodexMaterializesRemote(t *testing.T) {
 	for _, want := range []string{
 		"url = 'https://sqladmin.googleapis.com/mcp'",
 		"oauth_resource = 'https://sqladmin.googleapis.com/'",
+		"bearer_token_env_var = 'CLOUDSQL_MCP_TOKEN'",
 	} {
 		if !strings.Contains(string(payload), want) {
 			t.Fatalf("expected %q in codex config, got:\n%s", want, payload)
@@ -4466,6 +4530,7 @@ func TestRunWithStoreRingRenderCodexRemoteHTTP(t *testing.T) {
 		"--url", "https://sqladmin.googleapis.com/mcp",
 		"--client", "codex",
 		"--oauth-resource", "https://sqladmin.googleapis.com/",
+		"--bearer-token-env-var", "CLOUDSQL_MCP_TOKEN",
 		"--header", "x-goog-user-project=example-project"); result.code != 0 {
 		t.Fatalf("setup add cloud-sql failed: %s", result.stderr)
 	}
@@ -4480,6 +4545,7 @@ func TestRunWithStoreRingRenderCodexRemoteHTTP(t *testing.T) {
 	want := `[mcp_servers.cloud-sql]
 url = "https://sqladmin.googleapis.com/mcp"
 oauth_resource = "https://sqladmin.googleapis.com/"
+bearer_token_env_var = "CLOUDSQL_MCP_TOKEN"
 
 [mcp_servers.cloud-sql.http_headers]
 x-goog-user-project = "example-project"
@@ -4537,6 +4603,33 @@ func TestRunWithStoreRingRenderRemoteUnsupportedTarget(t *testing.T) {
 	}
 	if !strings.Contains(result.stderr, "uses http transport") || !strings.Contains(result.stderr, "does not support yet") {
 		t.Fatalf("expected unsupported remote warning, got: %s", result.stderr)
+	}
+}
+
+func TestRunWithStoreRingRenderRemoteUnsupportedAuth(t *testing.T) {
+	store := newTestStore(t)
+
+	if result := runCmd(store, "add", "cloud-sql",
+		"--transport", "http",
+		"--url", "https://sqladmin.googleapis.com/mcp",
+		"--client", "claude-code",
+		"--bearer-token-env-var", "CLOUDSQL_MCP_TOKEN"); result.code != 0 {
+		t.Fatalf("setup add cloud-sql failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "cloudsql-readonly", "--member", "cloud-sql"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "ring", "render", "cloudsql-readonly", "--client", "claude-code")
+	if result.code != 0 {
+		t.Fatalf("ring render claude-code failed: %s", result.stderr)
+	}
+	if !strings.Contains(result.stdout, `"mcpServers": {}`) {
+		t.Fatalf("expected empty MCP config for unsupported remote auth, got:\n%s", result.stdout)
+	}
+	if !strings.Contains(result.stderr, "requires bearer_token_env_var auth") ||
+		!strings.Contains(result.stderr, "claude-code render does not support yet") {
+		t.Fatalf("expected unsupported auth warning, got: %s", result.stderr)
 	}
 }
 

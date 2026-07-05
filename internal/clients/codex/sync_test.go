@@ -618,6 +618,9 @@ args = ["run", "weather.py"]
 	if got.OAuthResource != "https://sqladmin.googleapis.com/" {
 		t.Fatalf("expected OAuth resource, got: %q", got.OAuthResource)
 	}
+	if got.BearerTokenEnvVar != "CLOUDSQL_MCP_TOKEN" {
+		t.Fatalf("expected bearer token env var, got: %q", got.BearerTokenEnvVar)
+	}
 	if got.HTTPHeaders["x-goog-user-project"] != "example-project" {
 		t.Fatalf("expected manifest headers as http_headers, got: %#v", got.HTTPHeaders)
 	}
@@ -709,12 +712,13 @@ func TestSyncKeepsSSEPending(t *testing.T) {
 
 func newCloudSQLManifest() registry.Manifest {
 	return registry.Manifest{
-		Name:          "cloud-sql",
-		Transport:     registry.TransportHTTP,
-		URL:           "https://sqladmin.googleapis.com/mcp",
-		OAuthResource: "https://sqladmin.googleapis.com/",
-		Enabled:       true,
-		Clients:       []string{Target},
+		Name:              "cloud-sql",
+		Transport:         registry.TransportHTTP,
+		URL:               "https://sqladmin.googleapis.com/mcp",
+		OAuthResource:     "https://sqladmin.googleapis.com/",
+		BearerTokenEnvVar: "CLOUDSQL_MCP_TOKEN",
+		Enabled:           true,
+		Clients:           []string{Target},
 	}
 }
 

@@ -323,6 +323,7 @@ func (a cliApp) cmdAdd(args []string) error {
 	var transport string
 	var url string
 	var oauthResource string
+	var bearerTokenEnvVar string
 	var description string
 	var disabled bool
 	var timeoutMS int
@@ -338,6 +339,7 @@ func (a cliApp) cmdAdd(args []string) error {
 	fs.StringVar(&transport, "transport", "", "Server transport (stdio, http, or sse; default: stdio)")
 	fs.StringVar(&url, "url", "", "Remote MCP server URL for http/sse transports")
 	fs.StringVar(&oauthResource, "oauth-resource", "", "OAuth resource for remote MCP clients that support it")
+	fs.StringVar(&bearerTokenEnvVar, "bearer-token-env-var", "", "Runtime env key containing a bearer token for remote MCP clients that support it")
 	fs.StringVar(&description, "description", "", "Server description")
 	fs.IntVar(&timeoutMS, "timeout-ms", 0, "Remote MCP timeout in milliseconds")
 	fs.BoolVar(&disabled, "disabled", false, "Create server in disabled state")
@@ -389,21 +391,22 @@ func (a cliApp) cmdAdd(args []string) error {
 	}
 
 	manifest := registry.Manifest{
-		Name:          name,
-		Transport:     transport,
-		Command:       resolvedCommand,
-		Args:          append([]string(nil), cmdArgs...),
-		URL:           strings.TrimSpace(url),
-		Headers:       headers,
-		TimeoutMS:     timeoutMS,
-		OAuthResource: strings.TrimSpace(oauthResource),
-		Enabled:       !disabled,
-		Clients:       append([]string(nil), clients...),
-		Description:   description,
-		Env:           env,
-		RequiredEnv:   registry.RequiredEnv{Keys: append([]string(nil), requiredEnv...)},
-		SecretEnv:     registry.SecretEnv{Keys: append([]string(nil), secretEnv...)},
-		SecretHeaders: registry.SecretHeaders{Keys: append([]string(nil), secretHeaders...)},
+		Name:              name,
+		Transport:         transport,
+		Command:           resolvedCommand,
+		Args:              append([]string(nil), cmdArgs...),
+		URL:               strings.TrimSpace(url),
+		Headers:           headers,
+		TimeoutMS:         timeoutMS,
+		OAuthResource:     strings.TrimSpace(oauthResource),
+		BearerTokenEnvVar: strings.TrimSpace(bearerTokenEnvVar),
+		Enabled:           !disabled,
+		Clients:           append([]string(nil), clients...),
+		Description:       description,
+		Env:               env,
+		RequiredEnv:       registry.RequiredEnv{Keys: append([]string(nil), requiredEnv...)},
+		SecretEnv:         registry.SecretEnv{Keys: append([]string(nil), secretEnv...)},
+		SecretHeaders:     registry.SecretHeaders{Keys: append([]string(nil), secretHeaders...)},
 	}
 
 	if err := a.store.Add(manifest); err != nil {
@@ -457,13 +460,14 @@ func (a cliApp) cmdList(args []string) error {
 			clients := append([]string(nil), manifest.Clients...)
 			sort.Strings(clients)
 			payload.Servers = append(payload.Servers, serverJSON{
-				Name:      manifest.Name,
-				Enabled:   manifest.Enabled,
-				Transport: manifest.TransportType(),
-				Command:   manifest.Command,
-				URL:       manifest.URL,
-				Clients:   nonNilStrings(clients),
-				Sources:   nonNilStrings(managedSources[manifest.Name]),
+				Name:              manifest.Name,
+				Enabled:           manifest.Enabled,
+				Transport:         manifest.TransportType(),
+				Command:           manifest.Command,
+				URL:               manifest.URL,
+				BearerTokenEnvVar: manifest.BearerTokenEnvVar,
+				Clients:           nonNilStrings(clients),
+				Sources:           nonNilStrings(managedSources[manifest.Name]),
 			})
 		}
 		return writeJSON(a.stdout, payload)
@@ -892,14 +896,15 @@ func (a cliApp) cmdDoctor(args []string) error {
 				})
 			}
 			payload.Servers = append(payload.Servers, doctorServerJSON{
-				Name:      server.Name,
-				Enabled:   server.Enabled,
-				Transport: server.Transport,
-				Clients:   nonNilStrings(server.Clients),
-				Command:   server.Command,
-				URL:       server.URL,
-				Status:    string(server.Status),
-				Issues:    issues,
+				Name:              server.Name,
+				Enabled:           server.Enabled,
+				Transport:         server.Transport,
+				Clients:           nonNilStrings(server.Clients),
+				Command:           server.Command,
+				URL:               server.URL,
+				BearerTokenEnvVar: server.BearerTokenEnvVar,
+				Status:            string(server.Status),
+				Issues:            issues,
 			})
 		}
 		for _, manifestError := range report.ManifestErrors {
@@ -1395,7 +1400,7 @@ func manifestEndpoint(manifest registry.Manifest) string {
 func doctorEndpointDetail(server doctor.ServerReport) string {
 	switch server.Transport {
 	case registry.TransportHTTP, registry.TransportSSE:
-		pending := remotePendingTargets(server.Clients, server.Transport)
+		pending := remotePendingTargets(server.Clients, server.Transport, server.BearerTokenEnvVar)
 		if len(pending) == 0 {
 			return fmt.Sprintf("url=%s", server.URL)
 		}
@@ -1406,15 +1411,14 @@ func doctorEndpointDetail(server doctor.ServerReport) string {
 }
 
 // remotePendingTargets returns the manifest's sync targets whose adapters do
-// not materialize this remote transport yet.
-func remotePendingTargets(targets []string, transport string) []string {
+// not materialize this remote transport/auth combination yet.
+func remotePendingTargets(targets []string, transport, bearerTokenEnvVar string) []string {
 	pending := []string{}
 	for _, target := range targets {
-		adapter, known := syncAdapters[target]
-		if !known {
+		if _, known := syncAdapters[target]; !known {
 			continue
 		}
-		if !adapter.SupportsRemote(transport) {
+		if !targetSupportsRemoteManifest(target, transport, bearerTokenEnvVar) {
 			pending = append(pending, target)
 		}
 	}
@@ -1423,8 +1427,45 @@ func remotePendingTargets(targets []string, transport string) []string {
 }
 
 type unsupportedRemoteManifest struct {
-	Name      string
+	Name   string
+	Detail remoteUnsupportedDetail
+}
+
+type remoteUnsupportedDetail struct {
 	Transport string
+	Auth      string
+}
+
+func targetSupportsRemoteManifest(target, transport, bearerTokenEnvVar string) bool {
+	adapter, known := syncAdapters[target]
+	if !known || !adapter.SupportsRemote(transport) {
+		return false
+	}
+	if strings.TrimSpace(bearerTokenEnvVar) != "" && !supportsRemoteBearerTokenEnv(target) {
+		return false
+	}
+	return true
+}
+
+func unsupportedRemoteForTarget(manifest registry.Manifest, target string) (remoteUnsupportedDetail, bool) {
+	adapter, known := syncAdapters[target]
+	if !known || !adapter.SupportsRemote(manifest.TransportType()) {
+		return remoteUnsupportedDetail{Transport: manifest.TransportType()}, true
+	}
+	if manifest.RequiresBearerTokenEnv() && !supportsRemoteBearerTokenEnv(target) {
+		return remoteUnsupportedDetail{
+			Transport: manifest.TransportType(),
+			Auth:      "bearer_token_env_var auth",
+		}, true
+	}
+	return remoteUnsupportedDetail{}, false
+}
+
+func remoteUnsupportedWarning(name, target, action string, detail remoteUnsupportedDetail) string {
+	if detail.Auth != "" {
+		return fmt.Sprintf("remote %s requires %s; stored in registry, but %s %s does not materialize %s yet", name, detail.Auth, target, action, detail.Auth)
+	}
+	return fmt.Sprintf("remote %s uses %s transport; stored in registry, but %s %s does not materialize %s transports yet", name, detail.Transport, target, action, detail.Transport)
 }
 
 func remoteSkipNames(skips []unsupportedRemoteManifest) []string {
@@ -1437,7 +1478,6 @@ func remoteSkipNames(skips []unsupportedRemoteManifest) []string {
 }
 
 func filterSyncableManifests(manifests []registry.Manifest, target string) ([]registry.Manifest, []string, []unsupportedRemoteManifest) {
-	adapter, adapterKnown := syncAdapters[target]
 	out := make([]registry.Manifest, 0, len(manifests))
 	var skipped []string
 	var unsupportedRemote []unsupportedRemoteManifest
@@ -1447,11 +1487,14 @@ func filterSyncableManifests(manifests []registry.Manifest, target string) ([]re
 			continue
 		}
 		if manifest.IsRemote() {
-			if !adapterKnown || !adapter.SupportsRemote(manifest.TransportType()) {
+			if detail, unsupported := unsupportedRemoteForTarget(manifest, target); unsupported {
 				unsupportedRemote = append(unsupportedRemote, unsupportedRemoteManifest{
-					Name:      manifest.Name,
-					Transport: manifest.TransportType(),
+					Name:   manifest.Name,
+					Detail: detail,
 				})
+				if detail.Auth != "" {
+					manifest.Enabled = false
+				}
 			}
 			out = append(out, manifest)
 			continue
@@ -1630,7 +1673,7 @@ func printSyncSummary(stdout, stderr io.Writer, target, configPath string, dryRu
 	if len(unsupportedRemote) > 0 {
 		fmt.Fprintf(stdout, "unsupported remote: %s\n", formatNameList(remoteSkipNames(unsupportedRemote)))
 		for _, remote := range unsupportedRemote {
-			fmt.Fprintf(stderr, "warning: remote %s uses %s transport; stored in registry, but %s sync does not materialize %s transports yet\n", remote.Name, remote.Transport, target, remote.Transport)
+			fmt.Fprintf(stderr, "warning: %s\n", remoteUnsupportedWarning(remote.Name, target, "sync", remote.Detail))
 		}
 	}
 	if len(refused) > 0 {
@@ -1742,6 +1785,8 @@ func printAddHelp(out io.Writer) {
 	fmt.Fprintln(out, "                             well-known credential headers are always treated as secret")
 	fmt.Fprintln(out, "  --timeout-ms <ms>          Remote MCP timeout in milliseconds")
 	fmt.Fprintln(out, "  --oauth-resource <url>     OAuth resource for remote clients that support it")
+	fmt.Fprintln(out, "  --bearer-token-env-var <KEY>")
+	fmt.Fprintln(out, "                             Runtime env key containing a bearer token for remote clients that support it")
 	fmt.Fprintln(out, "  --client <client>          Target client id (required, repeatable)")
 	fmt.Fprintln(out, "  --arg <value>              Command argument (repeatable)")
 	fmt.Fprintln(out, "  --env KEY=VALUE            Environment variable (repeatable)")
@@ -1753,7 +1798,7 @@ func printAddHelp(out io.Writer) {
 	fmt.Fprintln(out, "Examples:")
 	fmt.Fprintln(out, "  madari add stewreads --command stewreads-mcp --client claude-desktop")
 	fmt.Fprintln(out, "  madari add mailer --command ./bin/mailer --client claude-desktop --required-env SMTP_PASSWORD")
-	fmt.Fprintln(out, "  madari add cloud-sql --transport http --url https://sqladmin.googleapis.com/mcp --client codex --oauth-resource https://sqladmin.googleapis.com/")
+	fmt.Fprintln(out, "  madari add cloud-sql --transport http --url https://sqladmin.googleapis.com/mcp --client codex --bearer-token-env-var CLOUDSQL_MCP_TOKEN")
 }
 
 func printInstallHelp(out io.Writer) {
