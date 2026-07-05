@@ -156,7 +156,7 @@ func TestRunWithStoreRunPlanBlocksMissingCodexBinary(t *testing.T) {
 	}
 }
 
-func TestRunWithStoreRunPlanBlocksCodexRingSkills(t *testing.T) {
+func TestRunWithStoreRunPlanIncludesCodexRingSkills(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
 	installFakeCodex(t, 0)
@@ -164,27 +164,52 @@ func TestRunWithStoreRunPlanBlocksCodexRingSkills(t *testing.T) {
 	if result := runCmd(store, "add", "helper", "--command", commandPath, "--client", "codex"); result.code != 0 {
 		t.Fatalf("setup helper failed: %s", result.stderr)
 	}
-	skillSource := writeSkillFile(t, t.TempDir(), "release.md", "# Release\n")
-	if result := runCmd(store, "skill", "add", "release", "--file", skillSource, "--description", "Release workflow"); result.code != 0 {
-		t.Fatalf("skill add failed: %s", result.stderr)
-	}
+	saveTestSkillPackage(t, store, "release", "Release workflow")
 	if result := runCmd(store, "ring", "create", "mixed", "--member", "helper", "--skill", "release"); result.code != 0 {
 		t.Fatalf("ring create failed: %s", result.stderr)
 	}
 
 	result := runCmd(store, "run", "codex", "--ring", "mixed", "--dry-run", "--json", "--", "prompt")
+	if result.code != 0 {
+		t.Fatalf("run plan failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	if !plan.Ready {
+		t.Fatalf("expected ready plan, got errors: %#v", plan.Errors)
+	}
+	if !plan.RunnerAvailable {
+		t.Fatalf("expected codex runner available, got: %#v", plan)
+	}
+	if skill := findRunPlanSkill(t, plan, "release"); skill.Status != "ready" || !slices.Equal(skill.Rings, []string{"mixed"}) {
+		t.Fatalf("expected ready skill, got: %#v", skill)
+	}
+	textResult := runCmd(store, "run", "codex", "--ring", "mixed", "--dry-run", "--", "prompt")
+	if textResult.code != 0 || !strings.Contains(textResult.stdout, "release ready rings=mixed") {
+		t.Fatalf("expected text dry-run to report ready skill, code=%d stdout=%s stderr=%s", textResult.code, textResult.stdout, textResult.stderr)
+	}
+}
+
+func TestRunWithStoreRunPlanBlocksMissingRingSkill(t *testing.T) {
+	store := newTestStore(t)
+	installFakeCodex(t, 0)
+
+	if err := store.SaveRing(registry.Ring{Name: "workflow", Skills: []string{"release"}}); err != nil {
+		t.Fatalf("setup stale skill ring: %v", err)
+	}
+
+	result := runCmd(store, "run", "codex", "--ring", "workflow", "--dry-run", "--json", "--", "prompt")
 	if result.code == 0 || !strings.Contains(result.stderr, "launch plan is not ready") {
 		t.Fatalf("expected blocked plan, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
 	}
 	plan := decodeRunPlan(t, result.stdout)
-	if !plan.RunnerAvailable {
-		t.Fatalf("expected codex runner available, got: %#v", plan)
+	if plan.Ready {
+		t.Fatalf("expected blocked plan, got: %#v", plan)
 	}
 	if skill := findRunPlanSkill(t, plan, "release"); skill.Status != "blocked" {
 		t.Fatalf("expected blocked skill, got: %#v", skill)
 	}
-	if !strings.Contains(strings.Join(plan.Errors, "\n"), "codex run does not support ring skills yet") {
-		t.Fatalf("expected skill-run unsupported error, got: %#v", plan.Errors)
+	if !strings.Contains(strings.Join(plan.Errors, "\n"), "skill release: skill is missing from the registry") {
+		t.Fatalf("expected missing skill error, got: %#v", plan.Errors)
 	}
 }
 

@@ -272,9 +272,7 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 		plan.Servers = append(plan.Servers, server)
 	}
 
-	if len(skillRings) > 0 && runnerImplemented {
-		addPlanError(fmt.Sprintf("%s run does not support ring skills yet", target))
-	} else if len(skillRings) > 0 && !supportsSkillMaterialization(target) {
+	if len(skillRings) > 0 && !supportsSkillMaterialization(target) {
 		addPlanError(fmt.Sprintf("%s does not support skill materialization (supported skill targets: %s)", target, strings.Join(supportedSkillTargets(), ", ")))
 	}
 	skillNames := sortedStringSliceMapKeys(skillRings)
@@ -292,9 +290,7 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 				return runLaunchPlan{}, err
 			}
 		}
-		if runnerImplemented {
-			skill.Issues = append(skill.Issues, fmt.Sprintf("%s run does not support ring skills yet", target))
-		} else if !supportsSkillMaterialization(target) {
+		if !supportsSkillMaterialization(target) {
 			skill.Issues = append(skill.Issues, fmt.Sprintf("%s does not support skill materialization", target))
 		}
 		if len(skill.Issues) > 0 {
@@ -528,9 +524,10 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  execution starts `codex exec --ephemeral --ignore-user-config")
 	fmt.Fprintln(out, "  --skip-git-repo-check --sandbox read-only`, clears inherited MCP")
 	fmt.Fprintln(out, "  config, and injects selected ring MCP servers as required config")
-	fmt.Fprintln(out, "  overrides from an isolated working root. Stdio servers keep the")
-	fmt.Fprintln(out, "  original working directory. Other clients are dry-run only for now.")
-	fmt.Fprintln(out, "  Run never writes client config, managed state, or skill package files.")
+	fmt.Fprintln(out, "  overrides from an isolated working root and materializes selected")
+	fmt.Fprintln(out, "  ring skills into that temporary root. Stdio servers keep the original")
+	fmt.Fprintln(out, "  working directory. Other clients are dry-run only for now.")
+	fmt.Fprintln(out, "  Run never writes client config, managed state, or permanent skill files.")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Examples:")
 	fmt.Fprintln(out, "  madari run codex --ring cloudsql-readonly -- \"Who are the top 5 ebook creators?\"")

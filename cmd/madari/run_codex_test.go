@@ -19,6 +19,8 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 	}
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
+	projectDir := t.TempDir()
+	chdirForTest(t, projectDir)
 	logPath := installFakeCodex(t, 0)
 	stdinRead, stdinWrite, err := os.Pipe()
 	if err != nil {
@@ -71,9 +73,11 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save local-helper: %v", err)
 	}
+	saveTestSkillPackage(t, store, "release", "Release workflow")
 	if err := store.SaveRing(registry.Ring{
 		Name:        "database",
 		Members:     []string{"cloud-sql"},
+		Skills:      []string{"release"},
 		Description: "Database access",
 		Contract: &registry.RingContract{
 			Summary:         "Use bounded read-only SQL.",
@@ -125,6 +129,35 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 	if _, err := os.Stat(runRoot); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected isolated codex run root to be cleaned up, stat err=%v", err)
 	}
+	skillFiles, err := os.ReadFile(logPath + ".skillfiles")
+	if err != nil {
+		t.Fatalf("read fake codex skill files: %v", err)
+	}
+	for _, want := range []string{
+		".agents/skills/release/SKILL.md",
+		".agents/skills/release/references/CHECKLIST.md",
+	} {
+		if !strings.Contains(string(skillFiles), want) {
+			t.Fatalf("expected materialized skill file %q, got:\n%s", want, skillFiles)
+		}
+	}
+	skillBody, err := os.ReadFile(logPath + ".release")
+	if err != nil {
+		t.Fatalf("read fake codex skill body: %v", err)
+	}
+	if !strings.Contains(string(skillBody), "# release") {
+		t.Fatalf("expected materialized skill body, got:\n%s", skillBody)
+	}
+	checklist, err := os.ReadFile(logPath + ".checklist")
+	if err != nil {
+		t.Fatalf("read fake codex skill reference: %v", err)
+	}
+	if string(checklist) != "release checklist\n" {
+		t.Fatalf("expected materialized skill reference, got %q", string(checklist))
+	}
+	if _, err := os.Stat(filepath.Join(projectDir, ".agents")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("run should not materialize skills in original project root, stat err=%v", err)
+	}
 	overrides := collectConfigOverrides(args)
 	if len(overrides) != 1 {
 		t.Fatalf("expected one config override, got %#v from args %#v", overrides, args)
@@ -152,6 +185,9 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 		"good_for:",
 		"- aggregate reporting",
 		"- helpers",
+		"Selected skills:",
+		"- release: Release workflow",
+		"Selected ring skills are materialized as Codex project skills for this session.",
 		"Use only external MCP capabilities made available by the selected Madari rings.",
 		"Original working directory:",
 		"project-scoped Codex config cannot add capabilities outside these rings.",
@@ -177,7 +213,7 @@ func TestRunWithStoreCodexRunPropagatesCodexFailure(t *testing.T) {
 	}
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
-	installFakeCodex(t, 17)
+	logPath := installFakeCodex(t, 17)
 
 	if err := store.Save(registry.Manifest{
 		Name:    "helper",
@@ -187,7 +223,8 @@ func TestRunWithStoreCodexRunPropagatesCodexFailure(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save helper: %v", err)
 	}
-	if err := store.SaveRing(registry.Ring{Name: "helpers", Members: []string{"helper"}}); err != nil {
+	saveTestSkillPackage(t, store, "release", "Release workflow")
+	if err := store.SaveRing(registry.Ring{Name: "helpers", Members: []string{"helper"}, Skills: []string{"release"}}); err != nil {
 		t.Fatalf("save ring: %v", err)
 	}
 
@@ -199,6 +236,22 @@ func TestRunWithStoreCodexRunPropagatesCodexFailure(t *testing.T) {
 		!strings.Contains(result.stderr, "codex stderr") ||
 		!strings.Contains(result.stderr, "run codex exec") {
 		t.Fatalf("expected forwarded output and wrapped error, stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	args := readNULArgs(t, logPath)
+	wantPrefix := []string{"exec", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--cd"}
+	if len(args) <= len(wantPrefix) || !slices.Equal(args[:len(wantPrefix)], wantPrefix) {
+		t.Fatalf("unexpected codex args prefix:\n%#v", args)
+	}
+	skillFiles, err := os.ReadFile(logPath + ".skillfiles")
+	if err != nil {
+		t.Fatalf("read fake codex skill files: %v", err)
+	}
+	if !strings.Contains(string(skillFiles), ".agents/skills/release/SKILL.md") {
+		t.Fatalf("expected failed codex run to see materialized skill, got:\n%s", skillFiles)
+	}
+	runRoot := args[len(wantPrefix)]
+	if _, err := os.Stat(runRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected failed codex run root to be cleaned up, stat err=%v", err)
 	}
 }
 
@@ -235,6 +288,9 @@ func installFakeCodex(t *testing.T, exitCode int) string {
 	script := []byte("#!/bin/sh\n" +
 		"printf '%s' \"$PWD\" > '" + logPath + ".pwd'\n" +
 		"for arg in \"$@\"; do printf '%s\\0' \"$arg\" >> '" + logPath + "'; done\n" +
+		"if [ -d .agents/skills ]; then find .agents/skills -type f | sort > '" + logPath + ".skillfiles'; else : > '" + logPath + ".skillfiles'; fi\n" +
+		"if [ -f .agents/skills/release/SKILL.md ]; then cat .agents/skills/release/SKILL.md > '" + logPath + ".release'; else : > '" + logPath + ".release'; fi\n" +
+		"if [ -f .agents/skills/release/references/CHECKLIST.md ]; then cat .agents/skills/release/references/CHECKLIST.md > '" + logPath + ".checklist'; else : > '" + logPath + ".checklist'; fi\n" +
 		"if IFS= read line; then printf '%s' \"$line\" > '" + logPath + ".stdin'; else : > '" + logPath + ".stdin'; fi\n" +
 		"printf 'codex stdout\\n'\n" +
 		"printf 'codex stderr\\n' >&2\n" +
@@ -249,6 +305,23 @@ func installFakeCodex(t *testing.T, exitCode int) string {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return logPath
+}
+
+func saveTestSkillPackage(t *testing.T, store *registry.Store, name, description string) {
+	t.Helper()
+	sourceDir := filepath.Join(t.TempDir(), name)
+	if err := os.MkdirAll(filepath.Join(sourceDir, "references"), 0o755); err != nil {
+		t.Fatalf("mkdir skill references: %v", err)
+	}
+	writeTextFile(t, sourceDir, "SKILL.md", "---\nname: "+name+"\ndescription: "+description+"\n---\n\n# "+name+"\n")
+	writeTextFile(t, filepath.Join(sourceDir, "references"), "CHECKLIST.md", name+" checklist\n")
+	pkg, err := registry.NewSkillPackageFromDir(sourceDir)
+	if err != nil {
+		t.Fatalf("read skill package: %v", err)
+	}
+	if err := store.SaveSkillPackage(pkg); err != nil {
+		t.Fatalf("save skill package: %v", err)
+	}
 }
 
 func readNULArgs(t *testing.T, path string) []string {
