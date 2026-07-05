@@ -46,10 +46,11 @@ Remote materialization is per client and per transport:
 
 Remote auth metadata is validated separately from transport support. For
 example, `claude-code` and `gemini` can materialize remote URLs, but entries
-that require `bearer_token_env_var` stay pending for those clients until an
-equivalent auth config shape is validated. `oauth_resource` is for clients and
-servers that support OAuth resource metadata; `bearer_token_env_var` stores
-only the env var name, never the bearer token value.
+that require `oauth_resource` or `bearer_token_env_var` stay pending for those
+clients until equivalent auth config shapes are validated. `oauth_resource` is
+for clients and servers that support OAuth resource metadata;
+`bearer_token_env_var` stores only the env var name, never the bearer token
+value.
 
 ### `[headers]`
 

@@ -1,8 +1,9 @@
 # madari (muh-DAA-ree)
 
 Madari is a local-first CLI for managing MCP capability setup across AI clients.
-It registers MCP servers, stores reusable skills, groups them into rings, and
-syncs only the entries it owns into client config files.
+It registers MCP servers, stores reusable skills, groups them into rings,
+plans ring-based agent launches, and syncs only the entries it owns into
+client config files.
 
 Madari is intentionally static: no daemon, proxy, or background mux. It helps
 the AI clients and agents you already use get the right capabilities with
@@ -98,6 +99,13 @@ madari ring render research --client codex
 claude --mcp-config <(madari ring render research --client claude-code)
 ```
 
+Or inspect the launch plan for one or more rings before starting a client:
+
+```bash
+madari run codex --ring research --dry-run -- \
+  "Use this ring to inspect the target context."
+```
+
 Use `madari help <command>` or `docs/cli-reference.md` for complete command
 syntax.
 
@@ -126,6 +134,11 @@ refuses to adopt or overwrite unmanaged config blocks.
 **Render** prints client-native MCP config to stdout without changing state. It
 is useful for temporary sessions and experiments.
 
+**Run** plans an ephemeral client launch from one or more rings. The first
+implementation is dry-run only: it resolves ring members, validates client
+support and runtime env requirements, and reports what would be made available
+without writing config files or starting the client.
+
 ## Safety Model
 
 - Local-first registry and human-readable config files
@@ -138,6 +151,8 @@ is useful for temporary sessions and experiments.
   `ring render` never emits them
 - Bearer token env references store only the env var name; the token value
   stays in the runtime environment
+- `madari run --dry-run` checks runtime env keys by name without printing
+  their values
 - Diagnostics through `madari doctor`, `madari status`, and `madari ring status`
 
 ## Supported Clients
@@ -153,7 +168,8 @@ Madari can sync MCP servers for:
 Remote (`http`/`sse`) servers currently materialize for `claude-code` and
 `gemini` (both transports) and `codex` (`http` only); other targets store
 remote manifests and report them as pending. Remote entries that require
-`bearer_token_env_var` currently materialize only for `codex`.
+`oauth_resource` or `bearer_token_env_var` currently materialize only for
+`codex`.
 
 Madari can materialize skills for:
 

@@ -1384,6 +1384,9 @@ func TestRunWithStoreSubcommandHelpFlags(t *testing.T) {
 	if result := runCmd(store, "sync", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari sync <client>") {
 		t.Fatalf("expected sync --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
 	}
+	if result := runCmd(store, "run", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari run <client>") {
+		t.Fatalf("expected run --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
 	if result := runCmd(store, "skill", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari skill <subcommand>") {
 		t.Fatalf("expected skill --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
 	}
@@ -2362,6 +2365,66 @@ func TestRunWithStoreDoctorAndStatusInspectGeminiConfig(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreDoctorMarksOAuthResourceRemotePending(t *testing.T) {
+	store := newTestStore(t)
+
+	if result := runCmd(store, "add", "cloud-sql",
+		"--transport", "http",
+		"--url", "https://sqladmin.googleapis.com/mcp",
+		"--client", "gemini",
+		"--oauth-resource", "https://sqladmin.googleapis.com/"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), ".gemini", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("create config dir: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(`{"mcpServers":{}}`), 0o644); err != nil {
+		t.Fatalf("write Gemini config fixture: %v", err)
+	}
+
+	result := runCmd(store, "doctor", "--client-config", "gemini="+configPath)
+	if result.code != 0 {
+		t.Fatalf("doctor expected success, got code=%d stderr=%s stdout=%s", result.code, result.stderr, result.stdout)
+	}
+	if !strings.Contains(result.stdout, "url=https://sqladmin.googleapis.com/mcp sync=pending(gemini)") {
+		t.Fatalf("expected oauth_resource remote to be pending for gemini, got: %s", result.stdout)
+	}
+}
+
+func TestRunWithStoreDoctorSkipsConfigForUnsupportedOAuthResourceRemote(t *testing.T) {
+	store := newTestStore(t)
+
+	if result := runCmd(store, "add", "cloud-sql",
+		"--transport", "http",
+		"--url", "https://sqladmin.googleapis.com/mcp",
+		"--client", "gemini",
+		"--oauth-resource", "https://sqladmin.googleapis.com/"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	missingConfigPath := filepath.Join(t.TempDir(), ".gemini", "settings.json")
+	result := runCmd(store, "doctor", "--client-config", "gemini="+missingConfigPath)
+	if result.code != 0 {
+		t.Fatalf("doctor expected success, got code=%d stderr=%s stdout=%s", result.code, result.stderr, result.stdout)
+	}
+	if !strings.Contains(result.stdout, "url=https://sqladmin.googleapis.com/mcp sync=pending(gemini)") {
+		t.Fatalf("expected oauth_resource remote to be pending for gemini, got: %s", result.stdout)
+	}
+	if strings.Contains(result.stdout, "gemini config:") || strings.Contains(result.stdout, "config file not found") {
+		t.Fatalf("expected unsupported oauth_resource remote not to require gemini config inspection, got: %s", result.stdout)
+	}
+
+	result = runCmd(store, "status", "--client-config", "gemini="+missingConfigPath)
+	if result.code != 0 {
+		t.Fatalf("status expected success, got code=%d stderr=%s stdout=%s", result.code, result.stderr, result.stdout)
+	}
+	if strings.Contains(result.stdout, "gemini-config:") {
+		t.Fatalf("expected unsupported oauth_resource remote not to require gemini config status, got: %s", result.stdout)
+	}
+}
+
 func TestRunWithStoreDoctorAndStatusInspectCodexConfig(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
@@ -2804,6 +2867,35 @@ func TestRunWithStoreSyncReportsUnsupportedRemoteAuth(t *testing.T) {
 `, configPath)
 	if result.stdout != expected {
 		t.Fatalf("sync --json unsupported remote auth schema drift:\nwant:\n%s\ngot:\n%s", expected, result.stdout)
+	}
+}
+
+func TestRunWithStoreSyncReportsUnsupportedRemoteOAuthResource(t *testing.T) {
+	store := newTestStore(t)
+
+	if result := runCmd(store, "add", "cloud-sql",
+		"--transport", "http",
+		"--url", "https://sqladmin.googleapis.com/mcp",
+		"--client", "gemini",
+		"--oauth-resource", "https://sqladmin.googleapis.com/"); result.code != 0 {
+		t.Fatalf("setup add failed: %s", result.stderr)
+	}
+
+	configPath := filepath.Join(t.TempDir(), "settings.json")
+	result := runCmd(store, "sync", "gemini", "--dry-run", "--config-path", configPath)
+	if result.code != 0 {
+		t.Fatalf("sync dry-run failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	if !strings.Contains(result.stdout, "unsupported remote: cloud-sql") {
+		t.Fatalf("expected unsupported remote summary, got: %s", result.stdout)
+	}
+	if strings.Contains(result.stdout, "added: cloud-sql") {
+		t.Fatalf("expected oauth-unsupported remote not to be added, got: %s", result.stdout)
+	}
+	if !strings.Contains(result.stderr, "cloud-sql requires oauth_resource auth") ||
+		!strings.Contains(result.stderr, "stored in registry") ||
+		!strings.Contains(result.stderr, "gemini sync does not materialize oauth_resource auth yet") {
+		t.Fatalf("expected unsupported oauth_resource warning, got: %s", result.stderr)
 	}
 }
 

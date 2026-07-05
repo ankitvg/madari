@@ -152,6 +152,8 @@ func (a cliApp) dispatch(args []string) error {
 		return a.cmdImport(args[1:])
 	case "sync":
 		return a.cmdSync(args[1:])
+	case "run":
+		return a.cmdRun(args[1:])
 	case "ring":
 		return a.cmdRing(args[1:])
 	case "skill":
@@ -902,6 +904,7 @@ func (a cliApp) cmdDoctor(args []string) error {
 				Clients:           nonNilStrings(server.Clients),
 				Command:           server.Command,
 				URL:               server.URL,
+				OAuthResource:     server.OAuthResource,
 				BearerTokenEnvVar: server.BearerTokenEnvVar,
 				Status:            string(server.Status),
 				Issues:            issues,
@@ -1400,7 +1403,7 @@ func manifestEndpoint(manifest registry.Manifest) string {
 func doctorEndpointDetail(server doctor.ServerReport) string {
 	switch server.Transport {
 	case registry.TransportHTTP, registry.TransportSSE:
-		pending := remotePendingTargets(server.Clients, server.Transport, server.BearerTokenEnvVar)
+		pending := remotePendingTargets(server.Clients, server.Transport, server.OAuthResource, server.BearerTokenEnvVar)
 		if len(pending) == 0 {
 			return fmt.Sprintf("url=%s", server.URL)
 		}
@@ -1412,13 +1415,13 @@ func doctorEndpointDetail(server doctor.ServerReport) string {
 
 // remotePendingTargets returns the manifest's sync targets whose adapters do
 // not materialize this remote transport/auth combination yet.
-func remotePendingTargets(targets []string, transport, bearerTokenEnvVar string) []string {
+func remotePendingTargets(targets []string, transport, oauthResource, bearerTokenEnvVar string) []string {
 	pending := []string{}
 	for _, target := range targets {
 		if _, known := syncAdapters[target]; !known {
 			continue
 		}
-		if !targetSupportsRemoteManifest(target, transport, bearerTokenEnvVar) {
+		if !targetSupportsRemoteManifest(target, transport, oauthResource, bearerTokenEnvVar) {
 			pending = append(pending, target)
 		}
 	}
@@ -1436,9 +1439,12 @@ type remoteUnsupportedDetail struct {
 	Auth      string
 }
 
-func targetSupportsRemoteManifest(target, transport, bearerTokenEnvVar string) bool {
+func targetSupportsRemoteManifest(target, transport, oauthResource, bearerTokenEnvVar string) bool {
 	adapter, known := syncAdapters[target]
 	if !known || !adapter.SupportsRemote(transport) {
+		return false
+	}
+	if strings.TrimSpace(oauthResource) != "" && !supportsRemoteOAuthResource(target) {
 		return false
 	}
 	if strings.TrimSpace(bearerTokenEnvVar) != "" && !supportsRemoteBearerTokenEnv(target) {
@@ -1451,6 +1457,12 @@ func unsupportedRemoteForTarget(manifest registry.Manifest, target string) (remo
 	adapter, known := syncAdapters[target]
 	if !known || !adapter.SupportsRemote(manifest.TransportType()) {
 		return remoteUnsupportedDetail{Transport: manifest.TransportType()}, true
+	}
+	if strings.TrimSpace(manifest.OAuthResource) != "" && !supportsRemoteOAuthResource(target) {
+		return remoteUnsupportedDetail{
+			Transport: manifest.TransportType(),
+			Auth:      "oauth_resource auth",
+		}, true
 	}
 	if manifest.RequiresBearerTokenEnv() && !supportsRemoteBearerTokenEnv(target) {
 		return remoteUnsupportedDetail{
@@ -1722,6 +1734,8 @@ func printCommandHelp(command string, out io.Writer) bool {
 		printEnableDisableHelp("disable", out)
 	case "sync":
 		printSyncHelp(out)
+	case "run":
+		printRunHelp(out)
 	case "ring":
 		printRingHelp(out)
 	case "skill":
@@ -1959,6 +1973,7 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  enable    Enable a server")
 	fmt.Fprintln(out, "  disable   Disable a server")
 	fmt.Fprintln(out, "  sync      Sync server manifests to a client config")
+	fmt.Fprintln(out, "  run       Plan an ephemeral client launch from rings")
 	fmt.Fprintln(out, "  ring      Manage rings (named capability sets of servers)")
 	fmt.Fprintln(out, "  skill     Manage Agent Skill packages")
 	fmt.Fprintln(out, "  clients   List sync client config readiness")
@@ -1978,6 +1993,7 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  madari disable stewreads")
 	fmt.Fprintln(out, "  madari sync claude-desktop --dry-run")
 	fmt.Fprintln(out, "  madari sync claude-code --dry-run")
+	fmt.Fprintln(out, "  madari run codex --ring research --dry-run -- \"Use this ring\"")
 	fmt.Fprintln(out, "  madari skill add --dir ./release")
 	fmt.Fprintln(out, "  madari skill render release")
 	fmt.Fprintln(out, "  madari skill render release --client codex")

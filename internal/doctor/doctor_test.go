@@ -9,6 +9,7 @@ import (
 
 	"github.com/ankitvg/madari/internal/clients"
 	"github.com/ankitvg/madari/internal/clients/claudecode"
+	"github.com/ankitvg/madari/internal/clients/gemini"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -719,6 +720,72 @@ func TestRunDriftDetection(t *testing.T) {
 	}
 	if report.Summary.Warning < 1 {
 		t.Fatalf("expected drift to count as warning, got summary: %#v", report.Summary)
+	}
+}
+
+func TestRunDriftTreatsUnsupportedOAuthRemoteAsOrphaned(t *testing.T) {
+	tmp := t.TempDir()
+	store := registry.NewStore(filepath.Join(tmp, "servers"))
+	if err := store.Save(registry.Manifest{
+		Name:          "cloud-sql",
+		Transport:     registry.TransportHTTP,
+		URL:           "https://sqladmin.googleapis.com/mcp",
+		OAuthResource: "https://sqladmin.googleapis.com/",
+		Enabled:       true,
+		Clients:       []string{"gemini"},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+
+	configPath := filepath.Join(tmp, ".gemini", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("create config dir: %v", err)
+	}
+	config := `{
+  "mcpServers": {
+    "cloud-sql": {"httpUrl": "https://sqladmin.googleapis.com/mcp"}
+  }
+}
+`
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		t.Fatalf("write config fixture: %v", err)
+	}
+
+	statePath := filepath.Join(tmp, "state", "gemini-managed.json")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+	state := `{"version":2,"managed_servers":{"cloud-sql":["standalone"]}}`
+	if err := os.WriteFile(statePath, []byte(state), 0o644); err != nil {
+		t.Fatalf("write state fixture: %v", err)
+	}
+
+	adapter := gemini.Adapter{}
+	report, err := Run(store, Options{
+		Adapters: []clients.ClientAdapter{adapter},
+		ConfigPathOverrides: map[string]string{
+			"gemini": configPath,
+		},
+		DriftTargets: []DriftTarget{
+			{Adapter: adapter, StatePath: statePath, ConfigPath: configPath},
+		},
+	})
+	if err != nil {
+		t.Fatalf("doctor run failed: %v", err)
+	}
+
+	if len(report.Drift) != 1 {
+		t.Fatalf("expected one drift report, got: %#v", report.Drift)
+	}
+	dr := report.Drift[0]
+	if dr.Status != StatusWarning {
+		t.Fatalf("expected drift warning, got: %#v", dr)
+	}
+	if len(dr.Orphaned) != 1 || dr.Orphaned[0] != "cloud-sql" {
+		t.Fatalf("expected unsupported oauth remote to be orphaned, got: %#v", dr)
+	}
+	if len(dr.Stale) != 0 || len(dr.Missing) != 0 {
+		t.Fatalf("expected no stale or missing entries, got: %#v", dr)
 	}
 }
 
