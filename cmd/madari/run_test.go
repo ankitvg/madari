@@ -1384,6 +1384,9 @@ func TestRunWithStoreSubcommandHelpFlags(t *testing.T) {
 	if result := runCmd(store, "sync", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari sync <client>") {
 		t.Fatalf("expected sync --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
 	}
+	if result := runCmd(store, "run", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari run <client>") {
+		t.Fatalf("expected run --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
 	if result := runCmd(store, "skill", "--help"); result.code != 0 || !strings.Contains(result.stdout, "madari skill <subcommand>") {
 		t.Fatalf("expected skill --help to print command help, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
 	}

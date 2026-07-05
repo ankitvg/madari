@@ -152,6 +152,8 @@ func (a cliApp) dispatch(args []string) error {
 		return a.cmdImport(args[1:])
 	case "sync":
 		return a.cmdSync(args[1:])
+	case "run":
+		return a.cmdRun(args[1:])
 	case "ring":
 		return a.cmdRing(args[1:])
 	case "skill":
@@ -1722,6 +1724,8 @@ func printCommandHelp(command string, out io.Writer) bool {
 		printEnableDisableHelp("disable", out)
 	case "sync":
 		printSyncHelp(out)
+	case "run":
+		printRunHelp(out)
 	case "ring":
 		printRingHelp(out)
 	case "skill":
@@ -1959,6 +1963,7 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  enable    Enable a server")
 	fmt.Fprintln(out, "  disable   Disable a server")
 	fmt.Fprintln(out, "  sync      Sync server manifests to a client config")
+	fmt.Fprintln(out, "  run       Plan an ephemeral client launch from rings")
 	fmt.Fprintln(out, "  ring      Manage rings (named capability sets of servers)")
 	fmt.Fprintln(out, "  skill     Manage Agent Skill packages")
 	fmt.Fprintln(out, "  clients   List sync client config readiness")
@@ -1978,6 +1983,7 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  madari disable stewreads")
 	fmt.Fprintln(out, "  madari sync claude-desktop --dry-run")
 	fmt.Fprintln(out, "  madari sync claude-code --dry-run")
+	fmt.Fprintln(out, "  madari run codex --ring research --dry-run -- \"Use this ring\"")
 	fmt.Fprintln(out, "  madari skill add --dir ./release")
 	fmt.Fprintln(out, "  madari skill render release")
 	fmt.Fprintln(out, "  madari skill render release --client codex")
