@@ -199,6 +199,47 @@ func TestRunWithStoreRunPlanBlocksUnsupportedOAuthResource(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreRunPlanMissingServerRuntimeEnvIsEmptyArray(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+
+	if err := store.Save(registry.Manifest{
+		Name:    "helper",
+		Command: commandPath,
+		Enabled: true,
+		Clients: []string{"codex"},
+	}); err != nil {
+		t.Fatalf("setup helper failed: %v", err)
+	}
+	if result := runCmd(store, "ring", "create", "helpers", "--member", "helper"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "remove", "helper"); result.code != 0 {
+		t.Fatalf("remove helper failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "run", "codex", "--ring", "helpers", "--dry-run", "--json", "--", "prompt")
+	if result.code == 0 || !strings.Contains(result.stderr, "launch plan is not ready") {
+		t.Fatalf("expected blocked plan, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	var raw struct {
+		Servers []map[string]any `json:"servers"`
+	}
+	if err := json.Unmarshal([]byte(result.stdout), &raw); err != nil {
+		t.Fatalf("decode raw run plan: %v\n%s", err, result.stdout)
+	}
+	if len(raw.Servers) != 1 {
+		t.Fatalf("expected one server, got: %#v", raw.Servers)
+	}
+	runtimeEnv, ok := raw.Servers[0]["runtime_env"].([]any)
+	if !ok {
+		t.Fatalf("expected runtime_env to be an array, got %#v in %s", raw.Servers[0]["runtime_env"], result.stdout)
+	}
+	if len(runtimeEnv) != 0 {
+		t.Fatalf("expected empty runtime_env array, got %#v", runtimeEnv)
+	}
+}
+
 func TestRunWithStoreRunPlanBlocksUnsupportedSkillTarget(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)

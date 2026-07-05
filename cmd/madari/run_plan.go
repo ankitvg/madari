@@ -186,10 +186,11 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 	for _, name := range serverNames {
 		rings := serverRings[name]
 		server := runPlanServer{
-			Name:   name,
-			Status: "ready",
-			Rings:  nonNilStrings(append([]string(nil), rings...)),
-			Issues: []string{},
+			Name:       name,
+			Status:     "ready",
+			RuntimeEnv: []string{},
+			Rings:      nonNilStrings(append([]string(nil), rings...)),
+			Issues:     []string{},
 		}
 		manifest, exists := manifestByName[name]
 		if !exists {

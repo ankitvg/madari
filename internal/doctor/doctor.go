@@ -285,7 +285,7 @@ func checkDrift(manifests []registry.Manifest, targets []DriftTarget, rings []re
 			continue
 		}
 
-		plan, err := target.Adapter.Sync(syncableForTarget(manifests, target.Adapter.Target()), clients.SyncOptions{
+		plan, err := target.Adapter.Sync(syncableForTarget(manifests, target.Adapter.Target(), target.Adapter.SupportsRemote), clients.SyncOptions{
 			ConfigPath: target.ConfigPath,
 			StatePath:  target.StatePath,
 			Rings:      rings,
@@ -316,13 +316,17 @@ func checkDrift(manifests []registry.Manifest, targets []DriftTarget, rings []re
 }
 
 // syncableForTarget mirrors the sync command's manifest filtering: entries
-// enabled for this target whose command fails validation never reach the
-// adapter, so the drift plan matches what `madari sync` would actually do.
-func syncableForTarget(manifests []registry.Manifest, target string) []registry.Manifest {
+// enabled for this target whose command or remote auth shape cannot be
+// materialized never reach the adapter as eligible, so the drift plan matches
+// what `madari sync` would actually do.
+func syncableForTarget(manifests []registry.Manifest, target string, supportsRemote func(transport string) bool) []registry.Manifest {
 	out := make([]registry.Manifest, 0, len(manifests))
 	for _, manifest := range manifests {
-		if manifest.Enabled && manifest.HasClient(target) && !manifest.IsRemote() {
-			if issue := validateAbsoluteExecutablePath(manifest.Command); issue != nil {
+		if manifest.Enabled && manifest.HasClient(target) {
+			switch {
+			case manifest.IsRemote() && !targetSupportsRemoteManifest(manifest, target, supportsRemote):
+				manifest.Enabled = false
+			case !manifest.IsRemote() && validateAbsoluteExecutablePath(manifest.Command) != nil:
 				continue
 			}
 		}
@@ -669,8 +673,8 @@ func hasTarget(manifest registry.Manifest, targets []string) bool {
 func hasTargetInManifests(manifests []registry.Manifest, target string, supportsRemote func(transport string) bool) bool {
 	for _, manifest := range manifests {
 		// Remote manifests only warrant a client config on disk when the
-		// target's adapter materializes their transport.
-		if manifest.IsRemote() && (!supportsRemote(manifest.TransportType()) || (manifest.RequiresBearerTokenEnv() && target != codex.Target)) {
+		// target's adapter materializes their transport and auth metadata.
+		if manifest.IsRemote() && !targetSupportsRemoteManifest(manifest, target, supportsRemote) {
 			continue
 		}
 		if manifest.HasClient(target) {
@@ -678,6 +682,22 @@ func hasTargetInManifests(manifests []registry.Manifest, target string, supports
 		}
 	}
 	return false
+}
+
+func targetSupportsRemoteManifest(manifest registry.Manifest, target string, supportsRemote func(transport string) bool) bool {
+	if !manifest.IsRemote() {
+		return true
+	}
+	if supportsRemote == nil || !supportsRemote(manifest.TransportType()) {
+		return false
+	}
+	if strings.TrimSpace(manifest.OAuthResource) != "" && target != codex.Target {
+		return false
+	}
+	if manifest.RequiresBearerTokenEnv() && target != codex.Target {
+		return false
+	}
+	return true
 }
 
 // validateAbsoluteExecutablePath wraps the shared command-validity check so
