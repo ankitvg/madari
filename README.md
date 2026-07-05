@@ -102,7 +102,7 @@ madari ring render research --client codex
 claude --mcp-config <(madari ring render research --client claude-code)
 ```
 
-Or run Codex with one or more server-only rings without mutating Codex config:
+Or run Codex with one or more rings without mutating Codex config:
 
 ```bash
 madari run codex --ring thinking -- \
@@ -138,11 +138,12 @@ refuses to adopt or overwrite unmanaged config blocks.
 is useful for temporary sessions and experiments.
 
 **Run** starts or plans an ephemeral client launch from one or more rings.
-Codex execution injects selected server members into `codex exec` without
-writing client config or managed state. Codex run clears inherited MCP config,
-marks the selected servers required, and runs from an isolated working root so
-project-scoped Codex config cannot add unselected capabilities. Other clients,
-and rings containing skills, are dry-run only for now.
+Codex execution injects selected server members into `codex exec`, temporarily
+materializes selected skill members as Codex project skills, and writes no
+client config or managed state. Codex run clears inherited MCP config, marks
+the selected servers required, and runs from an isolated working root so
+project-scoped Codex config cannot add unselected capabilities. Other clients
+remain dry-run only for now.
 
 ## Safety Model
 

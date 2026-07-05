@@ -203,20 +203,21 @@ madari run codex --ring cloudsql-readonly --ring research --dry-run --json -- "I
 client. Codex execution starts `codex exec --ephemeral --ignore-user-config
 --skip-git-repo-check --sandbox read-only` with selected ring MCP servers
 injected as required config overrides from an isolated working root after
-clearing inherited MCP server config. Stdio servers keep the original working
-directory through `mcp_servers.<id>.cwd`. Other clients remain dry-run only for
-now.
+clearing inherited MCP server config. Selected ring skills are materialized
+under the temporary Codex run root as project skills for that session. Stdio
+servers keep the original working directory through `mcp_servers.<id>.cwd`.
+Other clients remain dry-run only for now.
 
 The planner resolves every selected ring, deduplicates shared server and skill
 members, validates the selected client can express each required capability,
 checks runtime env keys by name, and reports the launch plan. Run never writes
-client config, creates managed state, or materializes skill packages.
+client config, creates managed state, or permanently materializes skill
+packages.
 
 Unlike `ring render`, `run` is fail-closed. A disabled member, missing member,
 unsupported remote transport or auth mode, missing runtime env key, or
 unsupported skill target blocks the plan instead of silently omitting that
-capability. Rings containing skills also block Codex execution until a later
-skill-run implementation.
+capability.
 
 ## Skills
 
