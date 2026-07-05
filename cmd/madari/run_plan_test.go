@@ -15,6 +15,7 @@ import (
 func TestRunWithStoreRunPlanMultipleRings(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
+	installFakeCodex(t, 0)
 	t.Setenv("CLOUDSQL_MCP_TOKEN", "test-token")
 	t.Setenv("LOCAL_TOKEN", "test-token")
 
@@ -31,11 +32,7 @@ func TestRunWithStoreRunPlanMultipleRings(t *testing.T) {
 		"--required-env", "LOCAL_TOKEN"); result.code != 0 {
 		t.Fatalf("setup local-helper failed: %s", result.stderr)
 	}
-	skillSource := writeSkillFile(t, t.TempDir(), "release.md", "# Release\n")
-	if result := runCmd(store, "skill", "add", "release", "--file", skillSource, "--description", "Release workflow"); result.code != 0 {
-		t.Fatalf("skill add failed: %s", result.stderr)
-	}
-	if result := runCmd(store, "ring", "create", "database", "--member", "cloud-sql", "--skill", "release"); result.code != 0 {
+	if result := runCmd(store, "ring", "create", "database", "--member", "cloud-sql"); result.code != 0 {
 		t.Fatalf("database ring create failed: %s", result.stderr)
 	}
 	if result := runCmd(store, "ring", "create", "helpers", "--member", "cloud-sql", "--member", "local-helper"); result.code != 0 {
@@ -56,8 +53,8 @@ func TestRunWithStoreRunPlanMultipleRings(t *testing.T) {
 	if !plan.Ready {
 		t.Fatalf("expected ready plan, got errors: %#v", plan.Errors)
 	}
-	if plan.RunnerAvailable {
-		t.Fatalf("PR 1 planner should not report a runner yet: %#v", plan)
+	if !plan.RunnerAvailable {
+		t.Fatalf("expected codex runner to be available: %#v", plan)
 	}
 	if !slices.Equal(plan.Rings, []string{"database", "helpers"}) {
 		t.Fatalf("unexpected rings: %#v", plan.Rings)
@@ -73,8 +70,8 @@ func TestRunWithStoreRunPlanMultipleRings(t *testing.T) {
 	if local.Transport != registry.TransportStdio || !slices.Equal(local.RuntimeEnv, []string{"LOCAL_TOKEN"}) {
 		t.Fatalf("unexpected local-helper plan: %#v", local)
 	}
-	if skill := findRunPlanSkill(t, plan, "release"); skill.Status != "ready" {
-		t.Fatalf("unexpected skill plan: %#v", skill)
+	if len(plan.Skills) != 0 {
+		t.Fatalf("expected server-only plan, got skills: %#v", plan.Skills)
 	}
 	if env := findRunPlanEnv(t, plan, "CLOUDSQL_MCP_TOKEN"); !env.Present {
 		t.Fatalf("expected CLOUDSQL_MCP_TOKEN present, got: %#v", env)
@@ -90,10 +87,30 @@ func TestRunWithStoreRunPlanMultipleRings(t *testing.T) {
 
 func TestRunWithStoreRunPlanRequiresDryRunRingAndPrompt(t *testing.T) {
 	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
 
-	result := runCmd(store, "run", "codex", "--ring", "database", "--", "prompt")
-	if result.code == 0 || !strings.Contains(result.stderr, "execution is not implemented yet") {
+	if result := runCmd(store, "add", "helper", "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+		t.Fatalf("setup helper failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "database", "--member", "helper"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "run", "claude-code", "--ring", "database", "--", "prompt")
+	if result.code == 0 || !strings.Contains(result.stderr, "execution is only implemented for codex") {
 		t.Fatalf("expected dry-run-only error, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	result = runCmd(store, "run", "claude-code", "--ring", "database", "--dry-run", "--json", "--", "prompt")
+	if result.code != 0 {
+		t.Fatalf("claude-code dry-run failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	if plan.RunnerAvailable {
+		t.Fatalf("non-codex dry-run should not report a runner: %#v", plan)
+	}
+	result = runCmd(store, "run", "codex", "--ring", "database", "--json", "--", "prompt")
+	if result.code == 0 || !strings.Contains(result.stderr, "--json is only supported with --dry-run") {
+		t.Fatalf("expected json dry-run error, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
 	}
 	result = runCmd(store, "run", "codex", "--dry-run", "--", "prompt")
 	if result.code == 0 || !strings.Contains(result.stderr, "--ring is required") {
@@ -109,8 +126,71 @@ func TestRunWithStoreRunPlanRequiresDryRunRingAndPrompt(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreRunPlanBlocksMissingCodexBinary(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+	t.Setenv("PATH", t.TempDir())
+
+	if err := store.Save(registry.Manifest{
+		Name:    "helper",
+		Command: commandPath,
+		Enabled: true,
+		Clients: []string{"codex"},
+	}); err != nil {
+		t.Fatalf("setup helper failed: %v", err)
+	}
+	if err := store.SaveRing(registry.Ring{Name: "helpers", Members: []string{"helper"}}); err != nil {
+		t.Fatalf("setup ring failed: %v", err)
+	}
+
+	result := runCmd(store, "run", "codex", "--ring", "helpers", "--dry-run", "--json", "--", "prompt")
+	if result.code == 0 || !strings.Contains(result.stderr, "launch plan is not ready") {
+		t.Fatalf("expected blocked plan, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	if plan.RunnerAvailable {
+		t.Fatalf("expected runner unavailable without codex binary, got: %#v", plan)
+	}
+	if !strings.Contains(strings.Join(plan.Errors, "\n"), "codex executable not found in PATH") {
+		t.Fatalf("expected missing codex error, got: %#v", plan.Errors)
+	}
+}
+
+func TestRunWithStoreRunPlanBlocksCodexRingSkills(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+	installFakeCodex(t, 0)
+
+	if result := runCmd(store, "add", "helper", "--command", commandPath, "--client", "codex"); result.code != 0 {
+		t.Fatalf("setup helper failed: %s", result.stderr)
+	}
+	skillSource := writeSkillFile(t, t.TempDir(), "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", skillSource, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill add failed: %s", result.stderr)
+	}
+	if result := runCmd(store, "ring", "create", "mixed", "--member", "helper", "--skill", "release"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "run", "codex", "--ring", "mixed", "--dry-run", "--json", "--", "prompt")
+	if result.code == 0 || !strings.Contains(result.stderr, "launch plan is not ready") {
+		t.Fatalf("expected blocked plan, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	if !plan.RunnerAvailable {
+		t.Fatalf("expected codex runner available, got: %#v", plan)
+	}
+	if skill := findRunPlanSkill(t, plan, "release"); skill.Status != "blocked" {
+		t.Fatalf("expected blocked skill, got: %#v", skill)
+	}
+	if !strings.Contains(strings.Join(plan.Errors, "\n"), "codex run does not support ring skills yet") {
+		t.Fatalf("expected skill-run unsupported error, got: %#v", plan.Errors)
+	}
+}
+
 func TestRunWithStoreRunPlanBlocksMissingEnv(t *testing.T) {
 	store := newTestStore(t)
+	installFakeCodex(t, 0)
 	t.Setenv("CLOUDSQL_MCP_TOKEN", "")
 
 	if result := runCmd(store, "add", "cloud-sql",
@@ -199,9 +279,44 @@ func TestRunWithStoreRunPlanBlocksUnsupportedOAuthResource(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreRunPlanBlocksCodexSecretRemoteHeaders(t *testing.T) {
+	store := newTestStore(t)
+	installFakeCodex(t, 0)
+
+	if err := store.Save(registry.Manifest{
+		Name:      "cloud-sql",
+		Transport: registry.TransportHTTP,
+		URL:       "https://sqladmin.googleapis.com/mcp",
+		Headers: map[string]string{
+			"Authorization": "Bearer secret",
+		},
+		Enabled: true,
+		Clients: []string{"codex"},
+	}); err != nil {
+		t.Fatalf("setup cloud-sql failed: %v", err)
+	}
+	if result := runCmd(store, "ring", "create", "cloudsql-readonly", "--member", "cloud-sql"); result.code != 0 {
+		t.Fatalf("ring create failed: %s", result.stderr)
+	}
+
+	result := runCmd(store, "run", "codex", "--ring", "cloudsql-readonly", "--dry-run", "--json", "--", "prompt")
+	if result.code == 0 || !strings.Contains(result.stderr, "launch plan is not ready") {
+		t.Fatalf("expected blocked plan, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	cloud := findRunPlanServer(t, plan, "cloud-sql")
+	if cloud.Status != "blocked" {
+		t.Fatalf("expected blocked cloud-sql, got: %#v", cloud)
+	}
+	if !strings.Contains(strings.Join(plan.Errors, "\n"), "static secret header values cannot be passed to codex run") {
+		t.Fatalf("expected static secret header error, got: %#v", plan.Errors)
+	}
+}
+
 func TestRunWithStoreRunPlanMissingServerRuntimeEnvIsEmptyArray(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
+	installFakeCodex(t, 0)
 
 	if err := store.Save(registry.Manifest{
 		Name:    "helper",
@@ -271,6 +386,7 @@ func TestRunWithStoreRunPlanBlocksUnsupportedSkillTarget(t *testing.T) {
 func TestRunWithStoreRunPlanBlocksDisabledServerAndDuplicateRing(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
+	installFakeCodex(t, 0)
 
 	if result := runCmd(store, "add", "helper", "--command", commandPath, "--client", "codex"); result.code != 0 {
 		t.Fatalf("setup add failed: %s", result.stderr)
