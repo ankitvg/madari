@@ -142,8 +142,10 @@ Codex execution injects selected server members into `codex exec`, temporarily
 materializes selected skill members as Codex project skills, and writes no
 client config or managed state. Codex run clears inherited MCP config, marks
 the selected servers required, and runs from an isolated working root so
-project-scoped Codex config cannot add unselected capabilities. Other clients
-remain dry-run only for now.
+project-scoped Codex config cannot add unselected capabilities. It also starts
+Codex with a temporary `HOME` so personal Codex skills do not leak into the
+ring run while preserving `CODEX_HOME` for auth. Other clients remain dry-run
+only for now.
 
 ## Safety Model
 

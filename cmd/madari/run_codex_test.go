@@ -41,6 +41,13 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 	t.Setenv("CLOUDSQL_MCP_TOKEN", "test-token")
 	t.Setenv("LOCAL_TOKEN", "local-token")
 	t.Setenv("LOCAL_SECRET", "local-secret")
+	originalHome := t.TempDir()
+	globalSkillDir := filepath.Join(originalHome, ".agents", "skills", "global")
+	if err := os.MkdirAll(globalSkillDir, 0o755); err != nil {
+		t.Fatalf("mkdir global skill: %v", err)
+	}
+	writeTextFile(t, globalSkillDir, "SKILL.md", "---\nname: global\ndescription: Global skill\n---\n\n# Global\n")
+	t.Setenv("HOME", originalHome)
 	codexHome := t.TempDir()
 	t.Setenv("CODEX_HOME", codexHome)
 
@@ -116,7 +123,7 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read fake codex cwd: %v", err)
 	}
-	if got := string(pwdPayload); got != runRoot {
+	if got := strings.TrimSpace(string(pwdPayload)); !samePath(t, got, runRoot) {
 		t.Fatalf("expected fake codex to run from isolated root %q, got %q", runRoot, got)
 	}
 	stdinPayload, err := os.ReadFile(logPath + ".stdin")
@@ -157,6 +164,27 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(projectDir, ".agents")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("run should not materialize skills in original project root, stat err=%v", err)
+	}
+	homePayload, err := os.ReadFile(logPath + ".home")
+	if err != nil {
+		t.Fatalf("read fake codex home: %v", err)
+	}
+	if got, want := strings.TrimSpace(string(homePayload)), filepath.Join(runRoot, "home"); !samePath(t, got, want) {
+		t.Fatalf("expected fake codex HOME %q, got %q", want, got)
+	}
+	codexHomePayload, err := os.ReadFile(logPath + ".codexhome")
+	if err != nil {
+		t.Fatalf("read fake codex CODEX_HOME: %v", err)
+	}
+	if got := strings.TrimSpace(string(codexHomePayload)); got != codexHome {
+		t.Fatalf("expected fake codex CODEX_HOME %q, got %q", codexHome, got)
+	}
+	homeSkillFiles, err := os.ReadFile(logPath + ".homeskillfiles")
+	if err != nil {
+		t.Fatalf("read fake codex home skill files: %v", err)
+	}
+	if len(homeSkillFiles) != 0 {
+		t.Fatalf("expected isolated HOME to hide caller user skills, got:\n%s", homeSkillFiles)
 	}
 	overrides := collectConfigOverrides(args)
 	if len(overrides) != 1 {
@@ -280,6 +308,23 @@ func TestRunWithStoreCodexRunRequiresCodexBinary(t *testing.T) {
 	}
 }
 
+func TestCodexRunEnvBlocksAdminSkillRoot(t *testing.T) {
+	adminRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(adminRoot, "admin-skill"), 0o755); err != nil {
+		t.Fatalf("mkdir admin skill: %v", err)
+	}
+	previous := codexAdminSkillRoots
+	codexAdminSkillRoots = []string{adminRoot}
+	defer func() {
+		codexAdminSkillRoots = previous
+	}()
+
+	_, err := codexRunEnv(t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "cannot guarantee ring-only skill isolation") {
+		t.Fatalf("expected admin skill isolation error, got: %v", err)
+	}
+}
+
 func installFakeCodex(t *testing.T, exitCode int) string {
 	t.Helper()
 	binDir := t.TempDir()
@@ -287,8 +332,11 @@ func installFakeCodex(t *testing.T, exitCode int) string {
 	name := "codex"
 	script := []byte("#!/bin/sh\n" +
 		"printf '%s' \"$PWD\" > '" + logPath + ".pwd'\n" +
+		"printf '%s' \"$HOME\" > '" + logPath + ".home'\n" +
+		"printf '%s' \"$CODEX_HOME\" > '" + logPath + ".codexhome'\n" +
 		"for arg in \"$@\"; do printf '%s\\0' \"$arg\" >> '" + logPath + "'; done\n" +
 		"if [ -d .agents/skills ]; then find .agents/skills -type f | sort > '" + logPath + ".skillfiles'; else : > '" + logPath + ".skillfiles'; fi\n" +
+		"if [ -d \"$HOME/.agents/skills\" ]; then find \"$HOME/.agents/skills\" -type f | sort > '" + logPath + ".homeskillfiles'; else : > '" + logPath + ".homeskillfiles'; fi\n" +
 		"if [ -f .agents/skills/release/SKILL.md ]; then cat .agents/skills/release/SKILL.md > '" + logPath + ".release'; else : > '" + logPath + ".release'; fi\n" +
 		"if [ -f .agents/skills/release/references/CHECKLIST.md ]; then cat .agents/skills/release/references/CHECKLIST.md > '" + logPath + ".checklist'; else : > '" + logPath + ".checklist'; fi\n" +
 		"if IFS= read line; then printf '%s' \"$line\" > '" + logPath + ".stdin'; else : > '" + logPath + ".stdin'; fi\n" +
@@ -349,4 +397,25 @@ func collectConfigOverrides(args []string) []string {
 		}
 	}
 	return overrides
+}
+
+func samePath(t *testing.T, a, b string) bool {
+	t.Helper()
+	evalA, err := filepath.EvalSymlinks(a)
+	if err == nil {
+		a = evalA
+	}
+	evalB, err := filepath.EvalSymlinks(b)
+	if err == nil {
+		b = evalB
+	}
+	return normalizePathAlias(a) == normalizePathAlias(b)
+}
+
+func normalizePathAlias(path string) string {
+	path = filepath.Clean(path)
+	if strings.HasPrefix(path, "/private/var/") {
+		return strings.TrimPrefix(path, "/private")
+	}
+	return path
 }

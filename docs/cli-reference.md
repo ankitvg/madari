@@ -206,7 +206,9 @@ injected as required config overrides from an isolated working root after
 clearing inherited MCP server config. Selected ring skills are materialized
 under the temporary Codex run root as project skills for that session. Stdio
 servers keep the original working directory through `mcp_servers.<id>.cwd`.
-Other clients remain dry-run only for now.
+Codex runs with a temporary `HOME` so personal Codex skills do not leak into
+the selected ring; `CODEX_HOME` is preserved for auth. Other clients remain
+dry-run only for now.
 
 The planner resolves every selected ring, deduplicates shared server and skill
 members, validates the selected client can express each required capability,
@@ -218,6 +220,8 @@ Unlike `ring render`, `run` is fail-closed. A disabled member, missing member,
 unsupported remote transport or auth mode, missing runtime env key, or
 unsupported skill target blocks the plan instead of silently omitting that
 capability.
+Codex execution also blocks when a non-empty admin skill root is present,
+because Madari cannot guarantee ring-only skill isolation in that case.
 
 ## Skills
 

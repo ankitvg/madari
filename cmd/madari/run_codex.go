@@ -1,9 +1,11 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -35,6 +37,10 @@ func runCodex(a cliApp, plan runLaunchPlan, prompt string) error {
 	if _, err := materializeRunSkills(a.store, plan.Target, plan.Skills, runRoot); err != nil {
 		return err
 	}
+	env, err := codexRunEnv(runRoot)
+	if err != nil {
+		return err
+	}
 
 	augmentedPrompt, err := codexRunPrompt(a.store, plan.Rings, prompt, workingDir)
 	if err != nil {
@@ -49,12 +55,78 @@ func runCodex(a cliApp, plan runLaunchPlan, prompt string) error {
 
 	cmd := exec.Command(codexPath, args...)
 	cmd.Dir = runRoot
+	cmd.Env = env
 	cmd.Stdout = a.stdout
 	cmd.Stderr = a.stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("run codex exec: %w", err)
 	}
 	return nil
+}
+
+var codexAdminSkillRoots = []string{"/etc/codex/skills"}
+
+func codexRunEnv(runRoot string) ([]string, error) {
+	if err := ensureCodexRunNoAdminSkillRoots(codexAdminSkillRoots); err != nil {
+		return nil, err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("resolve current home directory: %w", err)
+	}
+	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
+	if codexHome == "" {
+		codexHome = filepath.Join(home, ".codex")
+	}
+	isolatedHome := filepath.Join(runRoot, "home")
+	if err := os.MkdirAll(isolatedHome, 0o755); err != nil {
+		return nil, fmt.Errorf("create isolated codex home: %w", err)
+	}
+	env := os.Environ()
+	env = withEnvValue(env, "HOME", isolatedHome)
+	env = withEnvValue(env, "USERPROFILE", isolatedHome)
+	env = withEnvValue(env, "CODEX_HOME", codexHome)
+	return env, nil
+}
+
+func ensureCodexRunNoAdminSkillRoots(roots []string) error {
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return fmt.Errorf("inspect codex admin skill root %s: %w", root, err)
+		}
+		if len(entries) > 0 {
+			return fmt.Errorf("codex admin skill root %s contains skills; cannot guarantee ring-only skill isolation", root)
+		}
+	}
+	return nil
+}
+
+func withEnvValue(env []string, key, value string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env)+1)
+	replaced := false
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			if !replaced {
+				out = append(out, prefix+value)
+				replaced = true
+			}
+			continue
+		}
+		out = append(out, entry)
+	}
+	if !replaced {
+		out = append(out, prefix+value)
+	}
+	return out
 }
 
 func codexRunConfigOverrides(store *registry.Store, plan runLaunchPlan, workingDir string) ([]string, error) {

@@ -213,6 +213,43 @@ func TestRunWithStoreRunPlanBlocksMissingRingSkill(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreRunPlanBlocksNonMaterializableRingSkill(t *testing.T) {
+	store := newTestStore(t)
+	installFakeCodex(t, 0)
+	if err := os.MkdirAll(store.SkillsDir(), 0o755); err != nil {
+		t.Fatalf("mkdir skills dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SkillsDir(), "release.patch.toml"), []byte("name = \"release.patch\"\ndescription = \"Patch release\"\n"), 0o644); err != nil {
+		t.Fatalf("write legacy skill manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SkillsDir(), "release.patch.md"), []byte("# Patch release\n"), 0o644); err != nil {
+		t.Fatalf("write legacy skill content: %v", err)
+	}
+	if _, err := store.GetSkill("release.patch"); err != nil {
+		t.Fatalf("legacy skill metadata should still parse: %v", err)
+	}
+	if err := store.SaveRing(registry.Ring{Name: "workflow", Skills: []string{"release.patch"}}); err != nil {
+		t.Fatalf("setup legacy skill ring: %v", err)
+	}
+
+	result := runCmd(store, "run", "codex", "--ring", "workflow", "--dry-run", "--json", "--", "prompt")
+	if result.code == 0 || !strings.Contains(result.stderr, "launch plan is not ready") {
+		t.Fatalf("expected blocked plan, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	if plan.Ready {
+		t.Fatalf("expected blocked plan, got: %#v", plan)
+	}
+	if skill := findRunPlanSkill(t, plan, "release.patch"); skill.Status != "blocked" {
+		t.Fatalf("expected blocked skill, got: %#v", skill)
+	}
+	errors := strings.Join(plan.Errors, "\n")
+	if !strings.Contains(errors, "skill release.patch: skill package cannot be materialized") ||
+		!strings.Contains(errors, "name must contain lowercase letters") {
+		t.Fatalf("expected non-materializable skill error, got: %#v", plan.Errors)
+	}
+}
+
 func TestRunWithStoreRunPlanBlocksMissingEnv(t *testing.T) {
 	store := newTestStore(t)
 	installFakeCodex(t, 0)

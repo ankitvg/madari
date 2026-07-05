@@ -282,11 +282,11 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 			Rings:  nonNilStrings(append([]string(nil), skillRings[name]...)),
 			Issues: []string{},
 		}
-		if _, err := a.store.GetSkill(name); err != nil {
+		if _, err := a.store.GetSkillPackage(name); err != nil {
 			if errors.Is(err, registry.ErrSkillNotFound) {
 				skill.Issues = append(skill.Issues, "skill is missing from the registry")
 			} else {
-				return runLaunchPlan{}, err
+				skill.Issues = append(skill.Issues, fmt.Sprintf("skill package cannot be materialized: %v", err))
 			}
 		}
 		if !supportsRunSkillMaterialization(target) {
