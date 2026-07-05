@@ -90,6 +90,7 @@ streamable HTTP, or hand-managed stdio entries are preserved and never adopted.
 
 ```bash
 madari ring create research --member stewreads --member arxiv --skill release --description "Research helpers"
+madari ring create thinking --member stewreads --description "Server-only helper"
 madari ring list
 madari ring show research
 madari ring contract show research
@@ -111,7 +112,7 @@ madari ring render research --client gemini
 madari ring render research --client codex
 madari ring render research --client vibe
 madari ring status
-madari run codex --ring research -- "Use this ring"
+madari run codex --ring thinking -- "Use this ring"
 madari run codex --ring research --ring release --dry-run --json -- "Use both rings"
 ```
 

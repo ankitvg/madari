@@ -37,7 +37,7 @@ func runCodex(a cliApp, plan runLaunchPlan, prompt string) error {
 		return err
 	}
 
-	args := []string{"exec", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--cd", runRoot, "-c", "mcp_servers={}"}
+	args := []string{"exec", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--cd", runRoot}
 	for _, override := range overrides {
 		args = append(args, "-c", override)
 	}
@@ -45,7 +45,6 @@ func runCodex(a cliApp, plan runLaunchPlan, prompt string) error {
 
 	cmd := exec.Command(codexPath, args...)
 	cmd.Dir = runRoot
-	cmd.Stdin = os.Stdin
 	cmd.Stdout = a.stdout
 	cmd.Stderr = a.stderr
 	if err := cmd.Run(); err != nil {
@@ -70,7 +69,7 @@ func codexRunConfigOverrides(store *registry.Store, plan runLaunchPlan, workingD
 	}
 	sort.Strings(names)
 
-	overrides := make([]string, 0, len(names))
+	servers := make([]string, 0, len(names))
 	for _, name := range names {
 		manifest, ok := byName[name]
 		if !ok {
@@ -80,9 +79,9 @@ func codexRunConfigOverrides(store *registry.Store, plan runLaunchPlan, workingD
 		if err != nil {
 			return nil, fmt.Errorf("server %s: %w", name, err)
 		}
-		overrides = append(overrides, fmt.Sprintf("mcp_servers.%s=%s", tomlKey(name), value))
+		servers = append(servers, fmt.Sprintf("%s = %s", tomlKey(name), value))
 	}
-	return overrides, nil
+	return []string{"mcp_servers={ " + strings.Join(servers, ", ") + " }"}, nil
 }
 
 func codexRunServerConfigValue(manifest registry.Manifest, workingDir string) (string, error) {

@@ -20,6 +20,22 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
 	logPath := installFakeCodex(t, 0)
+	stdinRead, stdinWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stdin pipe: %v", err)
+	}
+	if _, err := stdinWrite.WriteString("implicit stdin should not be forwarded\n"); err != nil {
+		t.Fatalf("write stdin pipe: %v", err)
+	}
+	if err := stdinWrite.Close(); err != nil {
+		t.Fatalf("close stdin writer: %v", err)
+	}
+	originalStdin := os.Stdin
+	os.Stdin = stdinRead
+	defer func() {
+		os.Stdin = originalStdin
+		stdinRead.Close()
+	}()
 	t.Setenv("CLOUDSQL_MCP_TOKEN", "test-token")
 	t.Setenv("LOCAL_TOKEN", "local-token")
 	t.Setenv("LOCAL_SECRET", "local-secret")
@@ -41,7 +57,7 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 		t.Fatalf("save cloud-sql: %v", err)
 	}
 	if err := store.Save(registry.Manifest{
-		Name:    "local-helper",
+		Name:    "github.com",
 		Command: commandPath,
 		Args:    []string{"--stdio"},
 		Env: map[string]string{
@@ -70,7 +86,7 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 	}
 	if err := store.SaveRing(registry.Ring{
 		Name:    "helpers",
-		Members: []string{"cloud-sql", "local-helper"},
+		Members: []string{"cloud-sql", "github.com"},
 	}); err != nil {
 		t.Fatalf("save helpers ring: %v", err)
 	}
@@ -99,27 +115,27 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 	if got := string(pwdPayload); got != runRoot {
 		t.Fatalf("expected fake codex to run from isolated root %q, got %q", runRoot, got)
 	}
+	stdinPayload, err := os.ReadFile(logPath + ".stdin")
+	if err != nil {
+		t.Fatalf("read fake codex stdin: %v", err)
+	}
+	if len(stdinPayload) != 0 {
+		t.Fatalf("expected fake codex stdin to be empty, got %q", string(stdinPayload))
+	}
 	if _, err := os.Stat(runRoot); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected isolated codex run root to be cleaned up, stat err=%v", err)
 	}
 	overrides := collectConfigOverrides(args)
-	if len(overrides) != 3 {
-		t.Fatalf("expected three config overrides, got %#v from args %#v", overrides, args)
-	}
-	if overrides[0] != "mcp_servers={}" {
-		t.Fatalf("expected inherited MCP config clear first, got %#v", overrides)
-	}
-	wantCloud := `mcp_servers.cloud-sql={ url = "https://sqladmin.googleapis.com/mcp", required = true, oauth_resource = "https://sqladmin.googleapis.com/", bearer_token_env_var = "CLOUDSQL_MCP_TOKEN", http_headers = { x-goog-user-project = "stewreads" } }`
-	if overrides[1] != wantCloud {
-		t.Fatalf("unexpected cloud-sql override:\nwant %s\ngot  %s", wantCloud, overrides[1])
+	if len(overrides) != 1 {
+		t.Fatalf("expected one config override, got %#v from args %#v", overrides, args)
 	}
 	workingDir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("get cwd: %v", err)
 	}
-	wantLocal := `mcp_servers.local-helper={ command = ` + tomlString(commandPath) + `, required = true, cwd = ` + tomlString(workingDir) + `, args = ["--stdio"], env_vars = ["LOCAL_SECRET", "LOCAL_TOKEN"], env = { LOCAL_MODE = "test" } }`
-	if overrides[2] != wantLocal {
-		t.Fatalf("unexpected local-helper override:\nwant %s\ngot  %s", wantLocal, overrides[2])
+	wantOverride := `mcp_servers={ cloud-sql = { url = "https://sqladmin.googleapis.com/mcp", required = true, oauth_resource = "https://sqladmin.googleapis.com/", bearer_token_env_var = "CLOUDSQL_MCP_TOKEN", http_headers = { x-goog-user-project = "stewreads" } }, "github.com" = { command = ` + tomlString(commandPath) + `, required = true, cwd = ` + tomlString(workingDir) + `, args = ["--stdio"], env_vars = ["LOCAL_SECRET", "LOCAL_TOKEN"], env = { LOCAL_MODE = "test" } } }`
+	if overrides[0] != wantOverride {
+		t.Fatalf("unexpected mcp_servers override:\nwant %s\ngot  %s", wantOverride, overrides[0])
 	}
 	if strings.Contains(strings.Join(overrides, "\n"), "inline-secret") {
 		t.Fatalf("static secret env value leaked into codex args: %#v", overrides)
@@ -219,6 +235,7 @@ func installFakeCodex(t *testing.T, exitCode int) string {
 	script := []byte("#!/bin/sh\n" +
 		"printf '%s' \"$PWD\" > '" + logPath + ".pwd'\n" +
 		"for arg in \"$@\"; do printf '%s\\0' \"$arg\" >> '" + logPath + "'; done\n" +
+		"if IFS= read line; then printf '%s' \"$line\" > '" + logPath + ".stdin'; else : > '" + logPath + ".stdin'; fi\n" +
 		"printf 'codex stdout\\n'\n" +
 		"printf 'codex stderr\\n' >&2\n" +
 		"exit " + strconv.Itoa(exitCode) + "\n")
