@@ -150,19 +150,18 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 		plan.Errors = append(plan.Errors, message)
 	}
 
-	ct, ok := clientTargetByName(target)
-	if !ok {
+	if _, ok := clientTargetByName(target); !ok {
 		addPlanError(fmt.Sprintf("unsupported run target %q (supported: %s)", target, strings.Join(sortedClientTargetNames(), ", ")))
 		plan.finish()
 		return plan, nil
 	}
-	runnerImplemented := ct.runExecutor != nil
+	rt, runnerImplemented := runTargetByName(target)
 	if runnerImplemented {
 		plan.RunnerAvailable = true
-		if strings.TrimSpace(ct.runExecutable) != "" {
-			if _, err := exec.LookPath(ct.runExecutable); err != nil {
+		if strings.TrimSpace(rt.executable) != "" {
+			if _, err := exec.LookPath(rt.executable); err != nil {
 				plan.RunnerAvailable = false
-				addPlanError(fmt.Sprintf("%s executable not found in PATH; install the %s CLI before running this target", ct.runExecutable, target))
+				addPlanError(fmt.Sprintf("%s executable not found in PATH; install the %s CLI before running this target", rt.executable, target))
 			}
 		}
 	}
@@ -272,8 +271,8 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 		plan.Servers = append(plan.Servers, server)
 	}
 
-	if len(skillRings) > 0 && !supportsSkillMaterialization(target) {
-		addPlanError(fmt.Sprintf("%s does not support skill materialization (supported skill targets: %s)", target, strings.Join(supportedSkillTargets(), ", ")))
+	if len(skillRings) > 0 && !supportsRunSkillMaterialization(target) {
+		addPlanError(fmt.Sprintf("%s does not support run skill materialization (supported run skill targets: %s)", target, strings.Join(supportedRunSkillTargets(), ", ")))
 	}
 	skillNames := sortedStringSliceMapKeys(skillRings)
 	for _, name := range skillNames {
@@ -290,8 +289,8 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 				return runLaunchPlan{}, err
 			}
 		}
-		if !supportsSkillMaterialization(target) {
-			skill.Issues = append(skill.Issues, fmt.Sprintf("%s does not support skill materialization", target))
+		if !supportsRunSkillMaterialization(target) {
+			skill.Issues = append(skill.Issues, fmt.Sprintf("%s does not support run skill materialization", target))
 		}
 		if len(skill.Issues) > 0 {
 			skill.Status = "blocked"

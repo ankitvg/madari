@@ -187,7 +187,7 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 		"- helpers",
 		"Selected skills:",
 		"- release: Release workflow",
-		"Selected ring skills are materialized as Codex project skills for this session.",
+		"Selected ring skills are materialized as project skills for this session.",
 		"Use only external MCP capabilities made available by the selected Madari rings.",
 		"Original working directory:",
 		"project-scoped Codex config cannot add capabilities outside these rings.",
