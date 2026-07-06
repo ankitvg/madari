@@ -225,8 +225,9 @@ Unlike `ring render`, `run` is fail-closed. A disabled member, missing member,
 unsupported remote transport or auth mode, missing runtime env key, or
 unsupported skill target blocks the plan instead of silently omitting that
 capability.
-Codex execution also blocks when a non-empty admin skill root is present,
-because Madari cannot guarantee ring-only skill isolation in that case.
+Codex execution also blocks when a non-empty admin/system skill root is
+present, because Madari cannot guarantee ring-only skill isolation in that
+case.
 
 ## Skills
 

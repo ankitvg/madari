@@ -65,7 +65,10 @@ func runCodex(a cliApp, plan runLaunchPlan, prompt string) error {
 	return nil
 }
 
-var codexAdminSkillRoots = []string{"/etc/codex/skills"}
+var codexAdminSkillRoots = []string{
+	"/etc/codex/skills",
+	"/opt/codex/skills",
+}
 
 func codexRunEnv(runRoot string) ([]string, error) {
 	if err := validateCodexRunPlan(); err != nil {

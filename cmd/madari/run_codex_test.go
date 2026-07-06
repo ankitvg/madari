@@ -342,6 +342,18 @@ func TestCodexRunEnvBlocksAdminSkillRoot(t *testing.T) {
 	}
 }
 
+func TestCodexRunDefaultAdminSkillRootsIncludeKnownSystemRoots(t *testing.T) {
+	roots := map[string]bool{}
+	for _, root := range codexAdminSkillRoots {
+		roots[root] = true
+	}
+	for _, want := range []string{"/etc/codex/skills", "/opt/codex/skills"} {
+		if !roots[want] {
+			t.Fatalf("expected default codex admin/system skill roots to include %s, got %#v", want, codexAdminSkillRoots)
+		}
+	}
+}
+
 func TestCodexRunEnvUsesExplicitCodexHomeWithoutHome(t *testing.T) {
 	withCodexAdminSkillRoots(t, nil)
 	runRoot := t.TempDir()
