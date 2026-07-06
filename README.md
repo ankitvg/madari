@@ -144,9 +144,11 @@ client config or managed state. Codex run clears inherited MCP config, marks
 the selected servers required, and runs from an isolated working root so
 project-scoped Codex config cannot add unselected capabilities. It also starts
 Codex with a temporary `HOME` so personal Codex skills do not leak into the
-ring run while preserving `CODEX_HOME` for auth. Stdio MCP servers still
-receive the caller's `HOME`/`USERPROFILE` when present so home-based server
-credentials keep working. Other clients remain dry-run only for now.
+ring run, and with a temporary `CODEX_HOME` that copies only `auth.json` from
+the caller's Codex home so Codex-home skills do not leak into the run. Stdio
+MCP servers still receive the caller's `HOME`/`USERPROFILE` when present so
+home-based server credentials keep working. Other clients remain dry-run only
+for now.
 
 ## Safety Model
 

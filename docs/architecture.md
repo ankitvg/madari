@@ -130,7 +130,9 @@ configs.
   owns `ring:<name>`. It refuses to overwrite unmanaged package directories or
   remove packages modified after Madari wrote them.
 - Skills are exported/imported in snapshots and can be consumed by rings. They
-  are not written into MCP config files and are not consumed by run execution.
+  are not written into MCP config files. `madari run codex` consumes selected
+  ring skills by temporarily materializing them as project skills under the
+  isolated run root; other run targets are dry-run only today.
 
 7. Doctor Engine
 - Verifies command/binary resolution.

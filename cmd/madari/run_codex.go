@@ -70,27 +70,74 @@ func codexRunEnv(runRoot string) ([]string, error) {
 	if err := validateCodexRunPlan(); err != nil {
 		return nil, err
 	}
-	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
-	if codexHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("resolve current home directory: %w", err)
-		}
-		codexHome = filepath.Join(home, ".codex")
+	sourceCodexHome, err := codexRunSourceHome()
+	if err != nil {
+		return nil, err
 	}
 	isolatedHome := filepath.Join(runRoot, "home")
-	if err := os.MkdirAll(isolatedHome, 0o755); err != nil {
+	if err := os.MkdirAll(isolatedHome, 0o700); err != nil {
 		return nil, fmt.Errorf("create isolated codex home: %w", err)
+	}
+	isolatedCodexHome := filepath.Join(runRoot, "codex-home")
+	if err := os.MkdirAll(isolatedCodexHome, 0o700); err != nil {
+		return nil, fmt.Errorf("create isolated codex state home: %w", err)
+	}
+	if err := copyCodexRunAuthState(sourceCodexHome, isolatedCodexHome); err != nil {
+		return nil, err
 	}
 	env := os.Environ()
 	env = withEnvValue(env, "HOME", isolatedHome)
 	env = withEnvValue(env, "USERPROFILE", isolatedHome)
-	env = withEnvValue(env, "CODEX_HOME", codexHome)
+	env = withEnvValue(env, "CODEX_HOME", isolatedCodexHome)
 	return env, nil
 }
 
 func validateCodexRunPlan() error {
 	return ensureCodexRunNoAdminSkillRoots(codexAdminSkillRoots)
+}
+
+func codexRunSourceHome() (string, error) {
+	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
+	if codexHome != "" {
+		return filepath.Clean(codexHome), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve current home directory: %w", err)
+	}
+	return filepath.Join(home, ".codex"), nil
+}
+
+func copyCodexRunAuthState(sourceCodexHome, isolatedCodexHome string) error {
+	if strings.TrimSpace(sourceCodexHome) == "" {
+		return nil
+	}
+	if err := copyExistingCodexRunFile(filepath.Join(sourceCodexHome, "auth.json"), filepath.Join(isolatedCodexHome, "auth.json")); err != nil {
+		return fmt.Errorf("copy codex auth state: %w", err)
+	}
+	return nil
+}
+
+func copyExistingCodexRunFile(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s is a directory", src)
+	}
+	payload, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	mode := info.Mode().Perm()
+	if mode == 0 {
+		mode = 0o600
+	}
+	return os.WriteFile(dst, payload, mode)
 }
 
 func ensureCodexRunNoAdminSkillRoots(roots []string) error {
@@ -216,9 +263,10 @@ func codexRunRuntimeEnvVars(manifest registry.Manifest, callerHomeEnv map[string
 	if len(keys) == 0 || len(callerHomeEnv) == 0 {
 		return keys
 	}
+	secret := envKeySet(manifest.SecretEnv.Keys)
 	out := make([]string, 0, len(keys))
 	for _, key := range keys {
-		if _, ok := callerHomeEnv[key]; ok {
+		if _, ok := callerHomeEnv[key]; ok && !secret[key] {
 			continue
 		}
 		out = append(out, key)
@@ -227,10 +275,7 @@ func codexRunRuntimeEnvVars(manifest registry.Manifest, callerHomeEnv map[string
 }
 
 func codexRunStaticEnv(manifest registry.Manifest, callerHomeEnv map[string]string) map[string]string {
-	secret := make(map[string]bool, len(manifest.SecretEnv.Keys))
-	for _, key := range manifest.SecretEnv.Keys {
-		secret[strings.TrimSpace(key)] = true
-	}
+	secret := envKeySet(manifest.SecretEnv.Keys)
 	env := map[string]string{}
 	for key, value := range manifest.Env {
 		if secret[key] {
@@ -239,7 +284,7 @@ func codexRunStaticEnv(manifest registry.Manifest, callerHomeEnv map[string]stri
 		env[key] = value
 	}
 	for key, value := range callerHomeEnv {
-		if _, exists := env[key]; !exists {
+		if _, exists := env[key]; !exists && !secret[key] {
 			env[key] = value
 		}
 	}
@@ -247,6 +292,14 @@ func codexRunStaticEnv(manifest registry.Manifest, callerHomeEnv map[string]stri
 		return nil
 	}
 	return env
+}
+
+func envKeySet(keys []string) map[string]bool {
+	set := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		set[strings.TrimSpace(key)] = true
+	}
+	return set
 }
 
 func codexRunPrompt(store *registry.Store, ringNames []string, prompt string, workingDir string) (string, error) {

@@ -50,6 +50,12 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 	t.Setenv("HOME", originalHome)
 	t.Setenv("USERPROFILE", "")
 	codexHome := t.TempDir()
+	writeTextFile(t, codexHome, "auth.json", "test-auth\n")
+	codexHomeSkillDir := filepath.Join(codexHome, "skills", "codex-global")
+	if err := os.MkdirAll(codexHomeSkillDir, 0o755); err != nil {
+		t.Fatalf("mkdir codex-home skill: %v", err)
+	}
+	writeTextFile(t, codexHomeSkillDir, "SKILL.md", "---\nname: codex-global\ndescription: Codex home skill\n---\n\n# Codex home global\n")
 	t.Setenv("CODEX_HOME", codexHome)
 
 	if err := store.Save(registry.Manifest{
@@ -177,8 +183,22 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read fake codex CODEX_HOME: %v", err)
 	}
-	if got := strings.TrimSpace(string(codexHomePayload)); got != codexHome {
-		t.Fatalf("expected fake codex CODEX_HOME %q, got %q", codexHome, got)
+	if got, want := strings.TrimSpace(string(codexHomePayload)), filepath.Join(runRoot, "codex-home"); !samePath(t, got, want) {
+		t.Fatalf("expected fake codex CODEX_HOME %q, got %q", want, got)
+	}
+	codexAuthPayload, err := os.ReadFile(logPath + ".codexauth")
+	if err != nil {
+		t.Fatalf("read fake codex auth: %v", err)
+	}
+	if string(codexAuthPayload) != "test-auth\n" {
+		t.Fatalf("expected copied codex auth, got %q", string(codexAuthPayload))
+	}
+	codexHomeSkillFiles, err := os.ReadFile(logPath + ".codexhomeskillfiles")
+	if err != nil {
+		t.Fatalf("read fake codex home skill files: %v", err)
+	}
+	if len(codexHomeSkillFiles) != 0 {
+		t.Fatalf("expected isolated CODEX_HOME to hide caller codex-home skills, got:\n%s", codexHomeSkillFiles)
 	}
 	homeSkillFiles, err := os.ReadFile(logPath + ".homeskillfiles")
 	if err != nil {
@@ -326,6 +346,7 @@ func TestCodexRunEnvUsesExplicitCodexHomeWithoutHome(t *testing.T) {
 	withCodexAdminSkillRoots(t, nil)
 	runRoot := t.TempDir()
 	codexHome := t.TempDir()
+	writeTextFile(t, codexHome, "auth.json", "explicit-auth\n")
 	t.Setenv("CODEX_HOME", codexHome)
 	t.Setenv("HOME", "")
 	t.Setenv("USERPROFILE", "")
@@ -334,11 +355,39 @@ func TestCodexRunEnvUsesExplicitCodexHomeWithoutHome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("codexRunEnv failed: %v", err)
 	}
-	if got := testEnvValue(env, "CODEX_HOME"); got != codexHome {
-		t.Fatalf("expected CODEX_HOME %q, got %q", codexHome, got)
+	isolatedCodexHome := filepath.Join(runRoot, "codex-home")
+	if got := testEnvValue(env, "CODEX_HOME"); !samePath(t, got, isolatedCodexHome) {
+		t.Fatalf("expected isolated CODEX_HOME %q, got %q", isolatedCodexHome, got)
+	}
+	authPayload, err := os.ReadFile(filepath.Join(isolatedCodexHome, "auth.json"))
+	if err != nil {
+		t.Fatalf("read copied auth: %v", err)
+	}
+	if string(authPayload) != "explicit-auth\n" {
+		t.Fatalf("expected copied auth payload, got %q", string(authPayload))
 	}
 	if got, want := testEnvValue(env, "HOME"), filepath.Join(runRoot, "home"); !samePath(t, got, want) {
 		t.Fatalf("expected isolated HOME %q, got %q", want, got)
+	}
+}
+
+func TestCodexRunServerConfigValueKeepsSecretHomeInEnvVars(t *testing.T) {
+	commandPath := mustCurrentExecutable(t)
+	value, err := codexRunServerConfigValue(registry.Manifest{
+		Name:      "secret-home",
+		Command:   commandPath,
+		SecretEnv: registry.SecretEnv{Keys: []string{"HOME"}},
+		Enabled:   true,
+		Clients:   []string{"codex"},
+	}, t.TempDir(), map[string]string{"HOME": "/secret/home"})
+	if err != nil {
+		t.Fatalf("build server config: %v", err)
+	}
+	if !strings.Contains(value, `env_vars = ["HOME"]`) {
+		t.Fatalf("expected secret HOME to stay in env_vars, got: %s", value)
+	}
+	if strings.Contains(value, "/secret/home") || strings.Contains(value, "HOME =") {
+		t.Fatalf("secret HOME leaked into static env: %s", value)
 	}
 }
 
@@ -373,6 +422,8 @@ func installFakeCodex(t *testing.T, exitCode int) string {
 		"for arg in \"$@\"; do printf '%s\\0' \"$arg\" >> '" + logPath + "'; done\n" +
 		"if [ -d .agents/skills ]; then find .agents/skills -type f | sort > '" + logPath + ".skillfiles'; else : > '" + logPath + ".skillfiles'; fi\n" +
 		"if [ -d \"$HOME/.agents/skills\" ]; then find \"$HOME/.agents/skills\" -type f | sort > '" + logPath + ".homeskillfiles'; else : > '" + logPath + ".homeskillfiles'; fi\n" +
+		"if [ -d \"$CODEX_HOME/skills\" ]; then find \"$CODEX_HOME/skills\" -type f | sort > '" + logPath + ".codexhomeskillfiles'; else : > '" + logPath + ".codexhomeskillfiles'; fi\n" +
+		"if [ -f \"$CODEX_HOME/auth.json\" ]; then cat \"$CODEX_HOME/auth.json\" > '" + logPath + ".codexauth'; else : > '" + logPath + ".codexauth'; fi\n" +
 		"if [ -f .agents/skills/release/SKILL.md ]; then cat .agents/skills/release/SKILL.md > '" + logPath + ".release'; else : > '" + logPath + ".release'; fi\n" +
 		"if [ -f .agents/skills/release/references/CHECKLIST.md ]; then cat .agents/skills/release/references/CHECKLIST.md > '" + logPath + ".checklist'; else : > '" + logPath + ".checklist'; fi\n" +
 		"if IFS= read line; then printf '%s' \"$line\" > '" + logPath + ".stdin'; else : > '" + logPath + ".stdin'; fi\n" +
