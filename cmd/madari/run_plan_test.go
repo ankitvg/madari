@@ -156,7 +156,45 @@ func TestRunWithStoreRunPlanBlocksMissingCodexBinary(t *testing.T) {
 	}
 }
 
-func TestRunWithStoreRunPlanBlocksCodexRingSkills(t *testing.T) {
+func TestRunWithStoreRunPlanBlocksCodexAdminSkillRoot(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+	installFakeCodex(t, 0)
+	adminRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(adminRoot, "admin-skill"), 0o755); err != nil {
+		t.Fatalf("mkdir admin skill: %v", err)
+	}
+	withCodexAdminSkillRoots(t, []string{adminRoot})
+
+	if err := store.Save(registry.Manifest{
+		Name:    "helper",
+		Command: commandPath,
+		Enabled: true,
+		Clients: []string{"codex"},
+	}); err != nil {
+		t.Fatalf("setup helper failed: %v", err)
+	}
+	if err := store.SaveRing(registry.Ring{Name: "helpers", Members: []string{"helper"}}); err != nil {
+		t.Fatalf("setup ring failed: %v", err)
+	}
+
+	result := runCmd(store, "run", "codex", "--ring", "helpers", "--dry-run", "--json", "--", "prompt")
+	if result.code == 0 || !strings.Contains(result.stderr, "launch plan is not ready") {
+		t.Fatalf("expected blocked plan, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	if plan.Ready {
+		t.Fatalf("expected blocked plan, got: %#v", plan)
+	}
+	if !plan.RunnerAvailable {
+		t.Fatalf("expected codex runner to remain available when preflight fails, got: %#v", plan)
+	}
+	if !strings.Contains(strings.Join(plan.Errors, "\n"), "cannot guarantee ring-only skill isolation") {
+		t.Fatalf("expected admin skill root error, got: %#v", plan.Errors)
+	}
+}
+
+func TestRunWithStoreRunPlanIncludesCodexRingSkills(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
 	installFakeCodex(t, 0)
@@ -164,27 +202,89 @@ func TestRunWithStoreRunPlanBlocksCodexRingSkills(t *testing.T) {
 	if result := runCmd(store, "add", "helper", "--command", commandPath, "--client", "codex"); result.code != 0 {
 		t.Fatalf("setup helper failed: %s", result.stderr)
 	}
-	skillSource := writeSkillFile(t, t.TempDir(), "release.md", "# Release\n")
-	if result := runCmd(store, "skill", "add", "release", "--file", skillSource, "--description", "Release workflow"); result.code != 0 {
-		t.Fatalf("skill add failed: %s", result.stderr)
-	}
+	saveTestSkillPackage(t, store, "release", "Release workflow")
 	if result := runCmd(store, "ring", "create", "mixed", "--member", "helper", "--skill", "release"); result.code != 0 {
 		t.Fatalf("ring create failed: %s", result.stderr)
 	}
 
 	result := runCmd(store, "run", "codex", "--ring", "mixed", "--dry-run", "--json", "--", "prompt")
+	if result.code != 0 {
+		t.Fatalf("run plan failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	if !plan.Ready {
+		t.Fatalf("expected ready plan, got errors: %#v", plan.Errors)
+	}
+	if !plan.RunnerAvailable {
+		t.Fatalf("expected codex runner available, got: %#v", plan)
+	}
+	if skill := findRunPlanSkill(t, plan, "release"); skill.Status != "ready" || !slices.Equal(skill.Rings, []string{"mixed"}) {
+		t.Fatalf("expected ready skill, got: %#v", skill)
+	}
+	textResult := runCmd(store, "run", "codex", "--ring", "mixed", "--dry-run", "--", "prompt")
+	if textResult.code != 0 || !strings.Contains(textResult.stdout, "release ready rings=mixed") {
+		t.Fatalf("expected text dry-run to report ready skill, code=%d stdout=%s stderr=%s", textResult.code, textResult.stdout, textResult.stderr)
+	}
+}
+
+func TestRunWithStoreRunPlanBlocksMissingRingSkill(t *testing.T) {
+	store := newTestStore(t)
+	installFakeCodex(t, 0)
+
+	if err := store.SaveRing(registry.Ring{Name: "workflow", Skills: []string{"release"}}); err != nil {
+		t.Fatalf("setup stale skill ring: %v", err)
+	}
+
+	result := runCmd(store, "run", "codex", "--ring", "workflow", "--dry-run", "--json", "--", "prompt")
 	if result.code == 0 || !strings.Contains(result.stderr, "launch plan is not ready") {
 		t.Fatalf("expected blocked plan, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
 	}
 	plan := decodeRunPlan(t, result.stdout)
-	if !plan.RunnerAvailable {
-		t.Fatalf("expected codex runner available, got: %#v", plan)
+	if plan.Ready {
+		t.Fatalf("expected blocked plan, got: %#v", plan)
 	}
 	if skill := findRunPlanSkill(t, plan, "release"); skill.Status != "blocked" {
 		t.Fatalf("expected blocked skill, got: %#v", skill)
 	}
-	if !strings.Contains(strings.Join(plan.Errors, "\n"), "codex run does not support ring skills yet") {
-		t.Fatalf("expected skill-run unsupported error, got: %#v", plan.Errors)
+	if !strings.Contains(strings.Join(plan.Errors, "\n"), "skill release: skill is missing from the registry") {
+		t.Fatalf("expected missing skill error, got: %#v", plan.Errors)
+	}
+}
+
+func TestRunWithStoreRunPlanBlocksNonMaterializableRingSkill(t *testing.T) {
+	store := newTestStore(t)
+	installFakeCodex(t, 0)
+	if err := os.MkdirAll(store.SkillsDir(), 0o755); err != nil {
+		t.Fatalf("mkdir skills dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SkillsDir(), "release.patch.toml"), []byte("name = \"release.patch\"\ndescription = \"Patch release\"\n"), 0o644); err != nil {
+		t.Fatalf("write legacy skill manifest: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(store.SkillsDir(), "release.patch.md"), []byte("# Patch release\n"), 0o644); err != nil {
+		t.Fatalf("write legacy skill content: %v", err)
+	}
+	if _, err := store.GetSkill("release.patch"); err != nil {
+		t.Fatalf("legacy skill metadata should still parse: %v", err)
+	}
+	if err := store.SaveRing(registry.Ring{Name: "workflow", Skills: []string{"release.patch"}}); err != nil {
+		t.Fatalf("setup legacy skill ring: %v", err)
+	}
+
+	result := runCmd(store, "run", "codex", "--ring", "workflow", "--dry-run", "--json", "--", "prompt")
+	if result.code == 0 || !strings.Contains(result.stderr, "launch plan is not ready") {
+		t.Fatalf("expected blocked plan, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	if plan.Ready {
+		t.Fatalf("expected blocked plan, got: %#v", plan)
+	}
+	if skill := findRunPlanSkill(t, plan, "release.patch"); skill.Status != "blocked" {
+		t.Fatalf("expected blocked skill, got: %#v", skill)
+	}
+	errors := strings.Join(plan.Errors, "\n")
+	if !strings.Contains(errors, "skill release.patch: skill package cannot be materialized") ||
+		!strings.Contains(errors, "name must contain lowercase letters") {
+		t.Fatalf("expected non-materializable skill error, got: %#v", plan.Errors)
 	}
 }
 
@@ -310,6 +410,39 @@ func TestRunWithStoreRunPlanBlocksCodexSecretRemoteHeaders(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(plan.Errors, "\n"), "static secret header values cannot be passed to codex run") {
 		t.Fatalf("expected static secret header error, got: %#v", plan.Errors)
+	}
+}
+
+func TestRunWithStoreRunPlanBlocksCodexSecretIsolatedEnvKeys(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+	installFakeCodex(t, 0)
+	t.Setenv("CODEX_HOME", t.TempDir())
+
+	if err := store.Save(registry.Manifest{
+		Name:      "helper",
+		Command:   commandPath,
+		SecretEnv: registry.SecretEnv{Keys: []string{"CODEX_HOME"}},
+		Enabled:   true,
+		Clients:   []string{"codex"},
+	}); err != nil {
+		t.Fatalf("setup helper failed: %v", err)
+	}
+	if err := store.SaveRing(registry.Ring{Name: "helpers", Members: []string{"helper"}}); err != nil {
+		t.Fatalf("setup ring failed: %v", err)
+	}
+
+	result := runCmd(store, "run", "codex", "--ring", "helpers", "--dry-run", "--json", "--", "prompt")
+	if result.code == 0 || !strings.Contains(result.stderr, "launch plan is not ready") {
+		t.Fatalf("expected blocked plan, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	helper := findRunPlanServer(t, plan, "helper")
+	if helper.Status != "blocked" {
+		t.Fatalf("expected blocked helper, got: %#v", helper)
+	}
+	if !strings.Contains(strings.Join(plan.Errors, "\n"), "secret env CODEX_HOME cannot be forwarded by codex run") {
+		t.Fatalf("expected secret CODEX_HOME error, got: %#v", plan.Errors)
 	}
 }
 

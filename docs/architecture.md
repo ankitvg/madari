@@ -19,7 +19,7 @@ Madari keeps four concepts separate:
   capabilities. Skills are official Agent Skill package directories with
   `SKILL.md` metadata, bundled files, and a render surface.
 - Run: ephemeral execution that combines a task, selected capabilities, client
-  target, optional skills/context, and result capture. Codex server-only run is
+  target, optional skills/context, and result capture. Codex run is
   implemented as ephemeral execution and should not be modeled as persistent
   client sync.
 
@@ -27,10 +27,11 @@ Current behavior follows this boundary: `sync` and `ring attach` persist MCP
 server config, `ring attach` also materializes ring skill members as native
 skill package directories for supported targets, `ring render` emits MCP config
 only, `madari run codex` clears inherited MCP config and injects selected
-required server members into `codex exec` from an isolated working root without
-writing config/state, plain `skill render` emits managed `SKILL.md` only, and
-`skill attach` materializes client-native skill packages without changing MCP
-client configs. Skills are not executable run inputs yet.
+required server members into `codex exec`, while temporarily materializing
+selected ring skill members under an isolated working root without writing
+config/state. Plain `skill render` emits managed `SKILL.md` only, and `skill
+attach` materializes client-native skill packages without changing MCP client
+configs.
 
 ## Components
 
@@ -129,7 +130,9 @@ client configs. Skills are not executable run inputs yet.
   owns `ring:<name>`. It refuses to overwrite unmanaged package directories or
   remove packages modified after Madari wrote them.
 - Skills are exported/imported in snapshots and can be consumed by rings. They
-  are not written into MCP config files and are not consumed by run execution.
+  are not written into MCP config files. `madari run codex` consumes selected
+  ring skills by temporarily materializing them as project skills under the
+  isolated run root; other run targets are dry-run only today.
 
 7. Doctor Engine
 - Verifies command/binary resolution.

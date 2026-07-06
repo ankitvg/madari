@@ -20,14 +20,20 @@ import (
 )
 
 type skillRootResolver func() (string, error)
+type runSkillRootResolver func(string) (string, error)
 
 type skillTargetRoots struct {
-	project skillRootResolver
-	user    skillRootResolver
+	project    skillRootResolver
+	user       skillRootResolver
+	runProject runSkillRootResolver
 }
 
 func (r skillTargetRoots) supported() bool {
 	return r.project != nil && r.user != nil
+}
+
+func (r skillTargetRoots) runSupported() bool {
+	return r.runProject != nil
 }
 
 func (r skillTargetRoots) resolve(scope, override string) (string, error) {
@@ -50,6 +56,13 @@ func (r skillTargetRoots) resolve(scope, override string) (string, error) {
 	}
 }
 
+func (r skillTargetRoots) resolveRunProject(runRoot string) (string, error) {
+	if r.runProject == nil {
+		return "", errors.New("run project skill root is not configured")
+	}
+	return r.runProject(runRoot)
+}
+
 func defaultProjectSkillRoot(parts ...string) skillRootResolver {
 	return func() (string, error) {
 		cwd, err := os.Getwd()
@@ -57,6 +70,16 @@ func defaultProjectSkillRoot(parts ...string) skillRootResolver {
 			return "", fmt.Errorf("resolve current directory: %w", err)
 		}
 		return filepath.Join(append([]string{cwd}, parts...)...), nil
+	}
+}
+
+func defaultRunProjectSkillRoot(parts ...string) runSkillRootResolver {
+	return func(runRoot string) (string, error) {
+		runRoot = strings.TrimSpace(runRoot)
+		if runRoot == "" {
+			return "", errors.New("run root is required")
+		}
+		return filepath.Join(append([]string{filepath.Clean(runRoot)}, parts...)...), nil
 	}
 }
 

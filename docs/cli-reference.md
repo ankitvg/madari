@@ -203,20 +203,31 @@ madari run codex --ring cloudsql-readonly --ring research --dry-run --json -- "I
 client. Codex execution starts `codex exec --ephemeral --ignore-user-config
 --skip-git-repo-check --sandbox read-only` with selected ring MCP servers
 injected as required config overrides from an isolated working root after
-clearing inherited MCP server config. Stdio servers keep the original working
-directory through `mcp_servers.<id>.cwd`. Other clients remain dry-run only for
-now.
+clearing inherited MCP server config. Selected ring skills are materialized
+under the temporary Codex run root as project skills for that session. Stdio
+servers keep the original working directory through `mcp_servers.<id>.cwd`.
+Codex runs with a temporary `HOME` so personal Codex skills do not leak into
+the selected ring, and with a temporary `CODEX_HOME` that copies only
+`auth.json` from the caller's Codex home so Codex-home skills do not leak into
+the selected ring. Stdio servers also receive the caller's non-secret `HOME`,
+`USERPROFILE`, and `CODEX_HOME` values when present so home-based server
+credentials keep working; secret declarations for those isolated env keys are
+blocked because Codex mutates them for run isolation. Other clients remain
+dry-run only for now.
 
 The planner resolves every selected ring, deduplicates shared server and skill
 members, validates the selected client can express each required capability,
 checks runtime env keys by name, and reports the launch plan. Run never writes
-client config, creates managed state, or materializes skill packages.
+client config, creates managed state, or permanently materializes skill
+packages.
 
 Unlike `ring render`, `run` is fail-closed. A disabled member, missing member,
 unsupported remote transport or auth mode, missing runtime env key, or
 unsupported skill target blocks the plan instead of silently omitting that
-capability. Rings containing skills also block Codex execution until a later
-skill-run implementation.
+capability.
+Codex execution also blocks when a non-empty admin/system skill root is
+present, because Madari cannot guarantee ring-only skill isolation in that
+case.
 
 ## Skills
 
@@ -255,8 +266,10 @@ root. Attach refuses to overwrite unmanaged package directories. `skill detach`
 releases direct ownership and removes the package only when no source owns it
 anymore; it refuses to delete packages modified since Madari last wrote them.
 Ring attach uses the same native skill materialization state with
-`ring:<name>` ownership sources. Skills are not written into MCP client configs
-and are not materialized by the dry-run planner yet.
+`ring:<name>` ownership sources. Skills are not written into MCP client
+configs. `madari run --dry-run` validates selected ring skills, and
+`madari run codex` temporarily materializes them as project skills for the
+session without recording attachment state.
 
 ## Diagnostics
 
@@ -312,7 +325,8 @@ madari skill show release --json
 ```
 
 `sync --json` requires `--dry-run`; the apply-mode output contract is not yet
-defined. `run --json` also requires `--dry-run` until client execution lands.
+defined. `run --json` also requires `--dry-run`; non-dry-run execution streams
+the target client output unchanged.
 
 ### Schemas (schema_version 1)
 

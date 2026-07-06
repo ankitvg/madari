@@ -150,19 +150,23 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 		plan.Errors = append(plan.Errors, message)
 	}
 
-	ct, ok := clientTargetByName(target)
-	if !ok {
+	if _, ok := clientTargetByName(target); !ok {
 		addPlanError(fmt.Sprintf("unsupported run target %q (supported: %s)", target, strings.Join(sortedClientTargetNames(), ", ")))
 		plan.finish()
 		return plan, nil
 	}
-	runnerImplemented := ct.runExecutor != nil
+	rt, runnerImplemented := runTargetByName(target)
 	if runnerImplemented {
 		plan.RunnerAvailable = true
-		if strings.TrimSpace(ct.runExecutable) != "" {
-			if _, err := exec.LookPath(ct.runExecutable); err != nil {
+		if strings.TrimSpace(rt.executable) != "" {
+			if _, err := exec.LookPath(rt.executable); err != nil {
 				plan.RunnerAvailable = false
-				addPlanError(fmt.Sprintf("%s executable not found in PATH; install the %s CLI before running this target", ct.runExecutable, target))
+				addPlanError(fmt.Sprintf("%s executable not found in PATH; install the %s CLI before running this target", rt.executable, target))
+			}
+		}
+		if rt.planPreflight != nil {
+			if err := rt.planPreflight(); err != nil {
+				addPlanError(err.Error())
 			}
 		}
 	}
@@ -255,6 +259,9 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 		} else if err := clients.ValidateCommandPath(manifest.Command); err != nil {
 			server.Issues = append(server.Issues, err.Message)
 		}
+		if runnerImplemented && rt.serverPreflight != nil {
+			server.Issues = append(server.Issues, rt.serverPreflight(manifest)...)
+		}
 
 		for _, key := range server.RuntimeEnv {
 			envRequirements[key] = appendUniqueName(envRequirements[key], name)
@@ -272,10 +279,8 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 		plan.Servers = append(plan.Servers, server)
 	}
 
-	if len(skillRings) > 0 && runnerImplemented {
-		addPlanError(fmt.Sprintf("%s run does not support ring skills yet", target))
-	} else if len(skillRings) > 0 && !supportsSkillMaterialization(target) {
-		addPlanError(fmt.Sprintf("%s does not support skill materialization (supported skill targets: %s)", target, strings.Join(supportedSkillTargets(), ", ")))
+	if len(skillRings) > 0 && !supportsRunSkillMaterialization(target) {
+		addPlanError(fmt.Sprintf("%s does not support run skill materialization (supported run skill targets: %s)", target, strings.Join(supportedRunSkillTargets(), ", ")))
 	}
 	skillNames := sortedStringSliceMapKeys(skillRings)
 	for _, name := range skillNames {
@@ -285,17 +290,15 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 			Rings:  nonNilStrings(append([]string(nil), skillRings[name]...)),
 			Issues: []string{},
 		}
-		if _, err := a.store.GetSkill(name); err != nil {
+		if _, err := a.store.GetSkillPackage(name); err != nil {
 			if errors.Is(err, registry.ErrSkillNotFound) {
 				skill.Issues = append(skill.Issues, "skill is missing from the registry")
 			} else {
-				return runLaunchPlan{}, err
+				skill.Issues = append(skill.Issues, fmt.Sprintf("skill package cannot be materialized: %v", err))
 			}
 		}
-		if runnerImplemented {
-			skill.Issues = append(skill.Issues, fmt.Sprintf("%s run does not support ring skills yet", target))
-		} else if !supportsSkillMaterialization(target) {
-			skill.Issues = append(skill.Issues, fmt.Sprintf("%s does not support skill materialization", target))
+		if !supportsRunSkillMaterialization(target) {
+			skill.Issues = append(skill.Issues, fmt.Sprintf("%s does not support run skill materialization", target))
 		}
 		if len(skill.Issues) > 0 {
 			skill.Status = "blocked"
@@ -528,9 +531,12 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  execution starts `codex exec --ephemeral --ignore-user-config")
 	fmt.Fprintln(out, "  --skip-git-repo-check --sandbox read-only`, clears inherited MCP")
 	fmt.Fprintln(out, "  config, and injects selected ring MCP servers as required config")
-	fmt.Fprintln(out, "  overrides from an isolated working root. Stdio servers keep the")
-	fmt.Fprintln(out, "  original working directory. Other clients are dry-run only for now.")
-	fmt.Fprintln(out, "  Run never writes client config, managed state, or skill package files.")
+	fmt.Fprintln(out, "  overrides from an isolated working root and materializes selected")
+	fmt.Fprintln(out, "  ring skills into that temporary root. Stdio servers keep the original")
+	fmt.Fprintln(out, "  working directory and caller HOME/USERPROFILE; Codex gets temporary")
+	fmt.Fprintln(out, "  HOME/CODEX_HOME roots with auth copied in. Other clients are dry-run only")
+	fmt.Fprintln(out, "  for now.")
+	fmt.Fprintln(out, "  Run never writes client config, managed state, or permanent skill files.")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Examples:")
 	fmt.Fprintln(out, "  madari run codex --ring cloudsql-readonly -- \"Who are the top 5 ebook creators?\"")

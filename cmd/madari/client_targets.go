@@ -10,6 +10,7 @@ import (
 	"github.com/ankitvg/madari/internal/clients/codex"
 	"github.com/ankitvg/madari/internal/clients/gemini"
 	"github.com/ankitvg/madari/internal/clients/vibe"
+	"github.com/ankitvg/madari/internal/registry"
 )
 
 // clientTarget records the command-layer capabilities Madari knows for one
@@ -19,8 +20,6 @@ type clientTarget struct {
 	target             string
 	syncAdapter        clients.ClientAdapter
 	ringConfigRenderer func(io.Writer, map[string]renderedServer) error
-	runExecutor        runExecutor
-	runExecutable      string
 	// ringRenderTimeout marks renderers that emit timeout_ms as the
 	// client's per-server timeout field for remote entries.
 	ringRenderTimeout bool
@@ -47,21 +46,21 @@ var clientTargets = []clientTarget{
 		ringRenderTimeout:  true,
 		userScope:          true,
 		skillRoots: skillTargetRoots{
-			project: defaultProjectSkillRoot(".claude", "skills"),
-			user:    defaultHomeSkillRoot(".claude", "skills"),
+			project:    defaultProjectSkillRoot(".claude", "skills"),
+			user:       defaultHomeSkillRoot(".claude", "skills"),
+			runProject: defaultRunProjectSkillRoot(".claude", "skills"),
 		},
 	},
 	{
 		target:               codex.Target,
 		syncAdapter:          codex.Adapter{},
 		ringConfigRenderer:   renderCodexTOML,
-		runExecutor:          runCodex,
-		runExecutable:        "codex",
 		remoteOAuthResource:  true,
 		remoteBearerTokenEnv: true,
 		skillRoots: skillTargetRoots{
-			project: defaultProjectSkillRoot(".agents", "skills"),
-			user:    defaultHomeSkillRoot(".agents", "skills"),
+			project:    defaultProjectSkillRoot(".agents", "skills"),
+			user:       defaultHomeSkillRoot(".agents", "skills"),
+			runProject: defaultRunProjectSkillRoot(".agents", "skills"),
 		},
 	},
 	{
@@ -71,8 +70,9 @@ var clientTargets = []clientTarget{
 		ringRenderTimeout:  true,
 		userScope:          true,
 		skillRoots: skillTargetRoots{
-			project: defaultProjectSkillRoot(".gemini", "skills"),
-			user:    defaultHomeSkillRoot(".gemini", "skills"),
+			project:    defaultProjectSkillRoot(".gemini", "skills"),
+			user:       defaultHomeSkillRoot(".gemini", "skills"),
+			runProject: defaultRunProjectSkillRoot(".gemini", "skills"),
 		},
 	},
 	{
@@ -80,9 +80,28 @@ var clientTargets = []clientTarget{
 		syncAdapter:        vibe.Adapter{},
 		ringConfigRenderer: renderVibeTOML,
 		skillRoots: skillTargetRoots{
-			project: defaultProjectSkillRoot(".vibe", "skills"),
-			user:    defaultVibeUserSkillRoot(),
+			project:    defaultProjectSkillRoot(".vibe", "skills"),
+			user:       defaultVibeUserSkillRoot(),
+			runProject: defaultRunProjectSkillRoot(".vibe", "skills"),
 		},
+	},
+}
+
+type runTarget struct {
+	target          string
+	executor        runExecutor
+	executable      string
+	planPreflight   func() error
+	serverPreflight func(registry.Manifest) []string
+}
+
+var runTargets = []runTarget{
+	{
+		target:          codex.Target,
+		executor:        runCodex,
+		executable:      "codex",
+		planPreflight:   validateCodexRunPlan,
+		serverPreflight: codexRunServerPlanIssues,
 	},
 }
 
@@ -148,6 +167,22 @@ func supportsSkillMaterialization(target string) bool {
 	return ok && ct.skillRoots.supported()
 }
 
+func supportedRunSkillTargets() []string {
+	targets := []string{}
+	for _, ct := range clientTargets {
+		if ct.skillRoots.runSupported() {
+			targets = append(targets, ct.target)
+		}
+	}
+	sort.Strings(targets)
+	return targets
+}
+
+func supportsRunSkillMaterialization(target string) bool {
+	ct, ok := clientTargetByName(target)
+	return ok && ct.skillRoots.runSupported()
+}
+
 func supportsRemoteBearerTokenEnv(target string) bool {
 	ct, ok := clientTargetByName(target)
 	return ok && ct.remoteBearerTokenEnv
@@ -158,7 +193,16 @@ func supportsRemoteOAuthResource(target string) bool {
 	return ok && ct.remoteOAuthResource
 }
 
+func runTargetByName(target string) (runTarget, bool) {
+	for _, rt := range runTargets {
+		if rt.target == target {
+			return rt, true
+		}
+	}
+	return runTarget{}, false
+}
+
 func runExecutorForTarget(target string) (runExecutor, bool) {
-	ct, ok := clientTargetByName(target)
-	return ct.runExecutor, ok && ct.runExecutor != nil
+	rt, ok := runTargetByName(target)
+	return rt.executor, ok && rt.executor != nil
 }
