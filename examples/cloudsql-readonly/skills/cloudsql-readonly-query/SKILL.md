@@ -5,7 +5,7 @@ license: Apache-2.0
 compatibility: Codex with the cloud-sql MCP server managed by Madari; other clients require equivalent Cloud SQL MCP auth configuration outside this example.
 metadata:
   ring: cloudsql-readonly
-allowed-tools: mcp__cloud-sql__list_instances,mcp__cloud-sql__get_instance,mcp__cloud-sql__execute_sql_readonly,Bash(python3 scripts/sql_readonly_check.py:*),Bash(sh scripts/cloudsql_target_context.sh:*)
+allowed-tools: mcp__cloud_sql__list_instances,mcp__cloud_sql__get_instance,mcp__cloud_sql__execute_sql_readonly,Bash(python3 scripts/sql_readonly_check.py:*),Bash(sh scripts/cloudsql_target_context.sh:*)
 ---
 
 # Cloud SQL Read-Only Query

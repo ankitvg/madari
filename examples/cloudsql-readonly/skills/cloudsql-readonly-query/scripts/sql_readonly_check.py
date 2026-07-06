@@ -20,6 +20,7 @@ BLOCKED = {
     "execute",
     "grant",
     "insert",
+    "into",
     "lock",
     "merge",
     "refresh",
@@ -128,6 +129,22 @@ def normalized_tokens(sql: str) -> list[str]:
     return re.findall(r"[A-Za-z_][A-Za-z0-9_]*", scrub_sql(sql).lower())
 
 
+def find_row_locking_clause(tokens: list[str]) -> str | None:
+    for i, token in enumerate(tokens):
+        if token != "for" or i + 1 >= len(tokens):
+            continue
+        next_token = tokens[i + 1]
+        if next_token == "update":
+            return "for update"
+        if next_token == "share":
+            return "for share"
+        if next_token == "key" and i + 2 < len(tokens) and tokens[i + 2] == "share":
+            return "for key share"
+        if next_token == "no" and i + 3 < len(tokens) and tokens[i + 2] == "key" and tokens[i + 3] == "update":
+            return "for no key update"
+    return None
+
+
 def main() -> int:
     sql = " ".join(sys.argv[1:]).strip() if len(sys.argv) > 1 else sys.stdin.read().strip()
     if not sql:
@@ -151,6 +168,9 @@ def main() -> int:
     blocked = sorted({token for token in tokens if token in BLOCKED})
     if blocked:
         print("ERROR: blocked keyword(s): " + ", ".join(blocked), file=sys.stderr)
+        return 1
+    if row_lock := find_row_locking_clause(tokens):
+        print(f"ERROR: row-locking SELECT clause is not allowed: {row_lock}", file=sys.stderr)
         return 1
 
     print("OK: SQL appears read-only")
