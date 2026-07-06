@@ -146,9 +146,10 @@ project-scoped Codex config cannot add unselected capabilities. It also starts
 Codex with a temporary `HOME` so personal Codex skills do not leak into the
 ring run, and with a temporary `CODEX_HOME` that copies only `auth.json` from
 the caller's Codex home so Codex-home skills do not leak into the run. Stdio
-MCP servers still receive the caller's `HOME`/`USERPROFILE` when present so
-home-based server credentials keep working. Other clients remain dry-run only
-for now.
+MCP servers still receive the caller's non-secret `HOME`, `USERPROFILE`, and
+`CODEX_HOME` values when present so home-based server credentials keep working;
+secret declarations for those isolated env keys are blocked. Other clients
+remain dry-run only for now.
 
 ## Safety Model
 

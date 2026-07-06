@@ -413,6 +413,39 @@ func TestRunWithStoreRunPlanBlocksCodexSecretRemoteHeaders(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreRunPlanBlocksCodexSecretIsolatedEnvKeys(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+	installFakeCodex(t, 0)
+	t.Setenv("CODEX_HOME", t.TempDir())
+
+	if err := store.Save(registry.Manifest{
+		Name:      "helper",
+		Command:   commandPath,
+		SecretEnv: registry.SecretEnv{Keys: []string{"CODEX_HOME"}},
+		Enabled:   true,
+		Clients:   []string{"codex"},
+	}); err != nil {
+		t.Fatalf("setup helper failed: %v", err)
+	}
+	if err := store.SaveRing(registry.Ring{Name: "helpers", Members: []string{"helper"}}); err != nil {
+		t.Fatalf("setup ring failed: %v", err)
+	}
+
+	result := runCmd(store, "run", "codex", "--ring", "helpers", "--dry-run", "--json", "--", "prompt")
+	if result.code == 0 || !strings.Contains(result.stderr, "launch plan is not ready") {
+		t.Fatalf("expected blocked plan, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	helper := findRunPlanServer(t, plan, "helper")
+	if helper.Status != "blocked" {
+		t.Fatalf("expected blocked helper, got: %#v", helper)
+	}
+	if !strings.Contains(strings.Join(plan.Errors, "\n"), "secret env CODEX_HOME cannot be forwarded by codex run") {
+		t.Fatalf("expected secret CODEX_HOME error, got: %#v", plan.Errors)
+	}
+}
+
 func TestRunWithStoreRunPlanMissingServerRuntimeEnvIsEmptyArray(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ankitvg/madari/internal/clients/syncshared"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -99,7 +100,11 @@ func validateCodexRunPlan() error {
 func codexRunSourceHome() (string, error) {
 	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
 	if codexHome != "" {
-		return filepath.Clean(codexHome), nil
+		expanded, err := syncshared.ExpandHome(codexHome)
+		if err != nil {
+			return "", fmt.Errorf("expand CODEX_HOME: %w", err)
+		}
+		return filepath.Clean(expanded), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -185,7 +190,10 @@ func codexRunConfigOverrides(store *registry.Store, plan runLaunchPlan, workingD
 	if err != nil {
 		return nil, err
 	}
-	callerHomeEnv := codexCallerHomeEnv()
+	callerEnv, err := codexCallerIsolatedEnv()
+	if err != nil {
+		return nil, err
+	}
 	byName := make(map[string]registry.Manifest, len(manifests))
 	for _, manifest := range manifests {
 		byName[manifest.Name] = manifest
@@ -203,7 +211,7 @@ func codexRunConfigOverrides(store *registry.Store, plan runLaunchPlan, workingD
 		if !ok {
 			return nil, fmt.Errorf("server %s no longer exists in the registry", name)
 		}
-		value, err := codexRunServerConfigValue(manifest, workingDir, callerHomeEnv)
+		value, err := codexRunServerConfigValue(manifest, workingDir, callerEnv)
 		if err != nil {
 			return nil, fmt.Errorf("server %s: %w", name, err)
 		}
@@ -212,21 +220,30 @@ func codexRunConfigOverrides(store *registry.Store, plan runLaunchPlan, workingD
 	return []string{"mcp_servers={ " + strings.Join(servers, ", ") + " }"}, nil
 }
 
-func codexCallerHomeEnv() map[string]string {
+func codexCallerIsolatedEnv() (map[string]string, error) {
 	env := map[string]string{}
-	for _, key := range []string{"HOME", "USERPROFILE"} {
+	for _, key := range codexIsolatedEnvKeys() {
 		value, ok := os.LookupEnv(key)
-		if ok && strings.TrimSpace(value) != "" {
-			env[key] = value
+		value = strings.TrimSpace(value)
+		if !ok || value == "" {
+			continue
 		}
+		if key == "CODEX_HOME" {
+			expanded, err := syncshared.ExpandHome(value)
+			if err != nil {
+				return nil, fmt.Errorf("expand CODEX_HOME: %w", err)
+			}
+			value = filepath.Clean(expanded)
+		}
+		env[key] = value
 	}
 	if len(env) == 0 {
-		return nil
+		return nil, nil
 	}
-	return env
+	return env, nil
 }
 
-func codexRunServerConfigValue(manifest registry.Manifest, workingDir string, callerHomeEnv map[string]string) (string, error) {
+func codexRunServerConfigValue(manifest registry.Manifest, workingDir string, callerEnv map[string]string) (string, error) {
 	if manifest.IsRemote() {
 		if secretNames := manifest.SecretHeaderNames(); len(secretNames) > 0 {
 			return "", fmt.Errorf("static secret header values cannot be passed to codex run: %s", strings.Join(secretNames, ", "))
@@ -243,30 +260,44 @@ func codexRunServerConfigValue(manifest registry.Manifest, workingDir string, ca
 		}
 		return "{ " + strings.Join(fields, ", ") + " }", nil
 	}
+	if issues := codexRunServerPlanIssues(manifest); len(issues) > 0 {
+		return "", fmt.Errorf("%s", strings.Join(issues, "; "))
+	}
 
 	fields := []string{fmt.Sprintf("command = %s", tomlString(manifest.Command)), "required = true", fmt.Sprintf("cwd = %s", tomlString(workingDir))}
 	if len(manifest.Args) > 0 {
 		fields = append(fields, fmt.Sprintf("args = %s", tomlStringArray(manifest.Args)))
 	}
-	envVars := codexRunRuntimeEnvVars(manifest, callerHomeEnv)
+	envVars := codexRunRuntimeEnvVars(manifest, callerEnv)
 	if len(envVars) > 0 {
 		fields = append(fields, fmt.Sprintf("env_vars = %s", tomlStringArray(envVars)))
 	}
-	if env := codexRunStaticEnv(manifest, callerHomeEnv); len(env) > 0 {
+	if env := codexRunStaticEnv(manifest, callerEnv); len(env) > 0 {
 		fields = append(fields, fmt.Sprintf("env = %s", tomlInlineStringMap(env)))
 	}
 	return "{ " + strings.Join(fields, ", ") + " }", nil
 }
 
-func codexRunRuntimeEnvVars(manifest registry.Manifest, callerHomeEnv map[string]string) []string {
+func codexRunServerPlanIssues(manifest registry.Manifest) []string {
+	if manifest.IsRemote() {
+		return nil
+	}
+	keys := sortedIntersectingEnvKeys(manifest.SecretEnv.Keys, codexIsolatedEnvKeySet())
+	if len(keys) == 0 {
+		return nil
+	}
+	return []string{fmt.Sprintf("secret env %s cannot be forwarded by codex run because Codex isolates %s; move it to required_env or remove it from this server", strings.Join(keys, ", "), strings.Join(keys, ", "))}
+}
+
+func codexRunRuntimeEnvVars(manifest registry.Manifest, callerEnv map[string]string) []string {
 	keys := runtimeEnvKeys(manifest.RequiredEnv.Keys, manifest.SecretEnv.Keys)
-	if len(keys) == 0 || len(callerHomeEnv) == 0 {
+	if len(keys) == 0 || len(callerEnv) == 0 {
 		return keys
 	}
 	secret := envKeySet(manifest.SecretEnv.Keys)
 	out := make([]string, 0, len(keys))
 	for _, key := range keys {
-		if _, ok := callerHomeEnv[key]; ok && !secret[key] {
+		if _, ok := callerEnv[key]; ok && !secret[key] {
 			continue
 		}
 		out = append(out, key)
@@ -274,7 +305,7 @@ func codexRunRuntimeEnvVars(manifest registry.Manifest, callerHomeEnv map[string
 	return out
 }
 
-func codexRunStaticEnv(manifest registry.Manifest, callerHomeEnv map[string]string) map[string]string {
+func codexRunStaticEnv(manifest registry.Manifest, callerEnv map[string]string) map[string]string {
 	secret := envKeySet(manifest.SecretEnv.Keys)
 	env := map[string]string{}
 	for key, value := range manifest.Env {
@@ -283,7 +314,7 @@ func codexRunStaticEnv(manifest registry.Manifest, callerHomeEnv map[string]stri
 		}
 		env[key] = value
 	}
-	for key, value := range callerHomeEnv {
+	for key, value := range callerEnv {
 		if _, exists := env[key]; !exists && !secret[key] {
 			env[key] = value
 		}
@@ -292,6 +323,35 @@ func codexRunStaticEnv(manifest registry.Manifest, callerHomeEnv map[string]stri
 		return nil
 	}
 	return env
+}
+
+func codexIsolatedEnvKeys() []string {
+	return []string{"CODEX_HOME", "HOME", "USERPROFILE"}
+}
+
+func codexIsolatedEnvKeySet() map[string]bool {
+	keys := codexIsolatedEnvKeys()
+	set := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		set[key] = true
+	}
+	return set
+}
+
+func sortedIntersectingEnvKeys(keys []string, allowed map[string]bool) []string {
+	seen := map[string]struct{}{}
+	for _, key := range keys {
+		key = strings.TrimSpace(key)
+		if key != "" && allowed[key] {
+			seen[key] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for key := range seen {
+		out = append(out, key)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func envKeySet(keys []string) map[string]bool {

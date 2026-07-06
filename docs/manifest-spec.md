@@ -164,8 +164,9 @@ server and skill members; contract arrays preserve authored order.
 
 ### `[contract]`
 
-Ring contracts are advisory metadata for main-thread delegation and future
-subagent initialization. They do not affect attach, detach, sync, status, or
+Ring contracts are advisory metadata for main-thread delegation and run prompt
+preambles. Codex run includes contract metadata in the prompt preamble for
+selected rings, but contracts do not affect attach, detach, sync, status, or
 render behavior.
 
 - `summary` (string, optional): what this ring is for.
@@ -224,8 +225,10 @@ absolute paths, and `..` escapes are rejected.
 `skill render` prints the managed `SKILL.md` exactly. `skill attach` and ring
 attach materialize the full package directory for supported skill targets.
 Skills can be referenced by rings, but rings store only skill names and never
-embed package files. Skills are not written into MCP client configs and are not
-consumed by `run`.
+embed package files. Skills are not written into MCP client configs.
+`madari run --dry-run` validates selected ring skills, and `madari run codex`
+temporarily materializes them as project skills for the session without
+recording attachment state.
 
 Madari still reads legacy flat skills from `<config-root>/skills/<name>.toml`
 and `<config-root>/skills/<name>.md`; the next save, update, or import migrates

@@ -10,6 +10,7 @@ import (
 	"github.com/ankitvg/madari/internal/clients/codex"
 	"github.com/ankitvg/madari/internal/clients/gemini"
 	"github.com/ankitvg/madari/internal/clients/vibe"
+	"github.com/ankitvg/madari/internal/registry"
 )
 
 // clientTarget records the command-layer capabilities Madari knows for one
@@ -87,18 +88,20 @@ var clientTargets = []clientTarget{
 }
 
 type runTarget struct {
-	target        string
-	executor      runExecutor
-	executable    string
-	planPreflight func() error
+	target          string
+	executor        runExecutor
+	executable      string
+	planPreflight   func() error
+	serverPreflight func(registry.Manifest) []string
 }
 
 var runTargets = []runTarget{
 	{
-		target:        codex.Target,
-		executor:      runCodex,
-		executable:    "codex",
-		planPreflight: validateCodexRunPlan,
+		target:          codex.Target,
+		executor:        runCodex,
+		executable:      "codex",
+		planPreflight:   validateCodexRunPlan,
+		serverPreflight: codexRunServerPlanIssues,
 	},
 }
 

@@ -259,6 +259,9 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 		} else if err := clients.ValidateCommandPath(manifest.Command); err != nil {
 			server.Issues = append(server.Issues, err.Message)
 		}
+		if runnerImplemented && rt.serverPreflight != nil {
+			server.Issues = append(server.Issues, rt.serverPreflight(manifest)...)
+		}
 
 		for _, key := range server.RuntimeEnv {
 			envRequirements[key] = appendUniqueName(envRequirements[key], name)

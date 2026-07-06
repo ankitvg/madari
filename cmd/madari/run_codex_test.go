@@ -80,7 +80,7 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 			"LOCAL_MODE":   "test",
 			"LOCAL_SECRET": "inline-secret",
 		},
-		RequiredEnv: registry.RequiredEnv{Keys: []string{"HOME", "LOCAL_TOKEN"}},
+		RequiredEnv: registry.RequiredEnv{Keys: []string{"CODEX_HOME", "HOME", "LOCAL_TOKEN"}},
 		SecretEnv:   registry.SecretEnv{Keys: []string{"LOCAL_SECRET"}},
 		Enabled:     true,
 		Clients:     []string{"codex"},
@@ -215,7 +215,7 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get cwd: %v", err)
 	}
-	wantOverride := `mcp_servers={ cloud-sql = { url = "https://sqladmin.googleapis.com/mcp", required = true, oauth_resource = "https://sqladmin.googleapis.com/", bearer_token_env_var = "CLOUDSQL_MCP_TOKEN", http_headers = { x-goog-user-project = "stewreads" } }, "github.com" = { command = ` + tomlString(commandPath) + `, required = true, cwd = ` + tomlString(workingDir) + `, args = ["--stdio"], env_vars = ["LOCAL_SECRET", "LOCAL_TOKEN"], env = { HOME = ` + tomlString(originalHome) + `, LOCAL_MODE = "test" } } }`
+	wantOverride := `mcp_servers={ cloud-sql = { url = "https://sqladmin.googleapis.com/mcp", required = true, oauth_resource = "https://sqladmin.googleapis.com/", bearer_token_env_var = "CLOUDSQL_MCP_TOKEN", http_headers = { x-goog-user-project = "stewreads" } }, "github.com" = { command = ` + tomlString(commandPath) + `, required = true, cwd = ` + tomlString(workingDir) + `, args = ["--stdio"], env_vars = ["LOCAL_SECRET", "LOCAL_TOKEN"], env = { CODEX_HOME = ` + tomlString(codexHome) + `, HOME = ` + tomlString(originalHome) + `, LOCAL_MODE = "test" } } }`
 	if overrides[0] != wantOverride {
 		t.Fatalf("unexpected mcp_servers override:\nwant %s\ngot  %s", wantOverride, overrides[0])
 	}
@@ -371,23 +371,43 @@ func TestCodexRunEnvUsesExplicitCodexHomeWithoutHome(t *testing.T) {
 	}
 }
 
-func TestCodexRunServerConfigValueKeepsSecretHomeInEnvVars(t *testing.T) {
+func TestCodexRunEnvExpandsCodexHomeBeforeCopyingAuth(t *testing.T) {
+	withCodexAdminSkillRoots(t, nil)
+	runRoot := t.TempDir()
+	home := t.TempDir()
+	sourceCodexHome := filepath.Join(home, "codex-auth")
+	if err := os.MkdirAll(sourceCodexHome, 0o755); err != nil {
+		t.Fatalf("mkdir source CODEX_HOME: %v", err)
+	}
+	writeTextFile(t, sourceCodexHome, "auth.json", "tilde-auth\n")
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", "~/codex-auth")
+
+	env, err := codexRunEnv(runRoot)
+	if err != nil {
+		t.Fatalf("codexRunEnv failed: %v", err)
+	}
+	isolatedCodexHome := testEnvValue(env, "CODEX_HOME")
+	authPayload, err := os.ReadFile(filepath.Join(isolatedCodexHome, "auth.json"))
+	if err != nil {
+		t.Fatalf("read copied auth: %v", err)
+	}
+	if string(authPayload) != "tilde-auth\n" {
+		t.Fatalf("expected copied auth payload, got %q", string(authPayload))
+	}
+}
+
+func TestCodexRunServerConfigValueBlocksSecretIsolatedEnvKeys(t *testing.T) {
 	commandPath := mustCurrentExecutable(t)
-	value, err := codexRunServerConfigValue(registry.Manifest{
+	_, err := codexRunServerConfigValue(registry.Manifest{
 		Name:      "secret-home",
 		Command:   commandPath,
 		SecretEnv: registry.SecretEnv{Keys: []string{"HOME"}},
 		Enabled:   true,
 		Clients:   []string{"codex"},
 	}, t.TempDir(), map[string]string{"HOME": "/secret/home"})
-	if err != nil {
-		t.Fatalf("build server config: %v", err)
-	}
-	if !strings.Contains(value, `env_vars = ["HOME"]`) {
-		t.Fatalf("expected secret HOME to stay in env_vars, got: %s", value)
-	}
-	if strings.Contains(value, "/secret/home") || strings.Contains(value, "HOME =") {
-		t.Fatalf("secret HOME leaked into static env: %s", value)
+	if err == nil || !strings.Contains(err.Error(), "secret env HOME cannot be forwarded by codex run") {
+		t.Fatalf("expected blocked secret HOME, got: %v", err)
 	}
 }
 

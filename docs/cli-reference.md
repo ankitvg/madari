@@ -209,9 +209,11 @@ servers keep the original working directory through `mcp_servers.<id>.cwd`.
 Codex runs with a temporary `HOME` so personal Codex skills do not leak into
 the selected ring, and with a temporary `CODEX_HOME` that copies only
 `auth.json` from the caller's Codex home so Codex-home skills do not leak into
-the selected ring. Stdio servers also receive the caller's `HOME`/`USERPROFILE`
-when present so home-based server credentials keep working. Other clients
-remain dry-run only for now.
+the selected ring. Stdio servers also receive the caller's non-secret `HOME`,
+`USERPROFILE`, and `CODEX_HOME` values when present so home-based server
+credentials keep working; secret declarations for those isolated env keys are
+blocked because Codex mutates them for run isolation. Other clients remain
+dry-run only for now.
 
 The planner resolves every selected ring, deduplicates shared server and skill
 members, validates the selected client can express each required capability,
@@ -263,8 +265,10 @@ root. Attach refuses to overwrite unmanaged package directories. `skill detach`
 releases direct ownership and removes the package only when no source owns it
 anymore; it refuses to delete packages modified since Madari last wrote them.
 Ring attach uses the same native skill materialization state with
-`ring:<name>` ownership sources. Skills are not written into MCP client configs
-and are not materialized by the dry-run planner yet.
+`ring:<name>` ownership sources. Skills are not written into MCP client
+configs. `madari run --dry-run` validates selected ring skills, and
+`madari run codex` temporarily materializes them as project skills for the
+session without recording attachment state.
 
 ## Diagnostics
 
@@ -320,7 +324,8 @@ madari skill show release --json
 ```
 
 `sync --json` requires `--dry-run`; the apply-mode output contract is not yet
-defined. `run --json` also requires `--dry-run` until client execution lands.
+defined. `run --json` also requires `--dry-run`; non-dry-run execution streams
+the target client output unchanged.
 
 ### Schemas (schema_version 1)
 
