@@ -67,15 +67,15 @@ func runCodex(a cliApp, plan runLaunchPlan, prompt string) error {
 var codexAdminSkillRoots = []string{"/etc/codex/skills"}
 
 func codexRunEnv(runRoot string) ([]string, error) {
-	if err := ensureCodexRunNoAdminSkillRoots(codexAdminSkillRoots); err != nil {
+	if err := validateCodexRunPlan(); err != nil {
 		return nil, err
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("resolve current home directory: %w", err)
 	}
 	codexHome := strings.TrimSpace(os.Getenv("CODEX_HOME"))
 	if codexHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("resolve current home directory: %w", err)
+		}
 		codexHome = filepath.Join(home, ".codex")
 	}
 	isolatedHome := filepath.Join(runRoot, "home")
@@ -87,6 +87,10 @@ func codexRunEnv(runRoot string) ([]string, error) {
 	env = withEnvValue(env, "USERPROFILE", isolatedHome)
 	env = withEnvValue(env, "CODEX_HOME", codexHome)
 	return env, nil
+}
+
+func validateCodexRunPlan() error {
+	return ensureCodexRunNoAdminSkillRoots(codexAdminSkillRoots)
 }
 
 func ensureCodexRunNoAdminSkillRoots(roots []string) error {
@@ -134,6 +138,7 @@ func codexRunConfigOverrides(store *registry.Store, plan runLaunchPlan, workingD
 	if err != nil {
 		return nil, err
 	}
+	callerHomeEnv := codexCallerHomeEnv()
 	byName := make(map[string]registry.Manifest, len(manifests))
 	for _, manifest := range manifests {
 		byName[manifest.Name] = manifest
@@ -151,7 +156,7 @@ func codexRunConfigOverrides(store *registry.Store, plan runLaunchPlan, workingD
 		if !ok {
 			return nil, fmt.Errorf("server %s no longer exists in the registry", name)
 		}
-		value, err := codexRunServerConfigValue(manifest, workingDir)
+		value, err := codexRunServerConfigValue(manifest, workingDir, callerHomeEnv)
 		if err != nil {
 			return nil, fmt.Errorf("server %s: %w", name, err)
 		}
@@ -160,7 +165,21 @@ func codexRunConfigOverrides(store *registry.Store, plan runLaunchPlan, workingD
 	return []string{"mcp_servers={ " + strings.Join(servers, ", ") + " }"}, nil
 }
 
-func codexRunServerConfigValue(manifest registry.Manifest, workingDir string) (string, error) {
+func codexCallerHomeEnv() map[string]string {
+	env := map[string]string{}
+	for _, key := range []string{"HOME", "USERPROFILE"} {
+		value, ok := os.LookupEnv(key)
+		if ok && strings.TrimSpace(value) != "" {
+			env[key] = value
+		}
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
+}
+
+func codexRunServerConfigValue(manifest registry.Manifest, workingDir string, callerHomeEnv map[string]string) (string, error) {
 	if manifest.IsRemote() {
 		if secretNames := manifest.SecretHeaderNames(); len(secretNames) > 0 {
 			return "", fmt.Errorf("static secret header values cannot be passed to codex run: %s", strings.Join(secretNames, ", "))
@@ -182,20 +201,32 @@ func codexRunServerConfigValue(manifest registry.Manifest, workingDir string) (s
 	if len(manifest.Args) > 0 {
 		fields = append(fields, fmt.Sprintf("args = %s", tomlStringArray(manifest.Args)))
 	}
-	envVars := runtimeEnvKeys(manifest.RequiredEnv.Keys, manifest.SecretEnv.Keys)
+	envVars := codexRunRuntimeEnvVars(manifest, callerHomeEnv)
 	if len(envVars) > 0 {
 		fields = append(fields, fmt.Sprintf("env_vars = %s", tomlStringArray(envVars)))
 	}
-	if env := codexRunStaticEnv(manifest); len(env) > 0 {
+	if env := codexRunStaticEnv(manifest, callerHomeEnv); len(env) > 0 {
 		fields = append(fields, fmt.Sprintf("env = %s", tomlInlineStringMap(env)))
 	}
 	return "{ " + strings.Join(fields, ", ") + " }", nil
 }
 
-func codexRunStaticEnv(manifest registry.Manifest) map[string]string {
-	if len(manifest.Env) == 0 {
-		return nil
+func codexRunRuntimeEnvVars(manifest registry.Manifest, callerHomeEnv map[string]string) []string {
+	keys := runtimeEnvKeys(manifest.RequiredEnv.Keys, manifest.SecretEnv.Keys)
+	if len(keys) == 0 || len(callerHomeEnv) == 0 {
+		return keys
 	}
+	out := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if _, ok := callerHomeEnv[key]; ok {
+			continue
+		}
+		out = append(out, key)
+	}
+	return out
+}
+
+func codexRunStaticEnv(manifest registry.Manifest, callerHomeEnv map[string]string) map[string]string {
 	secret := make(map[string]bool, len(manifest.SecretEnv.Keys))
 	for _, key := range manifest.SecretEnv.Keys {
 		secret[strings.TrimSpace(key)] = true
@@ -206,6 +237,11 @@ func codexRunStaticEnv(manifest registry.Manifest) map[string]string {
 			continue
 		}
 		env[key] = value
+	}
+	for key, value := range callerHomeEnv {
+		if _, exists := env[key]; !exists {
+			env[key] = value
+		}
 	}
 	if len(env) == 0 {
 		return nil

@@ -48,6 +48,7 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 	}
 	writeTextFile(t, globalSkillDir, "SKILL.md", "---\nname: global\ndescription: Global skill\n---\n\n# Global\n")
 	t.Setenv("HOME", originalHome)
+	t.Setenv("USERPROFILE", "")
 	codexHome := t.TempDir()
 	t.Setenv("CODEX_HOME", codexHome)
 
@@ -73,7 +74,7 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 			"LOCAL_MODE":   "test",
 			"LOCAL_SECRET": "inline-secret",
 		},
-		RequiredEnv: registry.RequiredEnv{Keys: []string{"LOCAL_TOKEN"}},
+		RequiredEnv: registry.RequiredEnv{Keys: []string{"HOME", "LOCAL_TOKEN"}},
 		SecretEnv:   registry.SecretEnv{Keys: []string{"LOCAL_SECRET"}},
 		Enabled:     true,
 		Clients:     []string{"codex"},
@@ -194,7 +195,7 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get cwd: %v", err)
 	}
-	wantOverride := `mcp_servers={ cloud-sql = { url = "https://sqladmin.googleapis.com/mcp", required = true, oauth_resource = "https://sqladmin.googleapis.com/", bearer_token_env_var = "CLOUDSQL_MCP_TOKEN", http_headers = { x-goog-user-project = "stewreads" } }, "github.com" = { command = ` + tomlString(commandPath) + `, required = true, cwd = ` + tomlString(workingDir) + `, args = ["--stdio"], env_vars = ["LOCAL_SECRET", "LOCAL_TOKEN"], env = { LOCAL_MODE = "test" } } }`
+	wantOverride := `mcp_servers={ cloud-sql = { url = "https://sqladmin.googleapis.com/mcp", required = true, oauth_resource = "https://sqladmin.googleapis.com/", bearer_token_env_var = "CLOUDSQL_MCP_TOKEN", http_headers = { x-goog-user-project = "stewreads" } }, "github.com" = { command = ` + tomlString(commandPath) + `, required = true, cwd = ` + tomlString(workingDir) + `, args = ["--stdio"], env_vars = ["LOCAL_SECRET", "LOCAL_TOKEN"], env = { HOME = ` + tomlString(originalHome) + `, LOCAL_MODE = "test" } } }`
 	if overrides[0] != wantOverride {
 		t.Fatalf("unexpected mcp_servers override:\nwant %s\ngot  %s", wantOverride, overrides[0])
 	}
@@ -313,16 +314,51 @@ func TestCodexRunEnvBlocksAdminSkillRoot(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(adminRoot, "admin-skill"), 0o755); err != nil {
 		t.Fatalf("mkdir admin skill: %v", err)
 	}
-	previous := codexAdminSkillRoots
-	codexAdminSkillRoots = []string{adminRoot}
-	defer func() {
-		codexAdminSkillRoots = previous
-	}()
+	withCodexAdminSkillRoots(t, []string{adminRoot})
 
 	_, err := codexRunEnv(t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "cannot guarantee ring-only skill isolation") {
 		t.Fatalf("expected admin skill isolation error, got: %v", err)
 	}
+}
+
+func TestCodexRunEnvUsesExplicitCodexHomeWithoutHome(t *testing.T) {
+	withCodexAdminSkillRoots(t, nil)
+	runRoot := t.TempDir()
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+
+	env, err := codexRunEnv(runRoot)
+	if err != nil {
+		t.Fatalf("codexRunEnv failed: %v", err)
+	}
+	if got := testEnvValue(env, "CODEX_HOME"); got != codexHome {
+		t.Fatalf("expected CODEX_HOME %q, got %q", codexHome, got)
+	}
+	if got, want := testEnvValue(env, "HOME"), filepath.Join(runRoot, "home"); !samePath(t, got, want) {
+		t.Fatalf("expected isolated HOME %q, got %q", want, got)
+	}
+}
+
+func withCodexAdminSkillRoots(t *testing.T, roots []string) {
+	t.Helper()
+	previous := codexAdminSkillRoots
+	codexAdminSkillRoots = roots
+	t.Cleanup(func() {
+		codexAdminSkillRoots = previous
+	})
+}
+
+func testEnvValue(env []string, key string) string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
 }
 
 func installFakeCodex(t *testing.T, exitCode int) string {

@@ -207,8 +207,9 @@ clearing inherited MCP server config. Selected ring skills are materialized
 under the temporary Codex run root as project skills for that session. Stdio
 servers keep the original working directory through `mcp_servers.<id>.cwd`.
 Codex runs with a temporary `HOME` so personal Codex skills do not leak into
-the selected ring; `CODEX_HOME` is preserved for auth. Other clients remain
-dry-run only for now.
+the selected ring; `CODEX_HOME` is preserved for auth. Stdio servers also
+receive the caller's `HOME`/`USERPROFILE` when present so home-based server
+credentials keep working. Other clients remain dry-run only for now.
 
 The planner resolves every selected ring, deduplicates shared server and skill
 members, validates the selected client can express each required capability,

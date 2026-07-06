@@ -156,6 +156,44 @@ func TestRunWithStoreRunPlanBlocksMissingCodexBinary(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreRunPlanBlocksCodexAdminSkillRoot(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+	installFakeCodex(t, 0)
+	adminRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(adminRoot, "admin-skill"), 0o755); err != nil {
+		t.Fatalf("mkdir admin skill: %v", err)
+	}
+	withCodexAdminSkillRoots(t, []string{adminRoot})
+
+	if err := store.Save(registry.Manifest{
+		Name:    "helper",
+		Command: commandPath,
+		Enabled: true,
+		Clients: []string{"codex"},
+	}); err != nil {
+		t.Fatalf("setup helper failed: %v", err)
+	}
+	if err := store.SaveRing(registry.Ring{Name: "helpers", Members: []string{"helper"}}); err != nil {
+		t.Fatalf("setup ring failed: %v", err)
+	}
+
+	result := runCmd(store, "run", "codex", "--ring", "helpers", "--dry-run", "--json", "--", "prompt")
+	if result.code == 0 || !strings.Contains(result.stderr, "launch plan is not ready") {
+		t.Fatalf("expected blocked plan, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	if plan.Ready {
+		t.Fatalf("expected blocked plan, got: %#v", plan)
+	}
+	if !plan.RunnerAvailable {
+		t.Fatalf("expected codex runner to remain available when preflight fails, got: %#v", plan)
+	}
+	if !strings.Contains(strings.Join(plan.Errors, "\n"), "cannot guarantee ring-only skill isolation") {
+		t.Fatalf("expected admin skill root error, got: %#v", plan.Errors)
+	}
+}
+
 func TestRunWithStoreRunPlanIncludesCodexRingSkills(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)

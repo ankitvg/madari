@@ -87,16 +87,18 @@ var clientTargets = []clientTarget{
 }
 
 type runTarget struct {
-	target     string
-	executor   runExecutor
-	executable string
+	target        string
+	executor      runExecutor
+	executable    string
+	planPreflight func() error
 }
 
 var runTargets = []runTarget{
 	{
-		target:     codex.Target,
-		executor:   runCodex,
-		executable: "codex",
+		target:        codex.Target,
+		executor:      runCodex,
+		executable:    "codex",
+		planPreflight: validateCodexRunPlan,
 	},
 }
 

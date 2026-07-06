@@ -164,6 +164,11 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 				addPlanError(fmt.Sprintf("%s executable not found in PATH; install the %s CLI before running this target", rt.executable, target))
 			}
 		}
+		if rt.planPreflight != nil {
+			if err := rt.planPreflight(); err != nil {
+				addPlanError(err.Error())
+			}
+		}
 	}
 	for ring, count := range countStrings(plan.Rings) {
 		if count > 1 {
@@ -525,7 +530,8 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  config, and injects selected ring MCP servers as required config")
 	fmt.Fprintln(out, "  overrides from an isolated working root and materializes selected")
 	fmt.Fprintln(out, "  ring skills into that temporary root. Stdio servers keep the original")
-	fmt.Fprintln(out, "  working directory. Other clients are dry-run only for now.")
+	fmt.Fprintln(out, "  working directory and caller HOME/USERPROFILE. Other clients are dry-run")
+	fmt.Fprintln(out, "  only for now.")
 	fmt.Fprintln(out, "  Run never writes client config, managed state, or permanent skill files.")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Examples:")
