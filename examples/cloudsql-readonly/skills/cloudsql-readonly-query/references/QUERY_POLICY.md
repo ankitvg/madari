@@ -19,6 +19,8 @@ SQL rules:
 - Use explicit column lists for exploratory queries when practical.
 - Add `LIMIT 100` or a stricter limit for sample queries unless the user asks for an aggregate.
 - Prefer `COUNT(*)`, grouped aggregates, and metadata queries when answering broad questions.
+- When a business concept could map to multiple tables or artifact surfaces, compare candidate sources with narrow metadata or aggregate queries before choosing one.
+- For rankings or "top N" questions, state the source table and counting rule in the final answer.
 - Keep expensive joins and full scans out of the first query unless the user has provided enough context to justify them.
 
 Safety reminders:

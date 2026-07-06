@@ -52,47 +52,6 @@ The `madari add` command above recreates the server manifest shown in
 when this ring is the right tool, what context to provide, and what output to
 expect. `madari ring contract show cloudsql-readonly` prints it.
 
-Render an ephemeral MCP config without attaching anything:
-
-```bash
-madari ring render cloudsql-readonly --client codex
-```
-
-Expected render shape per client, Codex:
-
-```toml
-[mcp_servers.cloud-sql]
-url = "https://sqladmin.googleapis.com/mcp"
-bearer_token_env_var = "CLOUDSQL_MCP_TOKEN"
-```
-
-Claude Code is intentionally not listed as a client in this example manifest.
-If you render for Claude Code without changing the manifest, Madari omits the
-server because it is not targeted:
-
-```json
-{
-  "mcpServers": {}
-}
-```
-
-Madari's `bearer_token_env_var` field is currently materialized for Codex. If
-another client gets a verified env-referenced bearer-token config shape, Madari
-should translate this same manifest capability to that native format and this
-example can add that client.
-
-Attach the ring to the client you want it persisted in:
-
-```bash
-madari ring attach cloudsql-readonly codex --dry-run
-madari ring attach cloudsql-readonly codex
-madari ring status
-```
-
-The skill is materialized as a native skill package on attach (Codex under
-`.agents/skills/`). `ring render` remains MCP-config-only and does not embed
-skill files.
-
 ## Authentication
 
 Madari configures the server entry; it does not mint or store tokens. For
@@ -127,7 +86,28 @@ export MADARI_CLOUDSQL_DATABASE="app_db"
 export MADARI_CLOUDSQL_DIALECT="postgres"
 ```
 
-The bundled helper prints this context without exposing credentials:
+Inspect the launch plan before starting Codex:
+
+```bash
+madari run codex --ring cloudsql-readonly --dry-run --json -- \
+  "Who are the top 5 ebook creators?"
+```
+
+Then run the ring. `madari run` injects only the selected ring MCP server,
+temporarily materializes the selected ring skill for this Codex session, and
+does not write Codex config, Madari managed state, or permanent skill files:
+
+```bash
+madari run codex --ring cloudsql-readonly -- \
+  "Who are the top 5 ebook creators?"
+```
+
+For broad business questions, ask the agent to inspect candidate schema or
+aggregate surfaces first and state the definition it chose. For example,
+"ebook creator" might mean rows in an `ebooks` table or current ebook artifacts,
+depending on the application schema.
+
+The bundled helper prints the target context without exposing credentials:
 
 ```bash
 sh examples/cloudsql-readonly/skills/cloudsql-readonly-query/scripts/cloudsql_target_context.sh
@@ -140,7 +120,8 @@ python3 examples/cloudsql-readonly/skills/cloudsql-readonly-query/scripts/sql_re
   'SELECT COUNT(*) FROM users'
 ```
 
-A good prompt in any attached client is:
+For an explicit SQL question, put the SQL in the prompt and ask the skill to
+check it before calling `execute_sql_readonly`:
 
 ```text
 Use the cloudsql-readonly-query skill and the cloud-sql MCP server. Inspect the
@@ -150,6 +131,52 @@ count, and any truncation or timeout signal in the final answer:
 
 SELECT COUNT(*) FROM users;
 ```
+
+## Render or Attach
+
+`madari run` is the preferred path for this example because it is ephemeral. If
+you only want the MCP config block for inspection or for a client invocation
+outside Madari, render the ring:
+
+```bash
+madari ring render cloudsql-readonly --client codex
+```
+
+Expected render shape for Codex:
+
+```toml
+[mcp_servers.cloud-sql]
+url = "https://sqladmin.googleapis.com/mcp"
+bearer_token_env_var = "CLOUDSQL_MCP_TOKEN"
+```
+
+`ring render` is MCP-config-only; it does not embed or materialize skill files.
+
+Attach the ring only when you want the capability persisted into a client:
+
+```bash
+madari ring attach cloudsql-readonly codex --dry-run
+madari ring attach cloudsql-readonly codex
+madari ring status
+```
+
+The skill is materialized as a native skill package on attach (Codex under
+`.agents/skills/`).
+
+Claude Code is intentionally not listed as a client in this example manifest.
+If you render for Claude Code without changing the manifest, Madari omits the
+server because it is not targeted:
+
+```json
+{
+  "mcpServers": {}
+}
+```
+
+Madari's `bearer_token_env_var` field is currently materialized for Codex. If
+another client gets a verified env-referenced bearer-token config shape, Madari
+should translate this same manifest capability to that native format and this
+example can add that client.
 
 ## Safety Layers
 
@@ -174,7 +201,8 @@ servers that connect through the Cloud SQL network path.
 
 ## Cleanup
 
-Detach the ring from every client it was attached to before deleting it:
+`madari run` leaves no persisted client state. If you used `ring attach`, detach
+the ring from every client it was attached to before deleting it:
 
 ```bash
 madari ring detach cloudsql-readonly codex

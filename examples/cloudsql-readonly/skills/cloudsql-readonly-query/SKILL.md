@@ -25,14 +25,16 @@ Workflow (script paths are relative to this skill's directory):
 1. Read `references/QUERY_POLICY.md`.
 2. Establish the target project, instance, database, and dialect from the prompt or by running `sh scripts/cloudsql_target_context.sh`.
 3. If the target or question is ambiguous, ask for the missing context before querying.
-4. Draft the narrowest SQL that answers the question and check it with `python3 scripts/sql_readonly_check.py`.
-5. Use `execute_sql_readonly` only after the checker prints `OK`.
+4. If the business object could live in more than one table or artifact surface, compare narrow metadata or aggregate queries first and state the definition you choose.
+5. Draft the narrowest SQL that answers the question and check it with `python3 scripts/sql_readonly_check.py`.
+6. Use `execute_sql_readonly` only after the checker prints `OK`.
 
 Query defaults:
 
 - Prefer metadata queries, counts, grouped aggregates, and narrow projections.
 - Include `LIMIT 100` or stricter for exploratory row queries.
 - Prefer counts, aggregates, and narrow projections over unrestricted table scans.
+- For rankings or "top N" questions, state the source table and counting rule.
 - Avoid columns that are likely to contain credentials, tokens, secrets, or unnecessary PII.
 - Prefer read replicas for routine analysis when the user gives that option.
 
