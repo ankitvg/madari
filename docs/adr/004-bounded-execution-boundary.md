@@ -171,8 +171,8 @@ requirements.
 
 The registry remains local-first and static. This decision adds a bounded run
 path, not a daemon, proxy, generic credential-provider framework, or background
-supervisor. Versioned opt-in execution receipts are planned separately and are
-not part of the current CLI surface.
+supervisor. ADR 005 defines the separately versioned opt-in receipt layered on
+this result and receipt-safe launch evidence.
 
 ## Consequences
 
