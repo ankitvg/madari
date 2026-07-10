@@ -169,9 +169,12 @@ Presence is part of the access contract:
 - `default_approval = "inherit"` explicitly clears the native default approval
   override.
 
-Required enforcement needs an explicit, non-empty `allowed_tools` declaration.
-Both an absent allowlist and an explicitly cleared allowlist are unbounded and
-invalid for a required ring.
+Required access enforcement needs an explicit, non-empty `allowed_tools`
+declaration. Both an absent allowlist and an explicitly cleared allowlist are
+unbounded and invalid when access policy is selected. A required ring that
+declares `[policy.execution]` but whose members declare no access profiles is
+execution-only and does not invent an `allowed_tools` requirement. Once any
+member declares an access profile, every member must have a non-empty allowlist.
 
 ## Example
 

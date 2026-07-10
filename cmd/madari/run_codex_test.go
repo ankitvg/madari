@@ -507,6 +507,31 @@ func TestCodexRunEnvBlocksAdminSkillRoot(t *testing.T) {
 	}
 }
 
+func TestCodexRunEnvAllowsPackagedSystemSkills(t *testing.T) {
+	adminRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(adminRoot, ".system"), 0o755); err != nil {
+		t.Fatalf("mkdir packaged system skills: %v", err)
+	}
+	withCodexAdminSkillRoots(t, []string{adminRoot})
+
+	if err := validateCodexRunPlan(); err != nil {
+		t.Fatalf("packaged .system skills should not block execution: %v", err)
+	}
+}
+
+func TestCodexRunEnvBlocksNonDirectorySystemEntry(t *testing.T) {
+	adminRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(adminRoot, ".system"), []byte("not a packaged namespace\n"), 0o644); err != nil {
+		t.Fatalf("write non-directory system entry: %v", err)
+	}
+	withCodexAdminSkillRoots(t, []string{adminRoot})
+
+	err := validateCodexRunPlan()
+	if err == nil || !strings.Contains(err.Error(), "cannot guarantee ring-only skill isolation") {
+		t.Fatalf("expected non-directory .system entry to fail closed, got: %v", err)
+	}
+}
+
 func TestCodexRunDefaultAdminSkillRootsIncludeKnownSystemRoots(t *testing.T) {
 	roots := map[string]bool{}
 	for _, root := range codexAdminSkillRoots {

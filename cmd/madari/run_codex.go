@@ -125,7 +125,16 @@ func ensureCodexRunNoAdminSkillRoots(roots []string) error {
 			}
 			return fmt.Errorf("inspect codex admin skill root %s: %w", root, err)
 		}
-		if len(entries) > 0 {
+		var untrusted []string
+		for _, entry := range entries {
+			// Codex distributions may ship their own built-in skills in the
+			// reserved .system directory. Every other entry remains fail-closed.
+			if entry.Name() == ".system" && entry.IsDir() {
+				continue
+			}
+			untrusted = append(untrusted, entry.Name())
+		}
+		if len(untrusted) > 0 {
 			return fmt.Errorf("codex admin skill root %s contains skills; cannot guarantee ring-only skill isolation", root)
 		}
 	}
