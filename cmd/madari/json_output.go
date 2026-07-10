@@ -22,14 +22,23 @@ type listJSON struct {
 }
 
 type serverJSON struct {
-	Name              string   `json:"name"`
-	Enabled           bool     `json:"enabled"`
-	Transport         string   `json:"transport"`
-	Command           string   `json:"command"`
-	URL               string   `json:"url,omitempty"`
-	BearerTokenEnvVar string   `json:"bearer_token_env_var,omitempty"`
-	Clients           []string `json:"clients"`
-	Sources           []string `json:"sources"`
+	Name              string      `json:"name"`
+	Enabled           bool        `json:"enabled"`
+	Transport         string      `json:"transport"`
+	Command           string      `json:"command"`
+	URL               string      `json:"url,omitempty"`
+	BearerTokenEnvVar string      `json:"bearer_token_env_var,omitempty"`
+	Clients           []string    `json:"clients"`
+	Access            *accessJSON `json:"access,omitempty"`
+	Sources           []string    `json:"sources"`
+}
+
+type accessJSON struct {
+	AllowedTools    *[]string          `json:"allowed_tools,omitempty"`
+	DeniedTools     *[]string          `json:"denied_tools,omitempty"`
+	OAuthScopes     *[]string          `json:"oauth_scopes,omitempty"`
+	DefaultApproval *string            `json:"default_approval,omitempty"`
+	ToolApprovals   *map[string]string `json:"tool_approvals,omitempty"`
 }
 
 type statusJSON struct {
@@ -120,6 +129,7 @@ type doctorServerJSON struct {
 	URL               string      `json:"url,omitempty"`
 	OAuthResource     string      `json:"oauth_resource,omitempty"`
 	BearerTokenEnvVar string      `json:"bearer_token_env_var,omitempty"`
+	Access            *accessJSON `json:"access,omitempty"`
 	Status            string      `json:"status"`
 	Issues            []issueJSON `json:"issues"`
 }
@@ -179,7 +189,12 @@ type ringJSON struct {
 	Members     []string          `json:"members"`
 	Skills      []string          `json:"skills"`
 	Description string            `json:"description"`
+	Policy      *ringPolicyJSON   `json:"policy,omitempty"`
 	Contract    *ringContractJSON `json:"contract,omitempty"`
+}
+
+type ringPolicyJSON struct {
+	Enforcement string `json:"enforcement"`
 }
 
 type ringContractJSON struct {
@@ -212,7 +227,45 @@ func ringToJSON(ring registry.Ring) ringJSON {
 			ExpectedOutputs: nonNilStrings(ring.Contract.ExpectedOutputs),
 		}
 	}
+	if ring.Policy != nil {
+		out.Policy = &ringPolicyJSON{Enforcement: ring.Policy.Enforcement}
+	}
 	return out
+}
+
+func accessToJSON(access *registry.AccessProfile) *accessJSON {
+	if access == nil {
+		return nil
+	}
+	out := &accessJSON{
+		AllowedTools: copySortedStringPointer(access.AllowedTools),
+		DeniedTools:  copySortedStringPointer(access.DeniedTools),
+		OAuthScopes:  copySortedStringPointer(access.OAuthScopes),
+	}
+	if access.DefaultApproval != nil {
+		value := string(*access.DefaultApproval)
+		out.DefaultApproval = &value
+	}
+	if access.ToolApprovals != nil {
+		values := make(map[string]string, len(*access.ToolApprovals))
+		for tool, approval := range *access.ToolApprovals {
+			values[tool] = string(approval)
+		}
+		out.ToolApprovals = &values
+	}
+	return out
+}
+
+func copySortedStringPointer(values *[]string) *[]string {
+	if values == nil {
+		return nil
+	}
+	out := append([]string(nil), (*values)...)
+	sort.Strings(out)
+	if out == nil {
+		out = []string{}
+	}
+	return &out
 }
 
 type ringStatusJSON struct {

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/ankitvg/madari/internal/clients"
+	"github.com/ankitvg/madari/internal/policy"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -195,6 +196,9 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 				continue
 			}
 			return runLaunchPlan{}, err
+		}
+		if err := preflightRequiredRingPolicy(ring, manifests, target, policy.SurfaceRun); err != nil {
+			addPlanError(err.Error())
 		}
 		for _, member := range ring.Members {
 			member = strings.TrimSpace(member)

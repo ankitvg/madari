@@ -47,6 +47,7 @@ type ServerReport struct {
 	URL               string
 	OAuthResource     string
 	BearerTokenEnvVar string
+	Access            *registry.AccessProfile
 	Status            Status
 	Issues            []Issue
 }
@@ -385,6 +386,7 @@ func inspectServer(manifest registry.Manifest, envLookup func(string) string, ta
 		URL:               manifest.URL,
 		OAuthResource:     manifest.OAuthResource,
 		BearerTokenEnvVar: manifest.BearerTokenEnvVar,
+		Access:            manifest.Access,
 		Status:            StatusSkipped,
 		Issues:            []Issue{},
 	}

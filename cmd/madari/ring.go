@@ -13,6 +13,7 @@ import (
 
 	"github.com/ankitvg/madari/internal/clients"
 	"github.com/ankitvg/madari/internal/clients/syncshared"
+	"github.com/ankitvg/madari/internal/policy"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -385,6 +386,9 @@ func (a cliApp) cmdRingRender(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := preflightRequiredRingPolicy(ring, manifests, target, policy.SurfaceRender); err != nil {
+		return commandInputError("ring render", err.Error())
+	}
 	byName := make(map[string]registry.Manifest, len(manifests))
 	for _, manifest := range manifests {
 		byName[manifest.Name] = manifest
@@ -580,6 +584,9 @@ func (a cliApp) cmdRingAttach(args []string) error {
 	manifests, err := a.store.List()
 	if err != nil {
 		return err
+	}
+	if err := preflightRequiredRingPolicy(ring, manifests, target, policy.SurfacePersistent); err != nil {
+		return commandInputError("ring attach", err.Error())
 	}
 	rings, err := a.store.ListRings()
 	if err != nil {
@@ -993,7 +1000,7 @@ func printRingSkillSummary(out io.Writer, result skillAttachResult) {
 
 func (a cliApp) cmdRingCreate(args []string) error {
 	if len(args) == 0 {
-		return commandUsageError("ring create", "madari ring create <name> [--member <server> ...] [--skill <skill> ...] [--description <text>]")
+		return commandUsageError("ring create", "madari ring create <name> [--member <server> ...] [--skill <skill> ...] [--description <text>] [--enforcement required]")
 	}
 	if isHelpToken(args[0]) {
 		printRingCreateHelp(a.stdout)
@@ -1006,9 +1013,11 @@ func (a cliApp) cmdRingCreate(args []string) error {
 	var members stringList
 	var skills stringList
 	var description string
+	var enforcement string
 	fs.Var(&members, "member", "Ring member server name (repeatable)")
 	fs.Var(&skills, "skill", "Ring member skill name (repeatable)")
 	fs.StringVar(&description, "description", "", "Ring description")
+	fs.StringVar(&enforcement, "enforcement", "", "Policy enforcement (required)")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printRingCreateHelp(a.stdout)
@@ -1019,12 +1028,24 @@ func (a cliApp) cmdRingCreate(args []string) error {
 	if fs.NArg() != 0 {
 		return commandUnexpectedArgsError("ring create", fs.Args())
 	}
+	enforcementSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "enforcement" {
+			enforcementSet = true
+		}
+	})
+	if enforcementSet && strings.TrimSpace(enforcement) == "" {
+		return commandInputError("ring create", "--enforcement must be non-empty (supported: required)")
+	}
 
 	ring := registry.Ring{
 		Name:        name,
 		Members:     append([]string(nil), members...),
 		Skills:      append([]string(nil), skills...),
 		Description: description,
+	}
+	if enforcement = strings.TrimSpace(enforcement); enforcementSet {
+		ring.Policy = &registry.RingPolicy{Enforcement: enforcement}
 	}
 	if err := a.store.AddRing(ring); err != nil {
 		return err
@@ -1144,8 +1165,17 @@ func (a cliApp) cmdRingShow(args []string) error {
 			fmt.Fprintf(a.stdout, "  - %s\n", skill)
 		}
 	}
+	printRingPolicy(a.stdout, ring.Policy)
 	printRingContract(a.stdout, ring.Contract)
 	return nil
+}
+
+func printRingPolicy(out io.Writer, policy *registry.RingPolicy) {
+	if policy == nil {
+		return
+	}
+	fmt.Fprintln(out, "policy:")
+	fmt.Fprintf(out, "  enforcement: %s\n", policy.Enforcement)
 }
 
 func printRingContract(out io.Writer, contract *registry.RingContract) {
@@ -1360,16 +1390,19 @@ func printRingHelp(out io.Writer) {
 
 func printRingCreateHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  madari ring create <name> [--member <server> ...] [--skill <skill> ...] [--description <text>]")
+	fmt.Fprintln(out, "  madari ring create <name> [--member <server> ...] [--skill <skill> ...] [--description <text>] [--enforcement required]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
 	fmt.Fprintln(out, "  --member <server>          Ring member server name (repeatable)")
 	fmt.Fprintln(out, "  --skill <skill>            Ring member skill name (repeatable)")
 	fmt.Fprintln(out, "  --description <text>       Ring description")
+	fmt.Fprintln(out, "  --enforcement required    Require exact access-policy compilation")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Create a ring referencing existing registry servers and skills by name.")
 	fmt.Fprintln(out, "  At least one server member or skill member is required.")
+	fmt.Fprintln(out, "  Required enforcement needs a non-empty allowed_tools list on every server")
+	fmt.Fprintln(out, "  and fails until the selected target surface has a lossless compiler.")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Examples:")
 	fmt.Fprintln(out, "  madari ring create research --member stewreads --member arxiv")
@@ -1425,7 +1458,7 @@ func printRingListHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --json                     Emit JSON instead of text")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  List configured rings with server members, skill members, and description.")
+	fmt.Fprintln(out, "  List configured rings with server members, skill members, description, and policy in JSON output.")
 }
 
 func printRingShowHelp(out io.Writer) {
@@ -1436,7 +1469,7 @@ func printRingShowHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --json                     Emit JSON instead of text")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Show one ring's server members, skill members, and description.")
+	fmt.Fprintln(out, "  Show one ring's server members, skill members, description, and required policy.")
 }
 
 func printRingContractHelp(out io.Writer) {

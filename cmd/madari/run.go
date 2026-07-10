@@ -193,6 +193,7 @@ func (a cliApp) cmdInstall(args []string) error {
 	var envPairs stringList
 	var requiredEnv stringList
 	var secretEnv stringList
+	var accessOptions accessFlags
 
 	fs.StringVar(&name, "name", "", "Server name (defaults from package)")
 	fs.StringVar(&command, "command", "", "Server command (defaults to package name)")
@@ -207,6 +208,7 @@ func (a cliApp) cmdInstall(args []string) error {
 	fs.Var(&envPairs, "env", "Environment variable KEY=VALUE (repeatable)")
 	fs.Var(&requiredEnv, "required-env", "Required runtime env key (repeatable)")
 	fs.Var(&secretEnv, "secret-env", "Secret env key barred from repo-scoped configs (repeatable)")
+	accessOptions.register(fs, false)
 
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -217,6 +219,13 @@ func (a cliApp) cmdInstall(args []string) error {
 	}
 	if fs.NArg() != 0 {
 		return commandUnexpectedArgsError("install", fs.Args())
+	}
+	accessProfile, err := accessOptions.profile()
+	if err != nil {
+		return commandInputError("install", err.Error())
+	}
+	if err := accessProfile.Validate(); err != nil {
+		return commandInputError("install", err.Error())
 	}
 
 	manager = strings.TrimSpace(strings.ToLower(manager))
@@ -275,6 +284,7 @@ func (a cliApp) cmdInstall(args []string) error {
 		Env:         env,
 		RequiredEnv: registry.RequiredEnv{Keys: append([]string(nil), requiredEnv...)},
 		SecretEnv:   registry.SecretEnv{Keys: append([]string(nil), secretEnv...)},
+		Access:      accessProfile,
 	}
 
 	if err := a.store.Add(manifest); err != nil {
@@ -336,6 +346,7 @@ func (a cliApp) cmdAdd(args []string) error {
 	var requiredEnv stringList
 	var secretEnv stringList
 	var secretHeaders stringList
+	var accessOptions accessFlags
 
 	fs.StringVar(&command, "command", "", "Server command")
 	fs.StringVar(&transport, "transport", "", "Server transport (stdio, http, or sse; default: stdio)")
@@ -352,6 +363,7 @@ func (a cliApp) cmdAdd(args []string) error {
 	fs.Var(&requiredEnv, "required-env", "Required environment key (repeatable)")
 	fs.Var(&secretEnv, "secret-env", "Secret env key barred from repo-scoped configs (repeatable)")
 	fs.Var(&secretHeaders, "secret-header", "Secret header name barred from repo-scoped configs (repeatable)")
+	accessOptions.register(fs, true)
 
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -374,6 +386,13 @@ func (a cliApp) cmdAdd(args []string) error {
 	headers, err := parseHeaderPairs(headerPairs)
 	if err != nil {
 		return err
+	}
+	accessProfile, err := accessOptions.profile()
+	if err != nil {
+		return commandInputError("add", err.Error())
+	}
+	if err := accessProfile.Validate(); err != nil {
+		return commandInputError("add", err.Error())
 	}
 
 	transport = strings.TrimSpace(strings.ToLower(transport))
@@ -409,6 +428,7 @@ func (a cliApp) cmdAdd(args []string) error {
 		RequiredEnv:       registry.RequiredEnv{Keys: append([]string(nil), requiredEnv...)},
 		SecretEnv:         registry.SecretEnv{Keys: append([]string(nil), secretEnv...)},
 		SecretHeaders:     registry.SecretHeaders{Keys: append([]string(nil), secretHeaders...)},
+		Access:            accessProfile,
 	}
 
 	if err := a.store.Add(manifest); err != nil {
@@ -469,6 +489,7 @@ func (a cliApp) cmdList(args []string) error {
 				URL:               manifest.URL,
 				BearerTokenEnvVar: manifest.BearerTokenEnvVar,
 				Clients:           nonNilStrings(clients),
+				Access:            accessToJSON(manifest.Access),
 				Sources:           nonNilStrings(managedSources[manifest.Name]),
 			})
 		}
@@ -713,13 +734,21 @@ func (a cliApp) cmdSync(args []string) error {
 	if scope == clients.ScopeUser {
 		statePath = a.managedUserStatePath(target)
 	}
-	attachedRingsBeforeSync := []string{}
+	state, err := syncshared.LoadManagedState(statePath)
+	if err != nil {
+		return err
+	}
+	attachedRingsBeforeSync := syncshared.AttachedRings(state)
+	policyAttachedRings := attachedRingsBeforeSync
 	if supportsSkillMaterialization(target) {
-		state, err := syncshared.LoadManagedState(statePath)
+		skillState, err := loadSkillAttachmentState(a.skillAttachmentStatePath(target, scope))
 		if err != nil {
 			return err
 		}
-		attachedRingsBeforeSync = syncshared.AttachedRings(state)
+		policyAttachedRings = unionStrings(policyAttachedRings, attachedSkillRings(skillState))
+	}
+	if err := preflightAttachedRequiredRingPolicies(rings, policyAttachedRings, manifests, target); err != nil {
+		return commandInputError("sync", err.Error())
 	}
 	if !dryRun {
 		if _, err := a.syncRingSkills(target, scope, rings, true, attachedRingsBeforeSync); err != nil {
@@ -906,6 +935,7 @@ func (a cliApp) cmdDoctor(args []string) error {
 				URL:               server.URL,
 				OAuthResource:     server.OAuthResource,
 				BearerTokenEnvVar: server.BearerTokenEnvVar,
+				Access:            accessToJSON(server.Access),
 				Status:            string(server.Status),
 				Issues:            issues,
 			})
@@ -1806,6 +1836,13 @@ func printAddHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --env KEY=VALUE            Environment variable (repeatable)")
 	fmt.Fprintln(out, "  --required-env <KEY>       Required runtime env key (repeatable)")
 	fmt.Fprintln(out, "  --secret-env <KEY>         Secret env key barred from repo-scoped configs (repeatable)")
+	fmt.Fprintln(out, "  --allow-tool <NAME>        Exact allowed MCP tool name (repeatable)")
+	fmt.Fprintln(out, "  --deny-tool <NAME>         Denied MCP tool name (repeatable)")
+	fmt.Fprintln(out, "  --oauth-scope <SCOPE>      Requested OAuth scope (repeatable; remote transports only)")
+	fmt.Fprintln(out, "  --default-tool-approval <BEHAVIOR>")
+	fmt.Fprintln(out, "                             inherit, automatic, always-prompt, or always-allow")
+	fmt.Fprintln(out, "  --tool-approval TOOL=BEHAVIOR")
+	fmt.Fprintln(out, "                             Per-tool portable approval behavior (repeatable)")
 	fmt.Fprintln(out, "  --description <text>       Server description")
 	fmt.Fprintln(out, "  --disabled                 Add server in disabled state")
 	fmt.Fprintln(out)
@@ -1828,6 +1865,12 @@ func printInstallHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --env KEY=VALUE            Environment variable (repeatable)")
 	fmt.Fprintln(out, "  --required-env <KEY>       Required runtime env key (repeatable)")
 	fmt.Fprintln(out, "  --secret-env <KEY>         Secret env key barred from repo-scoped configs (repeatable)")
+	fmt.Fprintln(out, "  --allow-tool <NAME>        Exact allowed MCP tool name (repeatable)")
+	fmt.Fprintln(out, "  --deny-tool <NAME>         Denied MCP tool name (repeatable)")
+	fmt.Fprintln(out, "  --default-tool-approval <BEHAVIOR>")
+	fmt.Fprintln(out, "                             inherit, automatic, always-prompt, or always-allow")
+	fmt.Fprintln(out, "  --tool-approval TOOL=BEHAVIOR")
+	fmt.Fprintln(out, "                             Per-tool portable approval behavior (repeatable)")
 	fmt.Fprintln(out, "  --description <text>       Server description")
 	fmt.Fprintln(out, "  --disabled                 Add server in disabled state")
 	fmt.Fprintln(out, "  --skip-install             Skip package installation")
