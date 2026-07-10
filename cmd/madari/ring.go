@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/ankitvg/madari/internal/clients"
+	codexclient "github.com/ankitvg/madari/internal/clients/codex"
 	"github.com/ankitvg/madari/internal/clients/syncshared"
 	"github.com/ankitvg/madari/internal/policy"
 	"github.com/ankitvg/madari/internal/registry"
@@ -393,6 +394,9 @@ func (a cliApp) cmdRingRender(args []string) error {
 	for _, manifest := range manifests {
 		byName[manifest.Name] = manifest
 	}
+	if err := preflightRequiredRingRenderEntries(ring, byName, target); err != nil {
+		return commandInputError("ring render", err.Error())
+	}
 
 	// Render mutates nothing: no state, no refcounts, no config files. The
 	// output is a self-contained config for ephemeral use (for example
@@ -438,7 +442,7 @@ func (a cliApp) cmdRingRender(args []string) error {
 				}
 				fmt.Fprintf(a.stderr, "warning: ring member %s: secret header values omitted from render: %s\n", member, strings.Join(secretNames, ", "))
 			}
-			servers[member] = renderedServer{
+			entry := renderedServer{
 				Transport:         manifest.TransportType(),
 				URL:               manifest.URL,
 				Headers:           headers,
@@ -446,6 +450,8 @@ func (a cliApp) cmdRingRender(args []string) error {
 				OAuthResource:     manifest.OAuthResource,
 				BearerTokenEnvVar: manifest.BearerTokenEnvVar,
 			}
+			entry.CodexAccess = compiledCodexAccessForRender(manifest, target)
+			servers[member] = entry
 			continue
 		}
 		if err := clients.ValidateCommandPath(manifest.Command); err != nil {
@@ -453,7 +459,10 @@ func (a cliApp) cmdRingRender(args []string) error {
 			continue
 		}
 
-		entry := renderedServer{Command: manifest.Command}
+		entry := renderedServer{
+			Command:     manifest.Command,
+			CodexAccess: compiledCodexAccessForRender(manifest, target),
+		}
 		if len(manifest.Args) > 0 {
 			entry.Args = append([]string(nil), manifest.Args...)
 		}
@@ -484,6 +493,48 @@ func (a cliApp) cmdRingRender(args []string) error {
 	}
 
 	return renderTarget.render(a.stdout, servers)
+}
+
+func compiledCodexAccessForRender(manifest registry.Manifest, target string) *codexclient.CompiledAccess {
+	if target != codexclient.Target || manifest.Access == nil {
+		return nil
+	}
+	compiled := codexclient.CompileAccess(manifest.Access)
+	return &compiled
+}
+
+// preflightRequiredRingRenderEntries closes the legacy render path's
+// omit-and-warn behavior for a required ring. Generic policy preflight checks
+// member existence, enabled state, target selection, and access bounds; this
+// target-materialization pass rejects members that render would otherwise omit
+// because their transport/auth shape or executable cannot be represented.
+func preflightRequiredRingRenderEntries(ring registry.Ring, manifests map[string]registry.Manifest, target string) error {
+	if !ring.RequiresPolicyEnforcement() {
+		return nil
+	}
+	members := append([]string(nil), ring.Members...)
+	sort.Strings(members)
+	for _, member := range members {
+		member = strings.TrimSpace(member)
+		manifest, exists := manifests[member]
+		if !exists || !manifest.Enabled || !manifest.HasClient(target) {
+			// The generic policy preflight reports these conditions first.
+			continue
+		}
+		if manifest.IsRemote() {
+			if detail, unsupported := unsupportedRemoteForTarget(manifest, target); unsupported {
+				if detail.Auth != "" {
+					return fmt.Errorf("ring %q requires exact policy rendering, but member %q uses unsupported %s for %s", ring.Name, member, detail.Auth, target)
+				}
+				return fmt.Errorf("ring %q requires exact policy rendering, but member %q uses unsupported %s transport for %s", ring.Name, member, detail.Transport, target)
+			}
+			continue
+		}
+		if err := clients.ValidateCommandPath(manifest.Command); err != nil {
+			return fmt.Errorf("ring %q requires exact policy rendering, but member %q cannot be rendered: %s", ring.Name, member, err.Message)
+		}
+	}
+	return nil
 }
 
 func printRingRenderHelp(out io.Writer) {
@@ -606,14 +657,14 @@ func (a cliApp) cmdRingAttach(args []string) error {
 		Rings:      rings,
 		Scope:      scope,
 	}
-	if len(ring.Skills) > 0 && !dryRun {
-		if _, err := a.attachRingSkills(ring, target, scope, true); err != nil {
-			return err
-		}
-	}
 	if len(ring.Members) > 0 && !dryRun {
 		opts.DryRun = true
 		if _, err := adapter.AttachRing(ring, syncable, opts); err != nil {
+			return err
+		}
+	}
+	if len(ring.Skills) > 0 && !dryRun {
+		if _, err := a.attachRingSkills(ring, target, scope, true); err != nil {
 			return err
 		}
 	}

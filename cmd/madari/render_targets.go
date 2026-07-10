@@ -6,21 +6,23 @@ import (
 	"sort"
 	"strings"
 
+	codexclient "github.com/ankitvg/madari/internal/clients/codex"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
 // renderedServer is the self-contained client config entry ring render emits.
 type renderedServer struct {
-	Transport         string            `json:"type,omitempty"`
-	Command           string            `json:"command,omitempty"`
-	Args              []string          `json:"args,omitempty"`
-	URL               string            `json:"url,omitempty"`
-	Headers           map[string]string `json:"headers,omitempty"`
-	TimeoutMS         int               `json:"timeout,omitempty"`
-	OAuthResource     string            `json:"-"`
-	BearerTokenEnvVar string            `json:"-"`
-	Env               map[string]string `json:"env,omitempty"`
-	RuntimeEnvKeys    []string          `json:"-"`
+	Transport         string                      `json:"type,omitempty"`
+	Command           string                      `json:"command,omitempty"`
+	Args              []string                    `json:"args,omitempty"`
+	URL               string                      `json:"url,omitempty"`
+	Headers           map[string]string           `json:"headers,omitempty"`
+	TimeoutMS         int                         `json:"timeout,omitempty"`
+	OAuthResource     string                      `json:"-"`
+	BearerTokenEnvVar string                      `json:"-"`
+	Env               map[string]string           `json:"env,omitempty"`
+	RuntimeEnvKeys    []string                    `json:"-"`
+	CodexAccess       *codexclient.CompiledAccess `json:"-"`
 }
 
 type ringRenderTarget struct {
@@ -97,6 +99,7 @@ func renderCodexTOML(out io.Writer, servers map[string]renderedServer) error {
 			if entry.BearerTokenEnvVar != "" {
 				fmt.Fprintf(out, "bearer_token_env_var = %s\n", tomlString(entry.BearerTokenEnvVar))
 			}
+			renderCodexAccessFields(out, entry.CodexAccess)
 			if len(entry.Headers) > 0 {
 				fmt.Fprintln(out)
 				fmt.Fprintf(out, "[mcp_servers.%s.http_headers]\n", tomlKey(name))
@@ -112,6 +115,7 @@ func renderCodexTOML(out io.Writer, servers map[string]renderedServer) error {
 			if len(entry.RuntimeEnvKeys) > 0 {
 				fmt.Fprintf(out, "env_vars = %s\n", tomlStringArray(entry.RuntimeEnvKeys))
 			}
+			renderCodexAccessFields(out, entry.CodexAccess)
 			if len(entry.Env) > 0 {
 				fmt.Fprintln(out)
 				fmt.Fprintf(out, "[mcp_servers.%s.env]\n", tomlKey(name))
@@ -120,8 +124,47 @@ func renderCodexTOML(out io.Writer, servers map[string]renderedServer) error {
 				}
 			}
 		}
+		renderCodexToolApprovals(out, name, entry.CodexAccess)
 	}
 	return nil
+}
+
+func renderCodexAccessFields(out io.Writer, access *codexclient.CompiledAccess) {
+	if access == nil {
+		return
+	}
+	// Render output is self-contained, so explicit clears have the same
+	// effective value as omission. Persistent sync consumes the pointer
+	// presence on CompiledAccess to remove an existing native override.
+	if access.EnabledTools != nil && len(*access.EnabledTools) > 0 {
+		fmt.Fprintf(out, "enabled_tools = %s\n", tomlStringArray(*access.EnabledTools))
+	}
+	if access.DisabledTools != nil && len(*access.DisabledTools) > 0 {
+		fmt.Fprintf(out, "disabled_tools = %s\n", tomlStringArray(*access.DisabledTools))
+	}
+	if access.Scopes != nil && len(*access.Scopes) > 0 {
+		fmt.Fprintf(out, "scopes = %s\n", tomlStringArray(*access.Scopes))
+	}
+	if access.DefaultApproval != nil && *access.DefaultApproval != "" {
+		fmt.Fprintf(out, "default_tools_approval_mode = %s\n", tomlString(*access.DefaultApproval))
+	}
+}
+
+func renderCodexToolApprovals(out io.Writer, server string, access *codexclient.CompiledAccess) {
+	if access == nil || access.ToolApprovals == nil {
+		return
+	}
+	tools := sortedMapKeys(*access.ToolApprovals)
+	for _, tool := range tools {
+		approval := (*access.ToolApprovals)[tool]
+		if approval == "" {
+			// Portable inherit removes the target-native override.
+			continue
+		}
+		fmt.Fprintln(out)
+		fmt.Fprintf(out, "[mcp_servers.%s.tools.%s]\n", tomlKey(server), tomlKey(tool))
+		fmt.Fprintf(out, "approval_mode = %s\n", tomlString(approval))
+	}
 }
 
 func renderVibeTOML(out io.Writer, servers map[string]renderedServer) error {
@@ -243,7 +286,7 @@ func tomlString(value string) string {
 		case '\\':
 			b.WriteString(`\\`)
 		default:
-			if r < 0x20 {
+			if r < 0x20 || r == 0x7f {
 				fmt.Fprintf(&b, `\u%04X`, r)
 				continue
 			}

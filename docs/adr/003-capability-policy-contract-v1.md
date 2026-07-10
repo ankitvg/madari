@@ -133,8 +133,12 @@ stale attachment can always be cleaned up.
 
 Target support is declared centrally and separately for persistent sync/attach,
 render, and run. A compiler must opt into a surface; an unspecified compiler is
-unsupported. The policy-schema PR intentionally leaves every compiler disabled,
-so required operations fail closed until the corresponding compiler lands.
+unsupported. The policy-schema PR initially left every compiler disabled. The
+Codex compiler now opts into persistent sync/attach, render, and run for all
+five V1 access fields; other target surfaces remain disabled until their
+corresponding lossless compilers land. Codex run support is additionally bounded
+to stable CLI 0.139.x releases; other runtime versions fail closed until their
+complete field semantics are validated.
 
 For persistent sync, undeclared native policy fields are preserved. Declared
 fields are compiled exactly. A required operation blocks on unknown
@@ -180,5 +184,6 @@ write.
   narrow serializer.
 - Supporting another client requires an explicit compiler and fidelity tests;
   approximate mappings are not accepted for required rings.
-- Environment sanitization, TTLs, receipts, credential brokers, audit, and
-  runtime `[policy.execution]` semantics remain outside this decision.
+- Environment sanitization, TTLs, receipts, credential brokers, audit,
+  OpenCode support, production examples, and runtime `[policy.execution]`
+  semantics remain outside this decision.

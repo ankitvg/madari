@@ -2,6 +2,7 @@ package policy
 
 import (
 	"errors"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -28,12 +29,13 @@ func TestCapabilitiesDeclareEveryTargetSurfaceFailClosed(t *testing.T) {
 			if !ok {
 				t.Fatalf("missing declaration for %s %s", target, surface)
 			}
-			if capabilities.Compiler {
-				t.Fatalf("PR 1A must not enable the %s %s policy compiler", target, surface)
+			expectCodexCompiler := target == "codex"
+			if capabilities.Compiler != expectCodexCompiler {
+				t.Fatalf("unexpected compiler declaration for %s %s: %#v", target, surface, capabilities)
 			}
 			for _, feature := range features {
-				if capabilities.Supports(feature) {
-					t.Fatalf("PR 1A must fail closed, but %s %s supports %s", target, surface, feature)
+				if capabilities.Supports(feature) != expectCodexCompiler {
+					t.Fatalf("unexpected %s support for %s %s: %#v", feature, target, surface, capabilities)
 				}
 			}
 		}
@@ -61,7 +63,7 @@ func TestValidateRequiredRingClassifiesUnsupportedDeclaredFeatures(t *testing.T)
 	manifest := registry.Manifest{
 		Name:    "docs",
 		Enabled: true,
-		Clients: []string{"codex"},
+		Clients: []string{"gemini"},
 		Access: &registry.AccessProfile{
 			AllowedTools:    &allowed,
 			DeniedTools:     &denied,
@@ -71,7 +73,7 @@ func TestValidateRequiredRingClassifiesUnsupportedDeclaredFeatures(t *testing.T)
 		},
 	}
 
-	result := ValidateRequiredRing(requiredRing("research", "docs"), []registry.Manifest{manifest}, "codex", SurfacePersistent)
+	result := ValidateRequiredRing(requiredRing("research", "docs"), []registry.Manifest{manifest}, "gemini", SurfacePersistent)
 	if result.Classification != SupportUnsupported || result.Ready() {
 		t.Fatalf("expected unsupported result, got: %#v", result)
 	}
@@ -100,7 +102,7 @@ func TestValidateRequiredRingClassifiesUnsupportedDeclaredFeatures(t *testing.T)
 	if !errors.As(result.Err(), &validationErr) {
 		t.Fatalf("expected structured validation error, got: %v", result.Err())
 	}
-	if validationErr.Result.Classification != SupportUnsupported || !strings.Contains(validationErr.Error(), "codex persistent policy support is unsupported") {
+	if validationErr.Result.Classification != SupportUnsupported || !strings.Contains(validationErr.Error(), "gemini persistent policy support is unsupported") {
 		t.Fatalf("unexpected actionable error: %v", validationErr)
 	}
 }
@@ -109,12 +111,12 @@ func TestValidateRequiredRingReportsMemberProblemsDeterministically(t *testing.T
 	allowed := []string{"read"}
 	ring := requiredRing("research", "wrong", "missing", "disabled", "unbounded")
 	manifests := []registry.Manifest{
-		{Name: "wrong", Enabled: true, Clients: []string{"gemini"}, Access: &registry.AccessProfile{AllowedTools: &allowed}},
-		{Name: "disabled", Enabled: false, Clients: []string{"codex"}},
-		{Name: "unbounded", Enabled: true, Clients: []string{"codex"}},
+		{Name: "wrong", Enabled: true, Clients: []string{"codex"}, Access: &registry.AccessProfile{AllowedTools: &allowed}},
+		{Name: "disabled", Enabled: false, Clients: []string{"gemini"}},
+		{Name: "unbounded", Enabled: true, Clients: []string{"gemini"}},
 	}
 
-	result := ValidateRequiredRing(ring, manifests, "codex", SurfaceRender)
+	result := ValidateRequiredRing(ring, manifests, "gemini", SurfaceRender)
 	if result.Classification != SupportInvalid || result.Ready() {
 		t.Fatalf("expected invalid member result, got: %#v", result)
 	}
@@ -144,7 +146,7 @@ func TestValidateRequiredRingReportsMemberProblemsDeterministically(t *testing.T
 		`member "disabled" is disabled`,
 		`member "missing" is missing from the registry`,
 		`member "unbounded" is unbounded`,
-		`member "wrong" does not target "codex"`,
+		`member "wrong" does not target "gemini"`,
 	} {
 		if !strings.Contains(message, fragment) {
 			t.Fatalf("error missing actionable detail %q: %s", fragment, message)
@@ -156,31 +158,77 @@ func TestValidateRequiredRingTreatsExplicitEmptyAllowlistAsUnbounded(t *testing.
 	empty := []string{}
 	manifest := registry.Manifest{
 		Name:    "docs",
+		Command: currentExecutable(t),
 		Enabled: true,
 		Clients: []string{"codex"},
 		Access:  &registry.AccessProfile{AllowedTools: &empty},
 	}
 	result := ValidateRequiredRing(requiredRing("research", "docs"), []registry.Manifest{manifest}, "codex", SurfaceRun)
-	if result.Classification != SupportInvalid || len(result.Issues) != 3 {
-		t.Fatalf("expected unbounded plus unsupported explicit-clear issues, got: %#v", result)
+	if result.Classification != SupportInvalid || len(result.Issues) != 1 {
+		t.Fatalf("expected explicit-clear allowlist to remain unbounded, got: %#v", result)
 	}
-	if result.Issues[0].Code != IssueUnsupportedCompiler || result.Issues[1].Code != IssueUnboundedMember || result.Issues[2].Code != IssueUnsupportedFeature {
+	if result.Issues[0].Code != IssueUnboundedMember {
 		t.Fatalf("unexpected explicit-clear issue order: %#v", result.Issues)
 	}
 }
 
-func TestValidateRequiredRingBlocksSkillOnlyWithoutCompiler(t *testing.T) {
+func currentExecutable(t *testing.T) string {
+	t.Helper()
+	path, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	return path
+}
+
+func TestValidateRequiredRingAllowsSkillOnlyWithCompiler(t *testing.T) {
 	ring := registry.Ring{
 		Name:   "workflow",
 		Skills: []string{"release"},
 		Policy: &registry.RingPolicy{Enforcement: registry.PolicyEnforcementRequired},
 	}
 	result := ValidateRequiredRing(ring, nil, "codex", SurfaceRun)
-	if result.Classification != SupportUnsupported || result.Ready() || len(result.Issues) != 1 {
-		t.Fatalf("skill-only required ring must still require a compiler: %#v", result)
+	if result.Classification != SupportSupported || !result.Ready() || len(result.Issues) != 0 {
+		t.Fatalf("skill-only required ring should use the Codex run compiler: %#v", result)
 	}
-	if result.Issues[0].Code != IssueUnsupportedCompiler {
-		t.Fatalf("unexpected skill-only issue: %#v", result.Issues)
+}
+
+func TestValidateRequiredCodexRingBlocksUnrepresentableServerFields(t *testing.T) {
+	allowed := []string{"read"}
+	base := registry.Manifest{
+		Name: "docs", Transport: registry.TransportHTTP, URL: "https://example.com/mcp",
+		Enabled: true, Clients: []string{"codex"}, Access: &registry.AccessProfile{AllowedTools: &allowed},
+	}
+	cases := []struct {
+		name     string
+		surface  Surface
+		mutate   func(*registry.Manifest)
+		fragment string
+	}{
+		{
+			name: "timeout persistent", surface: SurfacePersistent, fragment: "timeout_ms",
+			mutate: func(manifest *registry.Manifest) { manifest.TimeoutMS = 5000 },
+		},
+		{
+			name: "secret header render", surface: SurfaceRender, fragment: "secret_headers",
+			mutate: func(manifest *registry.Manifest) {
+				manifest.Headers = map[string]string{"x-private-token": "secret"}
+				manifest.SecretHeaders = registry.SecretHeaders{Keys: []string{"x-private-token"}}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			manifest := base
+			tc.mutate(&manifest)
+			result := ValidateRequiredRing(requiredRing("restricted", "docs"), []registry.Manifest{manifest}, "codex", tc.surface)
+			if result.Ready() || result.Classification != SupportUnsupported || len(result.Issues) != 1 || result.Issues[0].Code != IssueUnsupportedServerField {
+				t.Fatalf("expected unsupported server field: %#v", result)
+			}
+			if !strings.Contains(result.Issues[0].Message, tc.fragment) {
+				t.Fatalf("issue missing %q: %#v", tc.fragment, result.Issues[0])
+			}
+		})
 	}
 }
 
@@ -202,6 +250,7 @@ func TestValidateAttachedRequiredRingsChecksOnlyRecordedSources(t *testing.T) {
 	allowed := []string{"read"}
 	manifest := registry.Manifest{
 		Name:    "docs",
+		Command: currentExecutable(t),
 		Enabled: true,
 		Clients: []string{"codex"},
 		Access:  &registry.AccessProfile{AllowedTools: &allowed},
@@ -214,8 +263,8 @@ func TestValidateAttachedRequiredRingsChecksOnlyRecordedSources(t *testing.T) {
 	if err := ValidateAttachedRequiredRings(rings, []string{"advisory"}, []registry.Manifest{manifest}, "codex", SurfacePersistent); err != nil {
 		t.Fatalf("advisory attached ring should remain compatible: %v", err)
 	}
-	if err := ValidateAttachedRequiredRings(rings, []string{"required", "required"}, []registry.Manifest{manifest}, "codex", SurfacePersistent); err == nil || !strings.Contains(err.Error(), "codex persistent policy support is unsupported") {
-		t.Fatalf("required attached ring should fail closed: %v", err)
+	if err := ValidateAttachedRequiredRings(rings, []string{"required", "required"}, []registry.Manifest{manifest}, "codex", SurfacePersistent); err != nil {
+		t.Fatalf("supported required attached ring should compile: %v", err)
 	}
 	if err := ValidateAttachedRequiredRings(rings, []string{"missing"}, []registry.Manifest{manifest}, "codex", SurfacePersistent); err == nil || !strings.Contains(err.Error(), `attached ring "missing" is missing`) {
 		t.Fatalf("missing attached ring should fail closed: %v", err)

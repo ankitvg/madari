@@ -110,14 +110,15 @@ func ringIssuesToJSON(issues []doctor.RingIssue) []ringIssueJSON {
 }
 
 type driftJSON struct {
-	Target     string   `json:"target"`
-	Scope      string   `json:"scope"`
-	ConfigPath string   `json:"config_path"`
-	Status     string   `json:"status"`
-	Stale      []string `json:"stale"`
-	Missing    []string `json:"missing"`
-	Orphaned   []string `json:"orphaned"`
-	Issue      string   `json:"issue"`
+	Target      string   `json:"target"`
+	Scope       string   `json:"scope"`
+	ConfigPath  string   `json:"config_path"`
+	Status      string   `json:"status"`
+	Stale       []string `json:"stale"`
+	PolicyStale []string `json:"policy_stale"`
+	Missing     []string `json:"missing"`
+	Orphaned    []string `json:"orphaned"`
+	Issue       string   `json:"issue"`
 }
 
 type doctorServerJSON struct {
@@ -161,6 +162,7 @@ type syncJSON struct {
 	DryRun            bool     `json:"dry_run"`
 	Added             []string `json:"added"`
 	Updated           []string `json:"updated"`
+	PolicyUpdated     []string `json:"policy_updated"`
 	Removed           []string `json:"removed"`
 	Unchanged         []string `json:"unchanged"`
 	Skipped           []string `json:"skipped"`
@@ -383,14 +385,15 @@ func driftToJSON(reports []doctor.DriftReport) []driftJSON {
 			scope = "default"
 		}
 		out = append(out, driftJSON{
-			Target:     dr.Target,
-			Scope:      scope,
-			ConfigPath: dr.ConfigPath,
-			Status:     string(dr.Status),
-			Stale:      nonNilStrings(dr.Stale),
-			Missing:    nonNilStrings(dr.Missing),
-			Orphaned:   nonNilStrings(dr.Orphaned),
-			Issue:      dr.Issue,
+			Target:      dr.Target,
+			Scope:       scope,
+			ConfigPath:  dr.ConfigPath,
+			Status:      string(dr.Status),
+			Stale:       nonNilStrings(dr.Stale),
+			PolicyStale: nonNilStrings(dr.PolicyStale),
+			Missing:     nonNilStrings(dr.Missing),
+			Orphaned:    nonNilStrings(dr.Orphaned),
+			Issue:       dr.Issue,
 		})
 	}
 	return out

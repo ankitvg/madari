@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ankitvg/madari/internal/clients"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -62,8 +63,8 @@ func (c Capabilities) Supports(feature Feature) bool {
 }
 
 // TargetCapabilities is the central declaration for one supported Madari
-// target. PR 1A intentionally declares every policy feature unsupported; a
-// later compiler enables only the surface it implements losslessly.
+// target. A compiler enables only the surface and features it implements
+// losslessly; every unspecified surface remains unsupported.
 type TargetCapabilities struct {
 	Target     string       `json:"target"`
 	Persistent Capabilities `json:"persistent"`
@@ -88,9 +89,23 @@ func (c TargetCapabilities) ForSurface(surface Surface) (Capabilities, bool) {
 var targetCapabilities = map[string]TargetCapabilities{
 	"claude-desktop": {Target: "claude-desktop"},
 	"claude-code":    {Target: "claude-code"},
-	"codex":          {Target: "codex"},
-	"gemini":         {Target: "gemini"},
-	"vibe":           {Target: "vibe"},
+	"codex": {
+		Target: "codex",
+		Persistent: Capabilities{
+			Compiler: true, ToolAllowlist: true, ToolDenylist: true,
+			OAuthScopes: true, DefaultApproval: true, ToolApprovals: true,
+		},
+		Render: Capabilities{
+			Compiler: true, ToolAllowlist: true, ToolDenylist: true,
+			OAuthScopes: true, DefaultApproval: true, ToolApprovals: true,
+		},
+		Run: Capabilities{
+			Compiler: true, ToolAllowlist: true, ToolDenylist: true,
+			OAuthScopes: true, DefaultApproval: true, ToolApprovals: true,
+		},
+	},
+	"gemini": {Target: "gemini"},
+	"vibe":   {Target: "vibe"},
 }
 
 // Targets returns all centrally declared targets in deterministic order.
@@ -132,14 +147,17 @@ const (
 type IssueCode string
 
 const (
-	IssueUnknownTarget       IssueCode = "unknown-target"
-	IssueUnknownSurface      IssueCode = "unknown-surface"
-	IssueMissingMember       IssueCode = "missing-member"
-	IssueDisabledMember      IssueCode = "disabled-member"
-	IssueWrongTarget         IssueCode = "wrong-target"
-	IssueUnboundedMember     IssueCode = "unbounded-member"
-	IssueUnsupportedCompiler IssueCode = "unsupported-compiler"
-	IssueUnsupportedFeature  IssueCode = "unsupported-feature"
+	IssueUnknownTarget          IssueCode = "unknown-target"
+	IssueUnknownSurface         IssueCode = "unknown-surface"
+	IssueMissingMember          IssueCode = "missing-member"
+	IssueDisabledMember         IssueCode = "disabled-member"
+	IssueWrongTarget            IssueCode = "wrong-target"
+	IssueUnboundedMember        IssueCode = "unbounded-member"
+	IssueUnsupportedCompiler    IssueCode = "unsupported-compiler"
+	IssueUnsupportedFeature     IssueCode = "unsupported-feature"
+	IssueUnsupportedTransport   IssueCode = "unsupported-transport"
+	IssueUnsupportedServerField IssueCode = "unsupported-server-field"
+	IssueInvalidCommand         IssueCode = "invalid-command"
 )
 
 // Issue is one actionable policy-preflight failure.
@@ -272,6 +290,7 @@ func ValidateRequiredRing(ring registry.Ring, manifests []registry.Manifest, tar
 				Message: fmt.Sprintf("member %q does not target %q; add that client target or remove the member from the ring", member, target),
 			})
 		}
+		result.Issues = append(result.Issues, targetRepresentationIssues(manifest, target, surface)...)
 		if !manifest.HasExplicitToolAllowlist() {
 			result.Issues = append(result.Issues, Issue{
 				Code:    IssueUnboundedMember,
@@ -296,6 +315,39 @@ func ValidateRequiredRing(ring registry.Ring, manifests []registry.Manifest, tar
 
 	result.Classification = classify(result.Issues)
 	return result
+}
+
+func targetRepresentationIssues(manifest registry.Manifest, target string, surface Surface) []Issue {
+	if target != "codex" {
+		return nil
+	}
+	issues := []Issue{}
+	if manifest.IsRemote() {
+		if manifest.TransportType() != registry.TransportHTTP {
+			issues = append(issues, Issue{
+				Code: IssueUnsupportedTransport, Member: manifest.Name,
+				Message: fmt.Sprintf("member %q uses %s transport, which Codex %s cannot represent", manifest.Name, manifest.TransportType(), surface),
+			})
+		}
+	} else if commandErr := clients.ValidateCommandPath(manifest.Command); commandErr != nil {
+		issues = append(issues, Issue{
+			Code: IssueInvalidCommand, Member: manifest.Name,
+			Message: fmt.Sprintf("member %q cannot execute on Codex: %s", manifest.Name, commandErr.Message),
+		})
+	}
+	if manifest.TimeoutMS > 0 {
+		issues = append(issues, Issue{
+			Code: IssueUnsupportedServerField, Member: manifest.Name,
+			Message: fmt.Sprintf("member %q declares timeout_ms, which Codex %s cannot represent exactly", manifest.Name, surface),
+		})
+	}
+	if surface == SurfaceRender && len(manifest.SecretHeaderNames()) > 0 {
+		issues = append(issues, Issue{
+			Code: IssueUnsupportedServerField, Member: manifest.Name,
+			Message: fmt.Sprintf("member %q declares secret_headers whose values Codex render intentionally omits", manifest.Name),
+		})
+	}
+	return issues
 }
 
 // ValidateAttachedRequiredRings applies required-ring policy validation only
@@ -380,7 +432,8 @@ func classify(issues []Issue) SupportClassification {
 		return SupportSupported
 	}
 	for _, issue := range issues {
-		if issue.Code != IssueUnsupportedCompiler && issue.Code != IssueUnsupportedFeature {
+		if issue.Code != IssueUnsupportedCompiler && issue.Code != IssueUnsupportedFeature &&
+			issue.Code != IssueUnsupportedTransport && issue.Code != IssueUnsupportedServerField {
 			return SupportInvalid
 		}
 	}

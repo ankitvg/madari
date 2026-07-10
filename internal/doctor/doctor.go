@@ -117,6 +117,9 @@ type DriftReport struct {
 	// Stale are managed entries whose materialized values differ from the
 	// manifest.
 	Stale []string
+	// PolicyStale is the subset of Stale whose declared access policy differs
+	// from the target's materialized policy.
+	PolicyStale []string
 	// Missing are managed entries absent from the client config.
 	Missing []string
 	// Orphaned are managed entries no longer desired; the next sync removes
@@ -315,13 +318,14 @@ func checkDrift(manifests []registry.Manifest, targets []DriftTarget, rings []re
 
 		dr.ConfigPath = plan.ConfigPath
 		dr.Stale = append([]string(nil), plan.Updated...)
+		dr.PolicyStale = append([]string(nil), plan.PolicyUpdated...)
 		for _, name := range plan.Added {
 			if _, managed := state[name]; managed {
 				dr.Missing = append(dr.Missing, name)
 			}
 		}
 		dr.Orphaned = append([]string(nil), plan.Removed...)
-		if len(dr.Stale)+len(dr.Missing)+len(dr.Orphaned) > 0 {
+		if len(dr.Stale)+len(dr.PolicyStale)+len(dr.Missing)+len(dr.Orphaned) > 0 {
 			dr.Status = StatusWarning
 		}
 		reports = append(reports, dr)

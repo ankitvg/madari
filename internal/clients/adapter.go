@@ -97,6 +97,10 @@ type SyncResult struct {
 	Added []string
 	// Updated are names managed by Madari whose values changed.
 	Updated []string
+	// PolicyUpdated are updated names whose declared access policy differs
+	// from the target's materialized policy. It is a sorted subset of Updated;
+	// adapters that do not compile access policy leave it empty.
+	PolicyUpdated []string
 	// Removed are previously managed names no longer desired.
 	Removed []string
 	// Unchanged are desired names already matching target config values.

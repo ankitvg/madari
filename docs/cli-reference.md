@@ -81,16 +81,17 @@ unsupported, and unrepresentable members are errors; Madari never substitutes
 an advisory prompt or a weaker native control.
 
 Policy support is declared independently for persistent sync/attach, render,
-and run. In the schema-and-compatibility stage every target/surface compiler is
-unsupported. Required sync or attach therefore fails before config, managed
-state, or skill mutation; required render fails before partial output; and
-required run fails before skill materialization or client execution. Detach
-remains available for cleanup. Manifests without `[access]` and rings without
-`[policy]` preserve existing behavior.
+and run. Codex compiles all five V1 fields on all three surfaces. Every policy
+surface for other targets remains unsupported.
+Required sync or attach fails before config, managed state, or skill mutation;
+required render fails before partial output; and required run fails before skill
+materialization or client execution. Detach remains available for cleanup.
+Manifests without `[access]` and rings without `[policy]` preserve existing
+behavior.
 
-Access profiles outside required rings are still stored, validated, exported,
-imported, and reported, but the schema stage makes no exact-enforcement claim
-for them and has no target compiler that materializes them.
+Access profiles outside required rings are stored, validated, exported,
+imported, reported, and compiled when the selected target surface supports
+them. They do not turn an advisory ring into a mandatory enforcement claim.
 
 `oauth_scopes` is requested and client-configured; it does not prove that an
 OAuth provider granted the scopes or that a token contains them.
@@ -152,6 +153,17 @@ as Codex `http_headers`. `sse` manifests stay pending (Codex's documented
 remote support is Streamable HTTP), and `timeout_ms` has no Codex equivalent
 and is not emitted.
 
+Codex compiles `allowed_tools`, `denied_tools`, `oauth_scopes`,
+`default_approval`, and per-tool approvals into `enabled_tools`,
+`disabled_tools`, `scopes`, `default_tools_approval_mode`, and
+`tools.<tool>.approval_mode`. Routine sync preserves undeclared native policy
+fields, including on core command or URL updates. Explicit empty declarations
+and portable `inherit` remove the corresponding native override. A required
+ring refuses unknown behavior-affecting native fields or native approval values
+that Madari cannot prove equivalent instead of rewriting them. Policy-only
+differences are reported separately by doctor/status while remaining a subset
+of ordinary stale entries.
+
 `vibe` sync targets Vibe's user config (`$VIBE_HOME/config.toml`, or
 `~/.vibe/config.toml` when `VIBE_HOME` is unset). Static `[env]` values are
 written into `[[mcp_servers]]` stdio entries. Existing unmanaged HTTP,
@@ -200,9 +212,9 @@ behavior, or render output.
 
 Ring policy is distinct from the advisory contract. A ring file may set
 `[policy] enforcement = "required"`, but each referenced server remains the
-source of truth for its own `[access]` profile. The initial policy-contract
-release stores and reports this declaration but has no enabled target compiler,
-so required attach, render, and run operations fail during preflight.
+source of truth for its own `[access]` profile. Codex required attach, render,
+and run are supported when every member compiles exactly. Unsupported target
+surfaces fail during preflight.
 
 ```toml
 summary = "Collect source context and prepare a research brief."
@@ -254,8 +266,9 @@ Ring skill members are not embedded in MCP render output; use `ring attach`
 for native skill materialization.
 Policy-required render does not use the legacy omit-and-warn behavior: if any
 restriction cannot be represented exactly, it fails before writing partial
-stdout. In the schema-and-compatibility stage every required render is blocked
-because no render policy compiler is enabled.
+stdout. Codex render emits the five native policy fields, with dotted server and
+tool names quoted as literal TOML keys. Other render targets remain unsupported
+for required policy.
 Ephemeral-session recipe:
 
 ```bash
@@ -302,6 +315,12 @@ checks runtime env keys by name, and reports the launch plan. Run never writes
 client config, creates managed state, or permanently materializes skill
 packages.
 
+When any selected server declares `[access]`, Codex execution also adds
+`--strict-config` and requires a stable Codex CLI 0.139.x release. This applies
+to advisory profiles as well as policy-required rings so Madari never drops a
+declared restriction. Legacy runs with no access declarations omit the newer
+flag and version gate, preserving their existing compatibility behavior.
+
 Unlike `ring render`, `run` is fail-closed. A disabled member, missing member,
 unsupported remote transport or auth mode, missing runtime env key, or
 unsupported skill target blocks the plan instead of silently omitting that
@@ -311,9 +330,19 @@ present, because Madari cannot guarantee ring-only skill isolation in that
 case.
 Policy-required run adds a stricter preflight boundary: every declared member
 restriction must compile exactly before any temporary skill package is
-materialized or the client starts. No run policy compiler is enabled in the
-schema-and-compatibility stage, so required runs are currently blocked while
-legacy runs remain unchanged.
+materialized or the client starts. Codex maps every V1 access field into the
+single ephemeral `mcp_servers={...}` override. The plan and executor both check
+the bounded version range Madari has validated for this complete contract.
+`--strict-config` is an additional config-parser safeguard, not proof that
+nested MCP policy fields retain their semantics outside the validated range.
+
+Dry-run text and JSON report each server's portable declared policy, the
+Codex-native effective policy, support state, and enforcement classification.
+If a server is shared, any selected required ring wins and is listed in
+`required_by`. The control labels are intentionally distinct: tool filtering is
+client-enforced; OAuth scopes are requested/client-configured and
+provider-unverified; approval modes are client controls rather than an
+authorization boundary; contracts and skills remain advisory instructions.
 
 ## Skills
 
@@ -477,6 +506,7 @@ summaries cover every sync target):
       "config_path": "/path/to/claude_desktop_config.json",
       "status": "ready",
       "stale": [],
+      "policy_stale": [],
       "missing": [],
       "orphaned": [],
       "issue": ""
@@ -486,10 +516,14 @@ summaries cover every sync target):
 ```
 
 Drift entries appear per target+scope that has managed entries: `stale`
-(materialized value differs from the manifest), `missing` (managed entry
-deleted from the client config), and `orphaned` (no longer desired; the next
-sync removes it). Drift is warning-level and never changes the exit code by
-itself.
+(materialized value differs from the manifest), `policy_stale` (the subset of
+`stale` whose declared access policy differs from the target's materialized
+policy), `missing` (managed entry deleted from the client config), and
+`orphaned` (no longer desired; the next sync removes it). Policy drift covers
+client-enforced tool filtering, requested/client-configured OAuth scopes, and
+client approval controls. It does not prove scopes were granted by the OAuth
+provider, and approval behavior is not an authorization boundary. Drift is
+warning-level and never changes the exit code by itself.
 
 `madari doctor --json`:
 
@@ -534,6 +568,7 @@ itself.
       "config_path": "/path/to/claude_desktop_config.json",
       "status": "warn",
       "stale": ["stewreads"],
+      "policy_stale": [],
       "missing": [],
       "orphaned": [],
       "issue": ""
@@ -554,6 +589,7 @@ itself.
   "dry_run": true,
   "added": ["stewreads"],
   "updated": [],
+  "policy_updated": [],
   "removed": [],
   "unchanged": [],
   "skipped": [],
@@ -566,6 +602,10 @@ itself.
 }
 ```
 
+For Codex, `policy_updated` is the sorted subset of `updated` whose declared
+access fields differ from the native configuration. Undeclared preserved fields
+do not appear as policy drift.
+
 `madari run <client> --ring <ring> --dry-run --json`:
 
 ```json
@@ -577,6 +617,13 @@ itself.
   "ready": true,
   "runner_available": true,
   "prompt_provided": true,
+  "policy_required": true,
+  "policy_controls": {
+    "tool_filtering": "client-enforced",
+    "oauth_scopes": "requested/client-configured/provider-unverified",
+    "approvals": "client-control/not-authorization",
+    "instructions": "contracts-and-skills-advisory"
+  },
   "servers": [
     {
       "name": "cloud-sql",
@@ -586,7 +633,20 @@ itself.
       "auth": "bearer_token_env_var",
       "runtime_env": ["CLOUDSQL_MCP_TOKEN"],
       "rings": ["cloudsql-readonly"],
-      "issues": []
+      "issues": [],
+      "policy": {
+        "declared": {"allowed_tools": ["query"]},
+        "ring_enforcement": "required",
+        "required_by": ["cloudsql-readonly"],
+        "effective": {
+          "enabled_tools": ["query"],
+          "disabled_tools": [],
+          "requested_oauth_scopes": [],
+          "tool_approval_modes": {}
+        },
+        "support_state": "supported",
+        "enforcement_classification": "exact"
+      }
     }
   ],
   "skills": [],
