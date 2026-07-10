@@ -357,6 +357,9 @@ func runtimeEnvKeys(keyGroups ...[]string) []string {
 }
 
 func equalServer(a, b serverConfig) bool {
+	if effectiveServerEnabled(a.Enabled) != effectiveServerEnabled(b.Enabled) {
+		return false
+	}
 	if a.Command != b.Command {
 		return false
 	}
@@ -392,6 +395,10 @@ func equalServer(a, b serverConfig) bool {
 		return false
 	}
 	return equalDeclaredAccess(a.Access, b.Access)
+}
+
+func effectiveServerEnabled(enabled *bool) bool {
+	return enabled == nil || *enabled
 }
 
 func equalStringSlices(a, b []string) bool {

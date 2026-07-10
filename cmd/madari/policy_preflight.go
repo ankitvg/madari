@@ -1,6 +1,9 @@
 package main
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/ankitvg/madari/internal/policy"
 	"github.com/ankitvg/madari/internal/registry"
 )

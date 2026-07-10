@@ -27,7 +27,7 @@ var knownServerFields = map[string]bool{
 	"command": true, "args": true, "env": true, "env_vars": true, "cwd": true,
 	"url": true, "bearer_token_env_var": true, "http_headers": true,
 	"env_http_headers": true, "oauth_resource": true, "enabled": true,
-	"required": true, "startup_timeout_sec": true, "tool_timeout_sec": true,
+	"required": true, "startup_timeout_ms": true, "startup_timeout_sec": true, "tool_timeout_sec": true,
 	"enabled_tools": true, "disabled_tools": true, "scopes": true,
 	"default_tools_approval_mode": true, "tools": true,
 }
@@ -114,12 +114,6 @@ func parseNativeAccess(name string, table map[string]any) (CompiledAccess, []nat
 			})
 		}
 	}
-	if rawEnabled, present := table["enabled"]; present && rawEnabled == false {
-		issues = append(issues, nativeFidelityIssue{
-			Kind: fidelityUnknown,
-			Path: fmt.Sprintf("mcp_servers.%s.enabled=false", name),
-		})
-	}
 	if err := validateKnownNativeExtras(name, table); err != nil {
 		return CompiledAccess{}, nil, err
 	}
@@ -138,7 +132,7 @@ func validateKnownNativeExtras(name string, table map[string]any) error {
 	if _, _, err := optionalBool(table, "required"); err != nil {
 		return fmt.Errorf("parse mcp_servers.%s.required: %w", name, err)
 	}
-	for _, key := range []string{"startup_timeout_sec", "tool_timeout_sec"} {
+	for _, key := range []string{"startup_timeout_ms", "startup_timeout_sec", "tool_timeout_sec"} {
 		if raw, ok := table[key]; ok {
 			switch raw.(type) {
 			case int64, float64:
@@ -152,7 +146,7 @@ func validateKnownNativeExtras(name string, table map[string]any) error {
 
 func supportedNativeApproval(value string) bool {
 	switch value {
-	case "auto", "prompt", "approve":
+	case "auto", "prompt", "writes", "approve":
 		return true
 	default:
 		return false
@@ -252,6 +246,11 @@ func mergeServerTable(raw any, desired serverConfig) (map[string]any, error) {
 			return nil, fmt.Errorf("expected existing table")
 		}
 		table = cloneAnyMap(existing)
+	}
+	if effectiveServerEnabled(desired.Enabled) {
+		delete(table, "enabled")
+	} else {
+		table["enabled"] = false
 	}
 
 	if desired.URL != "" {
