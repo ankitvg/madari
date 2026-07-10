@@ -777,6 +777,37 @@ func TestRunDriftReportsPolicyStaleAsSubset(t *testing.T) {
 	}
 }
 
+func TestRunDriftPreflightsSkillAttachedRingWithoutServerState(t *testing.T) {
+	tmp := t.TempDir()
+	store := registry.NewStore(filepath.Join(tmp, "servers"))
+	commandPath := writeTestExecutable(t, tmp, "policy-mcp")
+	if err := store.Save(registry.Manifest{
+		Name: "docs", Command: commandPath, Enabled: true, Clients: []string{"codex"},
+	}); err != nil {
+		t.Fatalf("save unbounded policy manifest: %v", err)
+	}
+	ring := registry.Ring{
+		Name: "workflow", Members: []string{"docs"}, Skills: []string{"release"},
+		Policy: &registry.RingPolicy{Enforcement: registry.PolicyEnforcementRequired},
+	}
+	adapter := testAdapter{target: "codex"}
+	report, err := Run(store, Options{
+		Rings: []registry.Ring{ring},
+		DriftTargets: []DriftTarget{{
+			Adapter: adapter, StatePath: filepath.Join(tmp, "missing-server-state.json"),
+			SkillAttachedRings: []string{"workflow"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("doctor run failed: %v", err)
+	}
+	if len(report.Drift) != 1 || report.Drift[0].Status != StatusError ||
+		!strings.Contains(report.Drift[0].Issue, "policy preflight") ||
+		!strings.Contains(report.Drift[0].Issue, "non-empty [access].allowed_tools allowlist") {
+		t.Fatalf("skill-only policy attachment bypassed drift preflight: %#v", report.Drift)
+	}
+}
+
 func TestRunDriftUsesCodexDeclaredPolicyComparator(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("unix fixture mode bits are used in this test")

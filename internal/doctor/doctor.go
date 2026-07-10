@@ -106,6 +106,10 @@ type DriftTarget struct {
 	StatePath string
 	// ConfigPath overrides the adapter's default config path when non-empty.
 	ConfigPath string
+	// SkillAttachedRings carries ring ownership found in the target's skill
+	// attachment state. A skill-only attachment must participate in policy
+	// preflight even when the server managed state is empty.
+	SkillAttachedRings []string
 }
 
 // DriftReport diffs materialized client entries against current manifests
@@ -286,12 +290,13 @@ func checkDrift(manifests []registry.Manifest, targets []DriftTarget, rings []re
 			reports = append(reports, dr)
 			continue
 		}
-		if len(state) == 0 {
+		attachedRings := append(syncshared.AttachedRings(state), target.SkillAttachedRings...)
+		if len(state) == 0 && len(attachedRings) == 0 {
 			continue
 		}
 		if err := policy.ValidateAttachedRequiredRings(
 			rings,
-			syncshared.AttachedRings(state),
+			attachedRings,
 			manifests,
 			target.Adapter.Target(),
 			policy.SurfacePersistent,
@@ -299,6 +304,9 @@ func checkDrift(manifests []registry.Manifest, targets []DriftTarget, rings []re
 			dr.Status = StatusError
 			dr.Issue = fmt.Sprintf("policy preflight: %v", err)
 			reports = append(reports, dr)
+			continue
+		}
+		if len(state) == 0 {
 			continue
 		}
 

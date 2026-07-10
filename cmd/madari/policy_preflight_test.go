@@ -290,6 +290,46 @@ func TestPolicyRequiredRingMakesCodexRunPlanExact(t *testing.T) {
 	}
 }
 
+func TestPolicyDiagnosticsPreflightSkillOnlyAttachedRing(t *testing.T) {
+	store := newTestStore(t)
+	projectDir := t.TempDir()
+	chdirForTest(t, projectDir)
+	skillSource := writeSkillFile(t, t.TempDir(), "release.md", "# Release\n")
+	if result := runCmd(store, "skill", "add", "release", "--file", skillSource, "--description", "Release workflow"); result.code != 0 {
+		t.Fatalf("skill setup failed: %s", result.stderr)
+	}
+	savePolicyTestRing(t, store, "workflow", nil, []string{"release"}, false)
+	if result := runCmd(store, "ring", "attach", "workflow", "codex"); result.code != 0 {
+		t.Fatalf("advisory skill-only ring attach failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+
+	if err := store.Save(registry.Manifest{
+		Name: "docs", Command: mustCurrentExecutable(t), Enabled: true, Clients: []string{"codex"},
+	}); err != nil {
+		t.Fatalf("save unbounded policy manifest: %v", err)
+	}
+	savePolicyTestRing(t, store, "workflow", []string{"docs"}, []string{"release"}, true)
+	serverStatePath := (cliApp{store: store}).ringOpStatePath("codex", "")
+	if _, err := os.Stat(serverStatePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("skill-only attachment unexpectedly created server state: %v", err)
+	}
+
+	syncResult := runCmd(store, "sync", "codex")
+	if syncResult.code == 0 || !strings.Contains(syncResult.stderr, "non-empty [access].allowed_tools allowlist") {
+		t.Fatalf("expected required policy sync refusal: stdout=%s stderr=%s", syncResult.stdout, syncResult.stderr)
+	}
+	doctorResult := runCmd(store, "doctor")
+	if doctorResult.code == 0 || !strings.Contains(doctorResult.stdout, "codex drift: [error] policy preflight:") ||
+		!strings.Contains(doctorResult.stdout, "non-empty [access].allowed_tools allowlist") {
+		t.Fatalf("doctor hid skill-only policy attachment: stdout=%s stderr=%s", doctorResult.stdout, doctorResult.stderr)
+	}
+	statusResult := runCmd(store, "status")
+	if statusResult.code == 0 || !strings.Contains(statusResult.stdout, "codex-drift: error policy preflight:") ||
+		!strings.Contains(statusResult.stdout, "non-empty [access].allowed_tools allowlist") {
+		t.Fatalf("status hid skill-only policy attachment: stdout=%s stderr=%s", statusResult.stdout, statusResult.stderr)
+	}
+}
+
 func TestPolicyRequiredSkillOnlyRingAttachesAndRunCompilesAfterMemberEdit(t *testing.T) {
 	store := newTestStore(t)
 	installFakeCodex(t, 0)

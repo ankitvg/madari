@@ -555,23 +555,43 @@ func (a cliApp) managedStateRefs() []managedStateRef {
 
 // driftTargets enumerates the managed-state/config pairs doctor and status
 // diff for drift; clients with user scope get one per scope.
-func (a cliApp) driftTargets(adapters []clients.ClientAdapter, configPathOverrides map[string]string) []doctor.DriftTarget {
+func (a cliApp) driftTargets(adapters []clients.ClientAdapter, configPathOverrides map[string]string) ([]doctor.DriftTarget, error) {
 	targets := make([]doctor.DriftTarget, 0, len(adapters)+1)
 	for _, adapter := range adapters {
+		skillRings := func(scope string) ([]string, error) {
+			if !supportsSkillMaterialization(adapter.Target()) {
+				return nil, nil
+			}
+			state, err := loadSkillAttachmentState(a.skillAttachmentStatePath(adapter.Target(), scope))
+			if err != nil {
+				return nil, err
+			}
+			return attachedSkillRings(state), nil
+		}
+		projectSkillRings, err := skillRings("")
+		if err != nil {
+			return nil, err
+		}
 		targets = append(targets, doctor.DriftTarget{
-			Adapter:    adapter,
-			StatePath:  a.managedStatePath(adapter.Target()),
-			ConfigPath: configPathOverrides[adapter.Target()],
+			Adapter:            adapter,
+			StatePath:          a.managedStatePath(adapter.Target()),
+			ConfigPath:         configPathOverrides[adapter.Target()],
+			SkillAttachedRings: projectSkillRings,
 		})
 		if targetSupportsUserScope(adapter.Target()) {
+			userSkillRings, err := skillRings(clients.ScopeUser)
+			if err != nil {
+				return nil, err
+			}
 			targets = append(targets, doctor.DriftTarget{
-				Adapter:   adapter,
-				Scope:     clients.ScopeUser,
-				StatePath: a.managedUserStatePath(adapter.Target()),
+				Adapter:            adapter,
+				Scope:              clients.ScopeUser,
+				StatePath:          a.managedUserStatePath(adapter.Target()),
+				SkillAttachedRings: userSkillRings,
 			})
 		}
 	}
-	return targets
+	return targets, nil
 }
 
 // managedSourcesByServer unions managed-state sources per server name across
@@ -908,11 +928,15 @@ func (a cliApp) cmdDoctor(args []string) error {
 	if err != nil {
 		return err
 	}
+	driftTargets, err := a.driftTargets(adapters, configPathOverrides)
+	if err != nil {
+		return err
+	}
 	report, err := doctor.Run(a.store, doctor.Options{
 		Adapters:            adapters,
 		ConfigPathOverrides: configPathOverrides,
 		ServerTargets:       supportedDoctorServerTargets(),
-		DriftTargets:        a.driftTargets(adapters, configPathOverrides),
+		DriftTargets:        driftTargets,
 		Rings:               rings,
 	})
 	if err != nil {
@@ -1106,11 +1130,15 @@ func (a cliApp) cmdStatus(args []string) error {
 	if err != nil {
 		return err
 	}
+	driftTargets, err := a.driftTargets(adapters, configPathOverrides)
+	if err != nil {
+		return err
+	}
 	report, err := doctor.Run(a.store, doctor.Options{
 		Adapters:            adapters,
 		ConfigPathOverrides: configPathOverrides,
 		ServerTargets:       supportedDoctorServerTargets(),
-		DriftTargets:        a.driftTargets(adapters, configPathOverrides),
+		DriftTargets:        driftTargets,
 		Rings:               rings,
 	})
 	if err != nil {
