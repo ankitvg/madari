@@ -104,7 +104,8 @@ section must declare at least one field:
 - `denied_tools` (array of strings, optional): second-stage deny list applied
   after the allowlist.
 - `oauth_scopes` (array of strings, optional): scopes Madari asks the selected
-  client to request.
+  client to request. A non-empty declaration is remote-only because stdio
+  transports have no OAuth client flow for Madari to configure.
 - `default_approval` (string, optional): portable default approval behavior.
 
 `oauth_scopes` records requested, client-configured values. Madari can verify

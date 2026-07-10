@@ -101,7 +101,8 @@ unbounded and invalid for a required ring.
 
 The registry rejects:
 
-- unknown access, policy, or nested tool-approval fields;
+- unknown access or policy fields, unknown nested access sections, and
+  malformed or duplicate tool-approval entries;
 - blank, whitespace-padded, or duplicate tool and scope values;
 - invalid portable approval values;
 - a tool present in both allow and deny lists;
