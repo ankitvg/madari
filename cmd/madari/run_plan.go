@@ -15,6 +15,7 @@ import (
 	codexclient "github.com/ankitvg/madari/internal/clients/codex"
 	"github.com/ankitvg/madari/internal/launch"
 	"github.com/ankitvg/madari/internal/policy"
+	"github.com/ankitvg/madari/internal/proctree"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -130,7 +131,7 @@ type runBuildOptions struct {
 
 func (a cliApp) cmdRun(args []string) error {
 	if len(args) == 0 {
-		return commandUsageError("run", "madari run <client> --ring <ring> [--ring <ring> ...] [--max-duration <duration>] [--dry-run] -- <prompt>")
+		return commandUsageError("run", "madari run <client> --ring <ring> [--ring <ring> ...] [--max-duration <duration>] [--receipt <path>] [--dry-run] -- <prompt>")
 	}
 	if isHelpToken(args[0]) {
 		printRunHelp(a.stdout)
@@ -144,10 +145,12 @@ func (a cliApp) cmdRun(args []string) error {
 	var dryRun bool
 	var jsonOutput bool
 	var maxDurationText string
+	var receiptPathText string
 	fs.Var(&rings, "ring", "Ring to include in the launch plan (repeatable)")
 	fs.BoolVar(&dryRun, "dry-run", false, "Inspect the launch plan without starting the client")
 	fs.BoolVar(&jsonOutput, "json", false, "Emit JSON instead of text")
 	fs.StringVar(&maxDurationText, "max-duration", "", "Shorten the maximum run duration")
+	fs.StringVar(&receiptPathText, "receipt", "", "Write a versioned execution receipt")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printRunHelp(a.stdout)
@@ -159,8 +162,20 @@ func (a cliApp) cmdRun(args []string) error {
 	if target == "" {
 		return commandInputError("run", "client is required")
 	}
+	receiptRequested := false
+	fs.Visit(func(value *flag.Flag) {
+		if value.Name == "receipt" {
+			receiptRequested = true
+		}
+	})
 	if jsonOutput && !dryRun {
 		return commandInputError("run", "--json is only supported with --dry-run")
+	}
+	if receiptRequested && dryRun {
+		return commandInputError("run", "--receipt cannot be used with --dry-run")
+	}
+	if receiptRequested && target != codexclient.Target {
+		return commandInputError("run", "--receipt is only supported for codex")
 	}
 	normalizedRings := normalizedRingNames(rings)
 	if len(normalizedRings) == 0 {
@@ -182,10 +197,27 @@ func (a cliApp) cmdRun(args []string) error {
 		}
 		buildOptions.maxDuration = &duration
 	}
+	var receiptPath string
+	var receiptInvocation *runReceiptInvocation
+	if receiptRequested {
+		resolved, err := resolveRunReceiptPath(receiptPathText)
+		if err != nil {
+			return commandInputError("run", fmt.Sprintf("invalid --receipt: %v", err))
+		}
+		receiptPath = resolved
+		receiptInvocation, err = beginRunReceipt(receiptPath, version)
+		if err != nil {
+			return fmt.Errorf("initialize run receipt: %w", err)
+		}
+	}
 
 	plan, err := a.buildRunPlanWithOptions(target, normalizedRings, prompt, buildOptions)
 	if err != nil {
-		return err
+		return receiptInvocation.finish(emptyRunReceiptPlanSummary(target), planningFailureReceiptResult(), err)
+	}
+	var receiptPlan runReceiptPlanSummary
+	if receiptInvocation != nil {
+		receiptPlan = sanitizeRunPlanForReceipt(plan)
 	}
 	if dryRun && jsonOutput {
 		if err := writeJSON(a.stdout, plan.toJSON()); err != nil {
@@ -198,21 +230,24 @@ func (a cliApp) cmdRun(args []string) error {
 		if !dryRun {
 			printRunPlan(a.stdout, plan)
 		}
-		return commandInputError("run", "launch plan is not ready")
+		runErr := commandInputError("run", "launch plan is not ready")
+		return receiptInvocation.finish(receiptPlan, planningBlockedReceiptResult(), runErr)
 	}
 	if dryRun {
 		return nil
 	}
 	executor, ok := runExecutorForTarget(target)
 	if !ok {
-		return commandInputError("run", runDryRunOnlyMessage)
+		runErr := commandInputError("run", runDryRunOnlyMessage)
+		return receiptInvocation.finish(receiptPlan, preparationFailureReceiptResult(), runErr)
 	}
 	ctx, stop := runExecutionContext()
 	defer stop()
-	if _, err := executor(ctx, a, plan); err != nil {
-		return err
+	result, runErr := executor(ctx, a, plan)
+	if runErr == nil && result.Outcome != proctree.OutcomeSuccess {
+		runErr = fmt.Errorf("run executor returned non-success outcome %q without an error", result.Outcome)
 	}
-	return nil
+	return receiptInvocation.finish(receiptPlan, receiptResultFromProcess(result), runErr)
 }
 
 func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (runLaunchPlan, error) {
@@ -1020,13 +1055,14 @@ func formatStringMap(values map[string]string) string {
 
 func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  madari run <client> --ring <ring> [--ring <ring> ...] [--max-duration <duration>] [--dry-run] -- <prompt>")
+	fmt.Fprintln(out, "  madari run <client> --ring <ring> [--ring <ring> ...] [--max-duration <duration>] [--receipt <path>] [--dry-run] -- <prompt>")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
 	fmt.Fprintln(out, "  --ring <ring>             Ring to include in the launch plan (repeatable)")
 	fmt.Fprintln(out, "  --dry-run                 Inspect the launch plan without starting the client")
 	fmt.Fprintln(out, "  --json                    Emit JSON instead of text (requires --dry-run)")
 	fmt.Fprintln(out, "  --max-duration <duration> Shorten (never extend) the selected ring maximum")
+	fmt.Fprintln(out, "  --receipt <path>          Write a versioned execution receipt (Codex execution only)")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Plan or start an ephemeral client launch from one or more rings. Codex")
