@@ -219,8 +219,9 @@ func (a *Artifact) ContentHashes() ContentHashes {
 }
 
 // ReceiptContentHashes returns component fingerprints that omit prompt-like
-// contract text, command arguments, URLs, header values, and environment
-// values. Receipts use these hashes instead of full registry-content hashes.
+// contract text, command arguments, URLs, header values, environment values,
+// and skill file paths and contents. Receipts use these hashes instead of full
+// registry-content hashes.
 func (a *Artifact) ReceiptContentHashes() ContentHashes {
 	if a == nil {
 		return ContentHashes{Rings: []NamedHash{}, Servers: []NamedHash{}, Skills: []NamedHash{}}
@@ -351,21 +352,22 @@ func cloneSkills(values []registry.SkillPackage) []registry.SkillPackage {
 
 func compileAuthority(rings []registry.Ring, servers []registry.Manifest, skills []registry.SkillPackage) Authority {
 	controls := map[string]AuthorityControl{}
-	hasMCPControl := false
+	hasUnfilteredMCPServer := len(servers) == 0
 	for _, server := range servers {
+		hasToolFilter := server.Access != nil && (server.Access.AllowedTools != nil || server.Access.DeniedTools != nil)
+		if !hasToolFilter {
+			hasUnfilteredMCPServer = true
+		}
 		if server.Access == nil {
 			continue
 		}
-		if server.Access.AllowedTools != nil || server.Access.DeniedTools != nil {
-			hasMCPControl = true
+		if hasToolFilter {
 			controls["mcp-tool-filtering"] = AuthorityControl{Control: "mcp-tool-filtering", EnforcedBy: EnforcedByClient, Verification: VerificationConfigured}
 		}
 		if server.Access.OAuthScopes != nil {
-			hasMCPControl = true
 			controls["oauth-scopes"] = AuthorityControl{Control: "oauth-scopes", EnforcedBy: EnforcedByProvider, Verification: VerificationUnverified}
 		}
 		if server.Access.DefaultApproval != nil || server.Access.ToolApprovals != nil {
-			hasMCPControl = true
 			controls["tool-approvals"] = AuthorityControl{Control: "tool-approvals", EnforcedBy: EnforcedByClient, Verification: VerificationConfigured}
 		}
 	}
@@ -379,7 +381,7 @@ func compileAuthority(rings []registry.Ring, servers []registry.Manifest, skills
 	if hasInstructions {
 		controls["instructions"] = AuthorityControl{Control: "instructions", EnforcedBy: EnforcedByAdvisory, Verification: VerificationConfigured}
 	}
-	if !hasMCPControl {
+	if hasUnfilteredMCPServer {
 		controls["mcp-access"] = AuthorityControl{Control: "mcp-access", EnforcedBy: EnforcedByNone, Verification: VerificationUnverified}
 	}
 	ordered := make([]AuthorityControl, 0, len(controls))
@@ -510,7 +512,32 @@ func compileReceiptSafeHashes(rings []registry.Ring, servers []registry.Manifest
 		result.Servers = append(result.Servers, NamedHash{Name: server.Name, SHA256: hashBytes(payload)})
 	}
 	for _, skill := range skills {
-		result.Skills = append(result.Skills, NamedHash{Name: skill.Skill.Name, SHA256: skill.Hash()})
+		record := struct {
+			Name          string `json:"name"`
+			FileCount     int    `json:"file_count"`
+			HasReferences bool   `json:"has_references"`
+			HasScripts    bool   `json:"has_scripts"`
+			HasAssets     bool   `json:"has_assets"`
+			HasOtherFiles bool   `json:"has_other_files"`
+		}{Name: skill.Skill.Name, FileCount: len(skill.Files)}
+		for _, file := range skill.Files {
+			switch {
+			case file.Path == registry.SkillFileName:
+			case strings.HasPrefix(file.Path, "references/"):
+				record.HasReferences = true
+			case strings.HasPrefix(file.Path, "scripts/"):
+				record.HasScripts = true
+			case strings.HasPrefix(file.Path, "assets/"):
+				record.HasAssets = true
+			default:
+				record.HasOtherFiles = true
+			}
+		}
+		payload, err := json.Marshal(record)
+		if err != nil {
+			return ContentHashes{}, fmt.Errorf("marshal receipt-safe skill hash: %w", err)
+		}
+		result.Skills = append(result.Skills, NamedHash{Name: skill.Skill.Name, SHA256: hashBytes(payload)})
 	}
 	sortNamedHashes(result.Rings)
 	sortNamedHashes(result.Servers)

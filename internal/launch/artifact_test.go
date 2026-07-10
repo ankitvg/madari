@@ -155,6 +155,75 @@ func TestCompileReportsRequestedAndEffectiveAuthority(t *testing.T) {
 	}
 }
 
+func TestCompileReportsUnfilteredAccessInMixedSelection(t *testing.T) {
+	command, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+	allowed := []string{"read"}
+	artifact, err := Compile(Input{
+		Target: "codex", WorkingDirectory: t.TempDir(), Prompt: "inspect",
+		Rings: []registry.Ring{{Name: "mixed", Members: []string{"filtered", "unfiltered"}}},
+		Servers: []registry.Manifest{
+			{Name: "filtered", Command: command, Enabled: true, Clients: []string{"codex"}, Access: &registry.AccessProfile{AllowedTools: &allowed}},
+			{Name: "unfiltered", Command: command, Enabled: true, Clients: []string{"codex"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile mixed launch: %v", err)
+	}
+	controls := map[string]AuthorityControl{}
+	for _, control := range artifact.Authority().Effective {
+		controls[control.Control] = control
+	}
+	if got := controls["mcp-tool-filtering"]; got.EnforcedBy != EnforcedByClient || got.Verification != VerificationConfigured {
+		t.Fatalf("filtered member authority missing: %#v", artifact.Authority())
+	}
+	if got := controls["mcp-access"]; got.EnforcedBy != EnforcedByNone || got.Verification != VerificationUnverified {
+		t.Fatalf("unfiltered member authority missing: %#v", artifact.Authority())
+	}
+}
+
+func TestReceiptSafeSkillHashExcludesPrivatePackageContents(t *testing.T) {
+	build := func(body, reference string, withScript bool) registry.SkillPackage {
+		files := []registry.SkillPackageFile{
+			{Path: registry.SkillFileName, Content: []byte("---\nname: release\ndescription: Release workflow\n---\n\n" + body + "\n"), Mode: 0o644},
+			{Path: "references/private.md", Content: []byte(reference), Mode: 0o644},
+		}
+		if withScript {
+			files = append(files, registry.SkillPackageFile{Path: "scripts/check.sh", Content: []byte("#!/bin/sh\nexit 0\n"), Mode: 0o755})
+		}
+		pkg, err := registry.NewSkillPackage(files, "release")
+		if err != nil {
+			t.Fatalf("build skill package: %v", err)
+		}
+		return pkg
+	}
+	compile := func(pkg registry.SkillPackage) *Artifact {
+		artifact, err := Compile(Input{
+			Target: "codex", WorkingDirectory: t.TempDir(), Prompt: "inspect",
+			Rings: []registry.Ring{{Name: "workflow", Skills: []string{"release"}}}, Skills: []registry.SkillPackage{pkg},
+		})
+		if err != nil {
+			t.Fatalf("compile skill launch: %v", err)
+		}
+		return artifact
+	}
+
+	first := compile(build("private body one", "private reference one", false))
+	second := compile(build("private body two", "private reference two", false))
+	if first.ContentHashes().Skills[0].SHA256 == second.ContentHashes().Skills[0].SHA256 {
+		t.Fatal("full immutable content hash must still distinguish private skill contents")
+	}
+	if first.ReceiptContentHashes().Skills[0].SHA256 != second.ReceiptContentHashes().Skills[0].SHA256 {
+		t.Fatal("receipt-safe skill hash fingerprinted private package contents")
+	}
+	third := compile(build("private body two", "private reference two", true))
+	if second.ReceiptContentHashes().Skills[0].SHA256 == third.ReceiptContentHashes().Skills[0].SHA256 {
+		t.Fatal("receipt-safe skill hash must retain non-content structural evidence")
+	}
+}
+
 func TestCompileCodexSkillOnlyLaunchStillClearsMCPServers(t *testing.T) {
 	artifact, err := Compile(Input{
 		Target: "codex", WorkingDirectory: t.TempDir(), Prompt: "inspect",
