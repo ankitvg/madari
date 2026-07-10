@@ -56,6 +56,7 @@ enabled_tools = ["read"]
 disabled_tools = ["delete"]
 scopes = ["repo:read"]
 default_tools_approval_mode = "writes"
+startup_timeout_ms = 1500
 future_restriction = "strict"
 
 [mcp_servers.stewreads.tools.read]
@@ -83,6 +84,9 @@ classification = "sensitive"
 	assertRawStringSlice(t, table, "scopes", []string{"repo:read"})
 	if table["default_tools_approval_mode"] != "writes" || table["future_restriction"] != "strict" {
 		t.Fatalf("legacy native fields were stripped: %#v", table)
+	}
+	if table["startup_timeout_ms"] != int64(1500) {
+		t.Fatalf("documented millisecond timeout alias was stripped: %#v", table)
 	}
 	tool := table["tools"].(map[string]any)["read"].(map[string]any)
 	if tool["approval_mode"] != "prompt" || tool["classification"] != "sensitive" {
@@ -247,13 +251,8 @@ func TestRequiredSyncBlocksUnknownNestedAndVersionSkewApproval(t *testing.T) {
 		},
 		{
 			name:       "version skew approval",
-			nativeTOML: "\ndefault_tools_approval_mode = \"writes\"\n",
-			want:       "writes",
-		},
-		{
-			name:       "native disabled entry",
-			nativeTOML: "\nenabled = false\n",
-			want:       "enabled=false",
+			nativeTOML: "\ndefault_tools_approval_mode = \"future\"\n",
+			want:       "future",
 		},
 	}
 	for _, tc := range cases {
@@ -276,6 +275,40 @@ func TestRequiredSyncBlocksUnknownNestedAndVersionSkewApproval(t *testing.T) {
 				t.Fatalf("expected fidelity refusal containing %q, got: %v", tc.want, err)
 			}
 		})
+	}
+}
+
+func TestRequiredSyncAcceptsDocumentedNativeCompatibilityFields(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "config.toml")
+	statePath := filepath.Join(tmp, "state.json")
+	command := currentTestExecutable(t)
+	payload := "[mcp_servers.docs]\ncommand = " + tomlQuoted(command) + "\nenabled = false\nenabled_tools = [\"read\"]\ndefault_tools_approval_mode = \"writes\"\nstartup_timeout_ms = 1500\n\n[mcp_servers.docs.tools.read]\napproval_mode = \"writes\"\n"
+	if err := os.WriteFile(configPath, []byte(payload), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := syncshared.SaveManagedState(statePath, map[string][]string{"docs": {syncshared.RingSource("restricted")}}); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+	allowed := []string{"read"}
+	manifest := registry.Manifest{Name: "docs", Command: command, Enabled: true, Clients: []string{Target}, Access: &registry.AccessProfile{AllowedTools: &allowed}}
+	ring := registry.Ring{Name: "restricted", Members: []string{"docs"}, Policy: &registry.RingPolicy{Enforcement: registry.PolicyEnforcementRequired}}
+	result, err := Sync([]registry.Manifest{manifest}, SyncOptions{ConfigPath: configPath, StatePath: statePath, Rings: []registry.Ring{ring}})
+	if err != nil {
+		t.Fatalf("sync documented native compatibility fields: %v", err)
+	}
+	if !reflect.DeepEqual(result.Updated, []string{"docs"}) {
+		t.Fatalf("native disabled state was not reconciled: %#v", result)
+	}
+	table := rawServerTable(t, configPath, "docs")
+	if _, exists := table["enabled"]; exists {
+		t.Fatalf("native disabled state survived reconciliation: %#v", table)
+	}
+	if table["default_tools_approval_mode"] != "writes" || table["startup_timeout_ms"] != int64(1500) {
+		t.Fatalf("documented native fields were not preserved: %#v", table)
+	}
+	if table["tools"].(map[string]any)["read"].(map[string]any)["approval_mode"] != "writes" {
+		t.Fatalf("documented per-tool writes approval was not preserved: %#v", table)
 	}
 }
 

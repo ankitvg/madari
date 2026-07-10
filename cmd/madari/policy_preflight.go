@@ -17,20 +17,7 @@ func preflightRequiredRingPolicy(ring registry.Ring, manifests []registry.Manife
 // blocks sync because Madari cannot know whether that attached ring required
 // enforcement; detach-by-name remains available as the recovery path.
 func preflightAttachedRequiredRingPolicies(rings []registry.Ring, attached []string, manifests []registry.Manifest, target string) error {
-	byName := make(map[string]registry.Ring, len(rings))
-	for _, ring := range rings {
-		byName[ring.Name] = ring
-	}
-	for _, name := range sortedUniqueStrings(attached) {
-		ring, exists := byName[strings.TrimSpace(name)]
-		if !exists {
-			return fmt.Errorf("attached ring %q is missing; restore its definition or detach it before sync so policy requirements cannot be bypassed", name)
-		}
-		if err := preflightRequiredRingPolicy(ring, manifests, target, policy.SurfacePersistent); err != nil {
-			return err
-		}
-	}
-	return nil
+	return policy.ValidateAttachedRequiredRings(rings, attached, manifests, target, policy.SurfacePersistent)
 }
 
 func hasAttachedRequiredRingPolicy(rings []registry.Ring, attached []string) bool {

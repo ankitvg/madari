@@ -350,6 +350,43 @@ func targetRepresentationIssues(manifest registry.Manifest, target string, surfa
 	return issues
 }
 
+// ValidateAttachedRequiredRings applies required-ring policy validation only
+// to ring ownership sources recorded for one target. Diagnostics and sync use
+// this shared gate so a dry-run drift plan cannot claim readiness when the
+// corresponding sync operation must fail closed.
+func ValidateAttachedRequiredRings(rings []registry.Ring, attached []string, manifests []registry.Manifest, target string, surface Surface) error {
+	byName := make(map[string]registry.Ring, len(rings))
+	for _, ring := range rings {
+		byName[ring.Name] = ring
+	}
+
+	seen := make(map[string]struct{}, len(attached))
+	names := make([]string, 0, len(attached))
+	for _, rawName := range attached {
+		name := strings.TrimSpace(rawName)
+		if name == "" {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		ring, exists := byName[name]
+		if !exists {
+			return fmt.Errorf("attached ring %q is missing; restore its definition or detach it before sync so policy requirements cannot be bypassed", name)
+		}
+		if err := ValidateRequiredRing(ring, manifests, target, surface).Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func declaredFeatures(access *registry.AccessProfile) []Feature {
 	if access == nil {
 		return nil
