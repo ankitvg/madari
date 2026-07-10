@@ -99,6 +99,10 @@ var targetCapabilities = map[string]TargetCapabilities{
 			Compiler: true, ToolAllowlist: true, ToolDenylist: true,
 			OAuthScopes: true, DefaultApproval: true, ToolApprovals: true,
 		},
+		Run: Capabilities{
+			Compiler: true, ToolAllowlist: true, ToolDenylist: true,
+			OAuthScopes: true, DefaultApproval: true, ToolApprovals: true,
+		},
 	},
 	"gemini": {Target: "gemini"},
 	"vibe":   {Target: "vibe"},

@@ -29,7 +29,7 @@ func TestCapabilitiesDeclareEveryTargetSurfaceFailClosed(t *testing.T) {
 			if !ok {
 				t.Fatalf("missing declaration for %s %s", target, surface)
 			}
-			expectCodexCompiler := target == "codex" && (surface == SurfacePersistent || surface == SurfaceRender)
+			expectCodexCompiler := target == "codex"
 			if capabilities.Compiler != expectCodexCompiler {
 				t.Fatalf("unexpected compiler declaration for %s %s: %#v", target, surface, capabilities)
 			}
@@ -164,10 +164,10 @@ func TestValidateRequiredRingTreatsExplicitEmptyAllowlistAsUnbounded(t *testing.
 		Access:  &registry.AccessProfile{AllowedTools: &empty},
 	}
 	result := ValidateRequiredRing(requiredRing("research", "docs"), []registry.Manifest{manifest}, "codex", SurfaceRun)
-	if result.Classification != SupportInvalid || len(result.Issues) != 3 {
-		t.Fatalf("expected unbounded plus unsupported explicit-clear issues, got: %#v", result)
+	if result.Classification != SupportInvalid || len(result.Issues) != 1 {
+		t.Fatalf("expected explicit-clear allowlist to remain unbounded, got: %#v", result)
 	}
-	if result.Issues[0].Code != IssueUnsupportedCompiler || result.Issues[1].Code != IssueUnboundedMember || result.Issues[2].Code != IssueUnsupportedFeature {
+	if result.Issues[0].Code != IssueUnboundedMember {
 		t.Fatalf("unexpected explicit-clear issue order: %#v", result.Issues)
 	}
 }
@@ -181,18 +181,15 @@ func currentExecutable(t *testing.T) string {
 	return path
 }
 
-func TestValidateRequiredRingBlocksSkillOnlyWithoutCompiler(t *testing.T) {
+func TestValidateRequiredRingAllowsSkillOnlyWithCompiler(t *testing.T) {
 	ring := registry.Ring{
 		Name:   "workflow",
 		Skills: []string{"release"},
 		Policy: &registry.RingPolicy{Enforcement: registry.PolicyEnforcementRequired},
 	}
 	result := ValidateRequiredRing(ring, nil, "codex", SurfaceRun)
-	if result.Classification != SupportUnsupported || result.Ready() || len(result.Issues) != 1 {
-		t.Fatalf("skill-only required ring must still require a compiler: %#v", result)
-	}
-	if result.Issues[0].Code != IssueUnsupportedCompiler {
-		t.Fatalf("unexpected skill-only issue: %#v", result.Issues)
+	if result.Classification != SupportSupported || !result.Ready() || len(result.Issues) != 0 {
+		t.Fatalf("skill-only required ring should use the Codex run compiler: %#v", result)
 	}
 }
 
