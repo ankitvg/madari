@@ -34,17 +34,17 @@ const (
 type ReasonCode string
 
 const (
-	ReasonNone                      ReasonCode = "none"
-	ReasonInvalidInvocation         ReasonCode = "invalid-invocation"
-	ReasonLaunchNotReady            ReasonCode = "launch-not-ready"
-	ReasonPolicyBlocked             ReasonCode = "policy-blocked"
-	ReasonArtifactCompilationFailed ReasonCode = "artifact-compilation-failed"
-	ReasonPreparationFailed         ReasonCode = "preparation-failed"
-	ReasonProcessStartFailed        ReasonCode = "process-start-failed"
-	ReasonProcessFailed             ReasonCode = "process-failed"
-	ReasonContainmentFailed         ReasonCode = "containment-failed"
-	ReasonTimeout                   ReasonCode = "timeout"
-	ReasonCancelled                 ReasonCode = "cancelled"
+	ReasonNone               ReasonCode = "none"
+	ReasonInvalidInvocation  ReasonCode = "invalid-invocation"
+	ReasonLaunchNotReady     ReasonCode = "launch-not-ready"
+	ReasonPolicyBlocked      ReasonCode = "policy-blocked"
+	ReasonPlanningFailed     ReasonCode = "planning-failed"
+	ReasonPreparationFailed  ReasonCode = "preparation-failed"
+	ReasonProcessStartFailed ReasonCode = "process-start-failed"
+	ReasonProcessFailed      ReasonCode = "process-failed"
+	ReasonContainmentFailed  ReasonCode = "containment-failed"
+	ReasonTimeout            ReasonCode = "timeout"
+	ReasonCancelled          ReasonCode = "cancelled"
 )
 
 type AuthorityControl string

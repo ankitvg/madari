@@ -109,7 +109,7 @@ func (r Receipt) validatePlanningOutcome() error {
 		return fmt.Errorf("planning phase requires outcome %q", OutcomeBlocked)
 	}
 	switch r.ReasonCode {
-	case ReasonInvalidInvocation, ReasonLaunchNotReady, ReasonPolicyBlocked, ReasonArtifactCompilationFailed:
+	case ReasonInvalidInvocation, ReasonLaunchNotReady, ReasonPolicyBlocked, ReasonPlanningFailed:
 	default:
 		return fmt.Errorf("planning blocked outcome has invalid reason_code %q", r.ReasonCode)
 	}

@@ -356,7 +356,7 @@ func TestRunReceiptIsWrittenWhenPlanConstructionReturnsError(t *testing.T) {
 	}
 	receipt, _ := readRunReceipt(t, path)
 	if receipt.Phase != executionreceipt.PhasePlanning || receipt.Outcome != executionreceipt.OutcomeBlocked ||
-		receipt.ReasonCode != executionreceipt.ReasonArtifactCompilationFailed || receipt.ProcessStarted {
+		receipt.ReasonCode != executionreceipt.ReasonPlanningFailed || receipt.ProcessStarted {
 		t.Fatalf("unexpected planning error receipt: %#v", receipt)
 	}
 }

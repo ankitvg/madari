@@ -174,7 +174,7 @@ func planningBlockedReceiptResult() runReceiptResultSummary {
 func planningFailureReceiptResult() runReceiptResultSummary {
 	return runReceiptResultSummary{
 		phase: executionreceipt.PhasePlanning, outcome: executionreceipt.OutcomeBlocked,
-		reason: executionreceipt.ReasonArtifactCompilationFailed,
+		reason: executionreceipt.ReasonPlanningFailed,
 	}
 }
 

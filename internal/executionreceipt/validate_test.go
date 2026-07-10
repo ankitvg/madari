@@ -13,6 +13,7 @@ func TestValidateAcceptsEveryCoherentOutcome(t *testing.T) {
 	}{
 		{name: "success", receipt: validReceipt()},
 		{name: "planning blocked", receipt: blockedReceipt()},
+		{name: "planning failure", receipt: planningFailureReceipt()},
 		{name: "preparation failure", receipt: receiptForFailure(ReasonPreparationFailed, false, nil)},
 		{name: "start failure", receipt: receiptForFailure(ReasonProcessStartFailed, false, nil)},
 		{name: "nonzero exit", receipt: receiptForFailure(ReasonProcessFailed, true, &Exit{Code: pointer(17)})},
@@ -30,6 +31,12 @@ func TestValidateAcceptsEveryCoherentOutcome(t *testing.T) {
 			}
 		})
 	}
+}
+
+func planningFailureReceipt() Receipt {
+	receipt := blockedReceipt()
+	receipt.ReasonCode = ReasonPlanningFailed
+	return receipt
 }
 
 func TestValidateRejectsInvalidBaseFieldsAndOrdering(t *testing.T) {
