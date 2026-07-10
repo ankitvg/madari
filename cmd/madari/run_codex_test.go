@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ankitvg/madari/internal/launch"
 	"github.com/ankitvg/madari/internal/registry"
 	"github.com/pelletier/go-toml/v2"
 )
@@ -305,6 +306,71 @@ func TestRunWithStoreCodexRunPropagatesCodexFailure(t *testing.T) {
 	}
 }
 
+func TestRunCodexArtifactIgnoresRegistryMutationAfterPlanning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake codex shell fixture is unix-specific")
+	}
+	store := newTestStore(t)
+	logPath := installFakeCodex(t, 0)
+	allowed := []string{"read"}
+	manifest := registry.Manifest{
+		Name: "docs", Command: mustCurrentExecutable(t), Args: []string{"--before"}, Enabled: true, Clients: []string{"codex"},
+		Access: &registry.AccessProfile{AllowedTools: &allowed},
+	}
+	if err := store.Save(manifest); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+	saveTestSkillPackage(t, store, "release", "Original workflow")
+	if err := store.SaveRing(registry.Ring{
+		Name: "research", Members: []string{"docs"}, Skills: []string{"release"},
+		Contract: &registry.RingContract{Summary: "original contract"},
+		Policy:   &registry.RingPolicy{Enforcement: registry.PolicyEnforcementRequired},
+	}); err != nil {
+		t.Fatalf("save ring: %v", err)
+	}
+	plan, err := (cliApp{store: store}).buildRunPlan("codex", []string{"research"}, "original prompt")
+	if err != nil || !plan.Ready || plan.Artifact == nil {
+		t.Fatalf("build launch: ready=%t artifact=%v err=%v errors=%v", plan.Ready, plan.Artifact != nil, err, plan.Errors)
+	}
+
+	changed := []string{"write"}
+	manifest.Args = []string{"--after"}
+	manifest.Access.AllowedTools = &changed
+	if err := store.Save(manifest); err != nil {
+		t.Fatalf("mutate manifest: %v", err)
+	}
+	saveTestSkillPackage(t, store, "release", "Mutated workflow")
+	if err := store.SaveRing(registry.Ring{
+		Name: "research", Members: []string{"docs"}, Skills: []string{"release"},
+		Contract: &registry.RingContract{Summary: "mutated contract"},
+		Policy:   &registry.RingPolicy{Enforcement: registry.PolicyEnforcementRequired},
+	}); err != nil {
+		t.Fatalf("mutate ring: %v", err)
+	}
+
+	if err := runCodex(cliApp{store: store}, plan); err != nil {
+		t.Fatalf("execute compiled artifact: %v", err)
+	}
+	args := readNULArgs(t, logPath)
+	overrides := collectConfigOverrides(args)
+	if len(overrides) != 1 || !strings.Contains(overrides[0], `args = ["--before"]`) ||
+		!strings.Contains(overrides[0], `enabled_tools = ["read"]`) || strings.Contains(overrides[0], "--after") || strings.Contains(overrides[0], `enabled_tools = ["write"]`) {
+		t.Fatalf("execution did not use the compiled manifest snapshot: %#v", overrides)
+	}
+	prompt := args[len(args)-1]
+	if !strings.Contains(prompt, "original contract") || !strings.Contains(prompt, "Original workflow") ||
+		strings.Contains(prompt, "mutated contract") || strings.Contains(prompt, "Mutated workflow") {
+		t.Fatalf("execution did not use the compiled ring/skill prompt snapshot:\n%s", prompt)
+	}
+	skill, err := os.ReadFile(logPath + ".release")
+	if err != nil {
+		t.Fatalf("read materialized skill: %v", err)
+	}
+	if !strings.Contains(string(skill), "Original workflow") || strings.Contains(string(skill), "Mutated workflow") {
+		t.Fatalf("execution did not materialize the compiled skill snapshot:\n%s", skill)
+	}
+}
+
 func TestRunWithStoreCodexRunRequiresCodexBinary(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
@@ -412,13 +478,19 @@ func TestCodexRunEnvExpandsCodexHomeBeforeCopyingAuth(t *testing.T) {
 
 func TestCodexRunServerConfigValueBlocksSecretIsolatedEnvKeys(t *testing.T) {
 	commandPath := mustCurrentExecutable(t)
-	_, err := codexRunServerConfigValue(registry.Manifest{
-		Name:      "secret-home",
-		Command:   commandPath,
-		SecretEnv: registry.SecretEnv{Keys: []string{"HOME"}},
-		Enabled:   true,
-		Clients:   []string{"codex"},
-	}, t.TempDir(), map[string]string{"HOME": "/secret/home"})
+	_, err := launch.Compile(launch.Input{
+		Target:           "codex",
+		WorkingDirectory: t.TempDir(),
+		Prompt:           "inspect",
+		Servers: []registry.Manifest{{
+			Name:      "secret-home",
+			Command:   commandPath,
+			SecretEnv: registry.SecretEnv{Keys: []string{"HOME"}},
+			Enabled:   true,
+			Clients:   []string{"codex"},
+		}},
+		CallerIsolatedEnv: map[string]string{"HOME": "/secret/home"},
+	})
 	if err == nil || !strings.Contains(err.Error(), "secret env HOME cannot be forwarded by codex run") {
 		t.Fatalf("expected blocked secret HOME, got: %v", err)
 	}
@@ -459,12 +531,20 @@ func TestCodexRunConfigOverridesCompilePolicyDeterministically(t *testing.T) {
 		t.Fatalf("save explicit-clear server: %v", err)
 	}
 
-	overrides, err := codexRunConfigOverrides(store, runLaunchPlan{
-		Servers: []runPlanServer{{Name: "z-last"}, {Name: "docs.server"}},
-	}, t.TempDir())
+	manifests, err := store.List()
 	if err != nil {
-		t.Fatalf("compile Codex run overrides: %v", err)
+		t.Fatalf("list manifests: %v", err)
 	}
+	artifact, err := launch.Compile(launch.Input{
+		Target:           "codex",
+		WorkingDirectory: t.TempDir(),
+		Prompt:           "inspect",
+		Servers:          manifests,
+	})
+	if err != nil {
+		t.Fatalf("compile Codex launch artifact: %v", err)
+	}
+	overrides := artifact.CodexOverrides()
 	want := `mcp_servers={ "docs.server" = { url = "https://example.com/mcp", required = true, enabled_tools = ["tools.inherit", "tools.read\u007F", "tools.write"], disabled_tools = ["tools.delete", "tools.remove"], scopes = ["repo.read", "repo.write"], default_tools_approval_mode = "prompt", tools = { "tools.read\u007F" = { approval_mode = "auto" }, "tools.write" = { approval_mode = "approve" } } }, z-last = { url = "https://example.com/last", required = true } }`
 	if len(overrides) != 1 || overrides[0] != want {
 		t.Fatalf("unexpected deterministic policy override:\nwant %#v\ngot  %#v", []string{want}, overrides)

@@ -30,7 +30,10 @@ skill package directories for supported targets, `ring render` emits MCP config
 only, `madari run codex` clears inherited MCP config and injects selected
 required server members into `codex exec`, while temporarily materializing
 selected ring skill members under an isolated working root without writing
-config/state. Plain `skill render` emits managed `SKILL.md` only, and `skill
+config/state. Planning first freezes all registry inputs, the compiled prompt,
+Codex overrides, content hashes, and authority explanations into one immutable
+launch artifact; execution never consults the mutable registry. Plain `skill
+render` emits managed `SKILL.md` only, and `skill
 attach` materializes client-native skill packages without changing MCP client
 configs.
 
@@ -69,13 +72,25 @@ member profiles. `[contract]` and skill content remain advisory, while
   policy surface remains fail-closed. Access-bearing Codex runs additionally
   require a validated stable CLI 0.139.x release.
 
-3. Sync Engine
+3. Launch Compiler
+- `internal/launch` is the planning/execution boundary for ephemeral runs.
+- It normalizes and defensively clones selected rings, server manifests, and
+  complete skill packages, then compiles the prompt and target-native overrides
+  once. Artifact fields are private and accessors return defensive copies.
+- Deterministic component and policy hashes support drift-resistant evidence.
+  The public launch digest deliberately excludes prompt content, runtime
+  environment values, URLs, header values, and command arguments.
+- Requested and effective controls identify their enforcement owner as
+  provider, client, process, advisory, or none, and distinguish configured,
+  observed, and unverified evidence.
+
+4. Sync Engine
 - Reads registry + client config.
 - Generates a deterministic mutation plan.
 - Supports `--dry-run` to preview changes.
 - Performs backup + atomic write when applying changes.
 
-4. Managed Sync State (ownership)
+5. Managed Sync State (ownership)
 - Path: `<config-root>/state/<target>-managed.json`, one file per sync
   target and scope (project/user-scoped clients have separate state files).
 - Versioned JSON (current: version 2) mapping each managed server name to
@@ -95,7 +110,7 @@ member profiles. `[contract]` and skill content remain advisory, while
   missing, disabled, or no longer targets the client; ring sources are
   released only by detach or membership reconciliation.
 
-5. Rings
+6. Rings
 - Named capability sets (`rings/<name>.toml`). Server members are references by
   name only — the server manifest stays the single source of truth for command,
   args, env, and access profile. Skill members are references by name only —
@@ -130,7 +145,7 @@ member profiles. `[contract]` and skill content remain advisory, while
 - `ring delete` refuses while any target/scope still records the ring as an
   ownership source, and never edits client configs or managed state.
 
-6. Capability Policy
+7. Capability Policy
 - `[access]` is optional. No section means a legacy server makes no Madari
   access declaration.
 - The portable approval vocabulary is `inherit`, `automatic`, `always-prompt`,
@@ -156,7 +171,7 @@ member profiles. `[contract]` and skill content remain advisory, while
   OpenCode support, production examples, and `[policy.execution]` are outside
   V1.
 
-7. Skills
+8. Skills
 - Standalone Agent Skill packages stored at `skills/<name>/` with `SKILL.md`
   frontmatter plus optional bundled files such as `references/`, `scripts/`,
   and `assets/`.
@@ -175,7 +190,7 @@ member profiles. `[contract]` and skill content remain advisory, while
   ring skills by temporarily materializing them as project skills under the
   isolated run root; other run targets are dry-run only today.
 
-8. Doctor Engine
+9. Doctor Engine
 - Verifies command/binary resolution.
 - Validates required env values are present.
 - Validates client config parseability.

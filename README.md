@@ -154,6 +154,12 @@ MCP servers still receive the caller's non-secret `HOME`, `USERPROFILE`, and
 `CODEX_HOME` values when present so home-based server credentials keep working;
 secret declarations for those isolated env keys are blocked. Other clients
 remain dry-run only for now.
+Before Codex starts, Madari freezes the normalized rings, server manifests,
+skill packages, compiled prompt, and Codex overrides into one immutable launch
+artifact. Execution consumes only that artifact and never rereads registry
+files, so a registry edit between planning and process start cannot broaden the
+run. Dry-run output includes deterministic launch, policy, and component hashes
+plus requested/effective authority classifications.
 Every access-bearing Codex run requires a stable Codex CLI 0.139.x release and
 passes the complete profile through one strict ephemeral config override. A
 required ring upgrades that supported profile from advisory to exact

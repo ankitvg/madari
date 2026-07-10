@@ -311,9 +311,12 @@ dry-run only for now.
 
 The planner resolves every selected ring, deduplicates shared server and skill
 members, validates the selected client can express each required capability,
-checks runtime env keys by name, and reports the launch plan. Run never writes
-client config, creates managed state, or permanently materializes skill
-packages.
+checks runtime env keys by name, and compiles one immutable launch artifact.
+The artifact owns normalized ring and manifest snapshots, complete skill
+packages, the prompt preamble, Codex overrides, deterministic component hashes,
+and a receipt-safe launch digest. Execution consumes only the artifact and does
+not reread registry files. Run never writes client config, creates managed
+state, or permanently materializes skill packages.
 
 When any selected server declares `[access]`, Codex execution also adds
 `--strict-config` and requires a stable Codex CLI 0.139.x release. This applies
@@ -343,6 +346,9 @@ If a server is shared, any selected required ring wins and is listed in
 client-enforced; OAuth scopes are requested/client-configured and
 provider-unverified; approval modes are client controls rather than an
 authorization boundary; contracts and skills remain advisory instructions.
+Each authority entry reports `enforced_by` as `provider`, `client`, `process`,
+`advisory`, or `none`, and `verification` as `observed`, `configured`, or
+`unverified`.
 
 ## Skills
 
@@ -623,6 +629,21 @@ do not appear as policy drift.
     "oauth_scopes": "requested/client-configured/provider-unverified",
     "approvals": "client-control/not-authorization",
     "instructions": "contracts-and-skills-advisory"
+  },
+  "launch_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "policy_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "content_hashes": {
+    "rings": [{"name": "cloudsql-readonly", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}],
+    "servers": [{"name": "cloud-sql", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}],
+    "skills": []
+  },
+  "authority": {
+    "requested": [
+      {"control": "mcp-tool-filtering", "enforced_by": "client", "verification": "configured"}
+    ],
+    "effective": [
+      {"control": "mcp-tool-filtering", "enforced_by": "client", "verification": "configured"}
+    ]
   },
   "servers": [
     {

@@ -67,6 +67,22 @@ func TestRunDryRunReportsDeclaredEffectiveAndStrongestRequiredPolicy(t *testing.
 		plan.PolicyControls.Instructions != "contracts-and-skills-advisory" {
 		t.Fatalf("policy controls are ambiguous: %#v", plan.PolicyControls)
 	}
+	if len(plan.LaunchDigest) != 64 || len(plan.PolicyDigest) != 64 || len(plan.ContentHashes.Rings) != 2 || len(plan.ContentHashes.Servers) != 1 {
+		t.Fatalf("immutable launch evidence missing: %#v", plan)
+	}
+	authorityByControl := map[string]string{}
+	for _, control := range plan.Authority.Effective {
+		authorityByControl[control.Control] = string(control.EnforcedBy) + "/" + string(control.Verification)
+	}
+	for control, want := range map[string]string{
+		"mcp-tool-filtering": "client/configured",
+		"oauth-scopes":       "provider/unverified",
+		"tool-approvals":     "client/configured",
+	} {
+		if authorityByControl[control] != want {
+			t.Fatalf("authority %s mismatch: got %q want %q (%#v)", control, authorityByControl[control], want, plan.Authority)
+		}
+	}
 
 	textResult := runCmd(store, "run", "codex", "--ring", "required", "--dry-run", "--", "inspect")
 	if textResult.code != 0 {
@@ -77,6 +93,11 @@ func TestRunDryRunReportsDeclaredEffectiveAndStrongestRequiredPolicy(t *testing.
 		"oauth-scopes=requested/client-configured/provider-unverified",
 		"approvals=client-control/not-authorization",
 		"instructions=contracts-and-skills-advisory",
+		"launch digest:",
+		"policy digest:",
+		"requested authority:",
+		"mcp-tool-filtering enforced_by=client verification=configured",
+		"oauth-scopes enforced_by=provider verification=unverified",
 		"policy: support=supported enforcement=exact",
 		"declared policy: allowed_tools=[tools.inherit,tools.read,tools.write]",
 		"effective policy: enabled_tools=tools.inherit,tools.read,tools.write",
@@ -343,10 +364,7 @@ func TestCodexRunOverridesUsePlannedManifestSnapshot(t *testing.T) {
 	if err := store.Save(manifest); err != nil {
 		t.Fatalf("mutate store after plan: %v", err)
 	}
-	overrides, err := codexRunConfigOverrides(store, plan, t.TempDir())
-	if err != nil {
-		t.Fatalf("compile planned overrides: %v", err)
-	}
+	overrides := plan.Artifact.CodexOverrides()
 	if len(overrides) != 1 || !strings.Contains(overrides[0], `enabled_tools = ["read"]`) || strings.Contains(overrides[0], `enabled_tools = ["write"]`) {
 		t.Fatalf("override re-read a changed manifest instead of using the plan snapshot: %#v", overrides)
 	}
@@ -423,7 +441,7 @@ func TestRunCodexRechecksPolicyCompatibilityBeforeSkillMaterialization(t *testin
 	if err := store.RemoveSkill("release"); err != nil {
 		t.Fatalf("remove planned skill to detect materialization: %v", err)
 	}
-	err = runCodex(cliApp{store: store}, plan, "inspect")
+	err = runCodex(cliApp{store: store}, plan)
 	if err == nil || !strings.Contains(err.Error(), "stable Codex CLI 0.139.x") {
 		t.Fatalf("executor did not recheck compatibility first: %v", err)
 	}
