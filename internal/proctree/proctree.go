@@ -28,8 +28,10 @@ const (
 	TerminationReasonCancelled TerminationReason = "cancelled"
 )
 
-// TreeTermination records whether the platform containment boundary proved
-// that termination reached the complete process tree.
+// TreeTermination records whether termination reached every process in the
+// platform containment set. On Unix, that set includes same-session processes
+// and descendants observed through PPID ancestry; it cannot prove termination
+// of an unobserved process that fully escaped both relationships.
 type TreeTermination string
 
 const (

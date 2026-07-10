@@ -205,10 +205,11 @@ environment, sandbox, lifetime, and credential-exposure contract for runs.
   client, and shell environment inheritance set to `none`. The client binary is
   hashed at planning and checked before execution.
 - Timeout and cancellation terminate the contained process tree using an
-  isolated session plus process enumeration on Unix and a kill-on-close Job
-  Object on Windows. The boundary prevents ordinary runaway descendants; it is
-  not a claim of adversarial kernel, container, filesystem, or network
-  isolation.
+  isolated session plus same-session and PPID-ancestry observation on Unix and
+  a kill-on-close Job Object on Windows. The boundary reaches observed
+  descendants that create another session, but a fully escaped, never-observed
+  double-fork remains outside the portable Unix guarantee. This is not a claim
+  of adversarial kernel, container, filesystem, or network isolation.
 - Codex's read-only sandbox applies to Codex-managed shell commands, not a local
   stdio MCP server that Codex spawns separately. Stdio filesystem and network
   confinement are therefore unverified. A required execution policy blocks

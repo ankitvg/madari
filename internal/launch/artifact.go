@@ -177,7 +177,7 @@ func Compile(input Input) (*Artifact, error) {
 	if err != nil {
 		return nil, err
 	}
-	artifact.authority = compileAuthority(rings, servers, skills, artifact.execution)
+	artifact.authority = compileAuthority(target, rings, servers, skills, artifact.execution)
 	artifact.receiptHashes, err = compileReceiptSafeHashes(rings, servers, skills)
 	if err != nil {
 		return nil, err
@@ -295,12 +295,12 @@ func (a *Artifact) Authority() Authority {
 // ExplainAuthority produces the same requested/effective explanation used by
 // a compiled artifact without constructing an executable launch. Planning uses
 // it to report required-policy degradation that blocks artifact creation.
-func ExplainAuthority(rings []registry.Ring, servers []registry.Manifest, skills []registry.SkillPackage, execution ExecutionConfig) Authority {
+func ExplainAuthority(target string, rings []registry.Ring, servers []registry.Manifest, skills []registry.SkillPackage, execution ExecutionConfig) Authority {
 	normalized, err := normalizeExecutionConfig(execution)
 	if err != nil {
 		return Authority{Requested: []AuthorityControl{}, Effective: []AuthorityControl{}}
 	}
-	return cloneAuthority(compileAuthority(rings, servers, skills, normalized))
+	return cloneAuthority(compileAuthority(strings.TrimSpace(target), rings, servers, skills, normalized))
 }
 
 func (a *Artifact) ContentHashes() ContentHashes {
@@ -441,35 +441,37 @@ func cloneSkills(values []registry.SkillPackage) []registry.SkillPackage {
 	return out
 }
 
-func compileAuthority(rings []registry.Ring, servers []registry.Manifest, skills []registry.SkillPackage, execution ExecutionConfig) Authority {
+func compileAuthority(target string, rings []registry.Ring, servers []registry.Manifest, skills []registry.SkillPackage, execution ExecutionConfig) Authority {
 	controls := map[string]AuthorityControl{}
-	policyRequired := false
+	requiredServers := map[string]bool{}
 	for _, ring := range rings {
-		if ring.RequiresPolicyEnforcement() {
-			policyRequired = true
-			break
+		if !ring.RequiresPolicyEnforcement() {
+			continue
 		}
-	}
-	accessClassification := ClassificationAdvisory
-	if policyRequired {
-		accessClassification = ClassificationExact
+		for _, member := range ring.Members {
+			requiredServers[strings.TrimSpace(member)] = true
+		}
 	}
 	hasMCPControl := false
 	for _, server := range servers {
 		if server.Access == nil {
 			continue
 		}
+		accessClassification := ClassificationAdvisory
+		if requiredServers[server.Name] {
+			accessClassification = ClassificationExact
+		}
 		if server.Access.AllowedTools != nil || server.Access.DeniedTools != nil {
 			hasMCPControl = true
-			controls["mcp-tool-filtering"] = AuthorityControl{Control: "mcp-tool-filtering", EnforcedBy: EnforcedByClient, Verification: VerificationConfigured, Classification: accessClassification}
+			mergeAccessAuthorityControl(controls, AuthorityControl{Control: "mcp-tool-filtering", EnforcedBy: EnforcedByClient, Verification: VerificationConfigured, Classification: accessClassification})
 		}
 		if server.Access.OAuthScopes != nil {
 			hasMCPControl = true
-			controls["oauth-scopes"] = AuthorityControl{Control: "oauth-scopes", EnforcedBy: EnforcedByProvider, Verification: VerificationUnverified, Classification: ClassificationAdvisory}
+			mergeAccessAuthorityControl(controls, AuthorityControl{Control: "oauth-scopes", EnforcedBy: EnforcedByProvider, Verification: VerificationUnverified, Classification: ClassificationAdvisory})
 		}
 		if server.Access.DefaultApproval != nil || server.Access.ToolApprovals != nil {
 			hasMCPControl = true
-			controls["tool-approvals"] = AuthorityControl{Control: "tool-approvals", EnforcedBy: EnforcedByClient, Verification: VerificationConfigured, Classification: accessClassification}
+			mergeAccessAuthorityControl(controls, AuthorityControl{Control: "tool-approvals", EnforcedBy: EnforcedByClient, Verification: VerificationConfigured, Classification: accessClassification})
 		}
 	}
 	hasInstructions := len(skills) > 0
@@ -502,15 +504,39 @@ func compileAuthority(rings []registry.Ring, servers []registry.Manifest, skills
 		)
 	}
 	effective := append([]AuthorityControl(nil), requested...)
-	for _, control := range []AuthorityControl{
-		{Control: "ambient-environment", EnforcedBy: EnforcedByProcess, Verification: VerificationConfigured, Classification: ClassificationExact},
-		{Control: "client-sandbox", EnforcedBy: EnforcedByClient, Verification: VerificationConfigured, Classification: ClassificationExact},
-		{Control: "max-duration", EnforcedBy: EnforcedByProcess, Verification: VerificationConfigured, Classification: ClassificationExact},
-		{Control: "credential-exposure", EnforcedBy: EnforcedByProcess, Verification: VerificationConfigured, Classification: ClassificationExact},
-	} {
-		effective = upsertAuthorityControl(effective, control)
+	if target != "codex" {
+		for i := range effective {
+			switch effective[i].Control {
+			case "mcp-tool-filtering", "oauth-scopes", "tool-approvals":
+				classification := ClassificationDegraded
+				if effective[i].Classification == ClassificationExact {
+					classification = ClassificationBlocked
+				}
+				effective[i].EnforcedBy = EnforcedByNone
+				effective[i].Verification = VerificationUnverified
+				effective[i].Classification = classification
+			}
+		}
 	}
-	if execution.HasStdio {
+	if target == "codex" {
+		for _, control := range []AuthorityControl{
+			{Control: "ambient-environment", EnforcedBy: EnforcedByProcess, Verification: VerificationConfigured, Classification: ClassificationExact},
+			{Control: "client-sandbox", EnforcedBy: EnforcedByClient, Verification: VerificationConfigured, Classification: ClassificationExact},
+			{Control: "max-duration", EnforcedBy: EnforcedByProcess, Verification: VerificationConfigured, Classification: ClassificationExact},
+			{Control: "credential-exposure", EnforcedBy: EnforcedByProcess, Verification: VerificationConfigured, Classification: ClassificationExact},
+		} {
+			effective = upsertAuthorityControl(effective, control)
+		}
+	} else if execution.Declared {
+		classification := ClassificationDegraded
+		if execution.Required {
+			classification = ClassificationBlocked
+		}
+		for _, name := range []string{"ambient-environment", "client-sandbox", "max-duration", "credential-exposure"} {
+			effective = upsertAuthorityControl(effective, AuthorityControl{Control: name, EnforcedBy: EnforcedByNone, Verification: VerificationUnverified, Classification: classification})
+		}
+	}
+	if execution.HasStdio && target == "codex" {
 		classification := ClassificationDegraded
 		if execution.Required {
 			classification = ClassificationBlocked
@@ -523,6 +549,21 @@ func compileAuthority(rings []registry.Ring, servers []registry.Manifest, skills
 	sort.Slice(requested, func(i, j int) bool { return requested[i].Control < requested[j].Control })
 	sort.Slice(effective, func(i, j int) bool { return effective[i].Control < effective[j].Control })
 	return Authority{Requested: requested, Effective: effective}
+}
+
+func mergeAccessAuthorityControl(controls map[string]AuthorityControl, candidate AuthorityControl) {
+	existing, ok := controls[candidate.Control]
+	if !ok {
+		controls[candidate.Control] = candidate
+		return
+	}
+	// Authority currently summarizes controls across the complete run. Do not
+	// let one required ring upgrade an unrelated advisory server in that global
+	// summary: any advisory member makes the aggregate classification advisory.
+	if existing.Classification == ClassificationAdvisory || candidate.Classification == ClassificationAdvisory {
+		existing.Classification = ClassificationAdvisory
+	}
+	controls[candidate.Control] = existing
 }
 
 func upsertAuthorityControl(values []AuthorityControl, control AuthorityControl) []AuthorityControl {

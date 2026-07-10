@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ankitvg/madari/internal/launch"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -123,6 +124,38 @@ func TestRunWithStoreRunPlanRequiresDryRunRingAndPrompt(t *testing.T) {
 	result = runCmd(store, "run", "codex", "--ring", "database", "--dry-run")
 	if result.code == 0 || !strings.Contains(result.stderr, "prompt is required") {
 		t.Fatalf("expected required prompt error, got code=%d stdout=%s stderr=%s", result.code, result.stdout, result.stderr)
+	}
+}
+
+func TestRunNonCodexDryRunDoesNotClaimCodexExecutionAuthority(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(registry.Manifest{
+		Name: "helper", Command: mustCurrentExecutable(t), Enabled: true, Clients: []string{"claude-code"},
+	}); err != nil {
+		t.Fatalf("save helper: %v", err)
+	}
+	if err := store.SaveRing(registry.Ring{
+		Name: "bounded", Members: []string{"helper"},
+		Policy: &registry.RingPolicy{Execution: testExecutionPolicy("1m")},
+	}); err != nil {
+		t.Fatalf("save ring: %v", err)
+	}
+
+	result := runCmd(store, "run", "claude-code", "--ring", "bounded", "--dry-run", "--json", "--", "inspect")
+	if result.code != 0 {
+		t.Fatalf("non-Codex dry-run failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	if plan.Execution.Supported || plan.Execution.StdioConfinement != "unsupported" {
+		t.Fatalf("non-Codex execution support was overstated: %#v", plan.Execution)
+	}
+	for _, control := range plan.Authority.Effective {
+		switch control.Control {
+		case "ambient-environment", "client-sandbox", "max-duration", "credential-exposure":
+			if control.EnforcedBy != launch.EnforcedByNone || control.Verification != launch.VerificationUnverified || control.Classification != launch.ClassificationDegraded {
+				t.Fatalf("non-Codex effective authority was overstated: %#v", control)
+			}
+		}
 	}
 }
 

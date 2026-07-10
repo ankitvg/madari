@@ -158,6 +158,50 @@ func TestCompileReportsRequestedAndEffectiveAuthority(t *testing.T) {
 	}
 }
 
+func TestCompileAuthorityDoesNotUpgradeUnrelatedAdvisoryServer(t *testing.T) {
+	allowedRequired := []string{"required.read"}
+	allowedAdvisory := []string{"advisory.read"}
+	servers := []registry.Manifest{
+		{Name: "required", Transport: registry.TransportHTTP, URL: "https://required.example/mcp", Enabled: true, Clients: []string{"codex"}, Access: &registry.AccessProfile{AllowedTools: &allowedRequired}},
+		{Name: "advisory", Transport: registry.TransportHTTP, URL: "https://advisory.example/mcp", Enabled: true, Clients: []string{"codex"}, Access: &registry.AccessProfile{AllowedTools: &allowedAdvisory}},
+	}
+	requiredRing := registry.Ring{
+		Name: "required-ring", Members: []string{"required"},
+		Policy: &registry.RingPolicy{Enforcement: registry.PolicyEnforcementRequired},
+	}
+
+	requiredOnly, err := Compile(Input{
+		Target: "codex", WorkingDirectory: t.TempDir(), Prompt: "inspect",
+		Rings: []registry.Ring{requiredRing}, Servers: servers[:1],
+	})
+	if err != nil {
+		t.Fatalf("compile required launch: %v", err)
+	}
+	if got := authorityClassification(requiredOnly.Authority(), "mcp-tool-filtering"); got != ClassificationExact {
+		t.Fatalf("required-only authority should be exact, got %s", got)
+	}
+
+	mixed, err := Compile(Input{
+		Target: "codex", WorkingDirectory: t.TempDir(), Prompt: "inspect",
+		Rings: []registry.Ring{requiredRing, {Name: "advisory-ring", Members: []string{"advisory"}}}, Servers: servers,
+	})
+	if err != nil {
+		t.Fatalf("compile mixed launch: %v", err)
+	}
+	if got := authorityClassification(mixed.Authority(), "mcp-tool-filtering"); got != ClassificationAdvisory {
+		t.Fatalf("unrelated advisory server was globally upgraded: got %s", got)
+	}
+}
+
+func authorityClassification(authority Authority, control string) Classification {
+	for _, candidate := range authority.Effective {
+		if candidate.Control == control {
+			return candidate.Classification
+		}
+	}
+	return ""
+}
+
 func TestCompileCodexSkillOnlyLaunchStillClearsMCPServers(t *testing.T) {
 	artifact, err := Compile(Input{
 		Target: "codex", WorkingDirectory: t.TempDir(), Prompt: "inspect",

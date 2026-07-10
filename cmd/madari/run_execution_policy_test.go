@@ -136,7 +136,7 @@ func TestRunTimeoutTerminatesFakeCodexProcessTree(t *testing.T) {
 	}
 	if err := store.SaveRing(registry.Ring{
 		Name: "bounded", Members: []string{"docs"},
-		Policy: &registry.RingPolicy{Execution: testExecutionPolicy("100ms")},
+		Policy: &registry.RingPolicy{Execution: testExecutionPolicy("1s")},
 	}); err != nil {
 		t.Fatalf("save ring: %v", err)
 	}

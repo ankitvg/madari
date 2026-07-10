@@ -10,5 +10,9 @@ import (
 )
 
 func runExecutionContext() (context.Context, context.CancelFunc) {
-	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	return signal.NotifyContext(context.Background(), runExecutionSignals()...)
+}
+
+func runExecutionSignals() []os.Signal {
+	return []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT}
 }

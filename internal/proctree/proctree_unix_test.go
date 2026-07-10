@@ -20,6 +20,36 @@ import (
 )
 
 func TestRunTimeoutKillsSeparateProcessGroupDescendant(t *testing.T) {
+	info := runUnixDescendantTimeout(t, "setpgid")
+	if info.childPGID != info.childPID {
+		t.Fatalf("helper child did not create a separate process group: pid=%d pgid=%d", info.childPID, info.childPGID)
+	}
+	if info.childSID != info.parentPID {
+		t.Fatalf("helper child escaped or never joined the contained session: child sid=%d parent pid=%d", info.childSID, info.parentPID)
+	}
+	assertProcessCannotExecute(t, info.childPID, "separate-process-group child")
+}
+
+func TestRunTimeoutKillsSeparateSessionDescendant(t *testing.T) {
+	info := runUnixDescendantTimeout(t, "setsid")
+	if info.childPGID != info.childPID || info.childSID != info.childPID {
+		t.Fatalf("helper child did not create a separate session: pid=%d pgid=%d sid=%d", info.childPID, info.childPGID, info.childSID)
+	}
+	if info.childSID == info.parentPID {
+		t.Fatalf("setsid helper unexpectedly remained in parent session %d", info.parentPID)
+	}
+	assertProcessCannotExecute(t, info.childPID, "separate-session child")
+}
+
+type unixDescendantInfo struct {
+	childPID  int
+	childPGID int
+	childSID  int
+	parentPID int
+}
+
+func runUnixDescendantTimeout(t *testing.T, containment string) unixDescendantInfo {
+	t.Helper()
 	tempDir := t.TempDir()
 	infoPath := filepath.Join(tempDir, "process-info")
 	readyPath := filepath.Join(tempDir, "child-ready")
@@ -28,6 +58,7 @@ func TestRunTimeoutKillsSeparateProcessGroupDescendant(t *testing.T) {
 		"PROCTREE_UNIX_HELPER=parent",
 		"PROCTREE_UNIX_INFO="+infoPath,
 		"PROCTREE_UNIX_READY="+readyPath,
+		"PROCTREE_UNIX_CHILD_CONTAINMENT="+containment,
 	)
 
 	result, err := Run(context.Background(), cmd, time.Second)
@@ -53,21 +84,18 @@ func TestRunTimeoutKillsSeparateProcessGroupDescendant(t *testing.T) {
 			t.Fatalf("parse descendant process info %q: %v", payload, readErr)
 		}
 	}
-	childPID, childPGID, childSID, parentPID := values[0], values[1], values[2], values[3]
-	defer func() { _ = unix.Kill(childPID, unix.SIGKILL) }()
-	if childPGID != childPID {
-		t.Fatalf("helper child did not create a separate process group: pid=%d pgid=%d", childPID, childPGID)
-	}
-	if childSID != parentPID {
-		t.Fatalf("helper child escaped or never joined the contained session: child sid=%d parent pid=%d", childSID, parentPID)
-	}
+	return unixDescendantInfo{childPID: values[0], childPGID: values[1], childSID: values[2], parentPID: values[3]}
+}
 
+func assertProcessCannotExecute(t *testing.T, childPID int, label string) {
+	t.Helper()
+	defer func() { _ = unix.Kill(childPID, unix.SIGKILL) }()
 	deadline := time.Now().Add(3 * time.Second)
 	for processCanExecute(childPID) && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if processCanExecute(childPID) {
-		t.Fatalf("separate-process-group child %d survived process-tree timeout", childPID)
+		t.Fatalf("%s %d survived process-tree timeout", label, childPID)
 	}
 }
 
@@ -103,7 +131,14 @@ func TestProctreeUnixTreeHelper(t *testing.T) {
 		"PROCTREE_UNIX_HELPER=child",
 		"PROCTREE_UNIX_READY="+os.Getenv("PROCTREE_UNIX_READY"),
 	)
-	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	switch os.Getenv("PROCTREE_UNIX_CHILD_CONTAINMENT") {
+	case "setpgid":
+		child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	case "setsid":
+		child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	default:
+		os.Exit(87)
+	}
 	if err := child.Start(); err != nil {
 		os.Exit(82)
 	}

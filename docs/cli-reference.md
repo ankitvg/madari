@@ -426,6 +426,9 @@ authorization boundary; contracts and skills remain advisory instructions.
 Each authority entry reports `enforced_by` as `provider`, `client`, `process`,
 `advisory`, or `none`, and `verification` as `observed`, `configured`, or
 `unverified`.
+For non-Codex dry-runs, `execution.supported` is `false`; requested execution
+policy remains visible, but effective controls are reported as
+none/unverified/degraded (or blocked when required), never as Codex-enforced.
 
 Versioned opt-in execution receipts are planned separately. There is no receipt
 flag or receipt file in the current run surface.
@@ -740,6 +743,7 @@ do not appear as policy drift.
     "sandbox": "read-only",
     "max_duration": "15m0s",
     "credential_exposure": "run-process",
+    "supported": true,
     "declared": true,
     "required": true,
     "stdio_confinement": "not-applicable"

@@ -118,6 +118,7 @@ type runPlanExecution struct {
 	Sandbox            string `json:"sandbox"`
 	MaxDuration        string `json:"max_duration"`
 	CredentialExposure string `json:"credential_exposure"`
+	Supported          bool   `json:"supported"`
 	Declared           bool   `json:"declared"`
 	Required           bool   `json:"required"`
 	StdioConfinement   string `json:"stdio_confinement"`
@@ -494,12 +495,14 @@ func (a cliApp) buildRunPlanWithOptions(target string, ringNames []string, promp
 	plan.Execution = runPlanExecution{
 		AmbientEnv: execution.AmbientEnv, Sandbox: execution.Sandbox,
 		MaxDuration: execution.MaxDuration.String(), CredentialExposure: execution.CredentialExposure,
-		Declared: execution.Declared, Required: execution.Required, StdioConfinement: "not-applicable",
+		Supported: target == codexclient.Target, Declared: execution.Declared, Required: execution.Required, StdioConfinement: "not-applicable",
 	}
-	if execution.HasStdio {
+	if target != codexclient.Target {
+		plan.Execution.StdioConfinement = "unsupported"
+	} else if execution.HasStdio {
 		plan.Execution.StdioConfinement = "unverified"
 	}
-	plan.Authority = launch.ExplainAuthority(selectedRings, selectedServers, selectedSkills, execution)
+	plan.Authority = launch.ExplainAuthority(target, selectedRings, selectedServers, selectedSkills, execution)
 
 	if len(plan.Errors) == 0 && target == codexclient.Target {
 		workingDirectory, err := os.Getwd()
@@ -835,9 +838,9 @@ func printRunPlan(out io.Writer, plan runLaunchPlan) {
 		fmt.Fprintf(out, "policy digest: %s\n", plan.PolicyDigest)
 		printRunAuthority(out, plan.Authority)
 	}
-	fmt.Fprintf(out, "execution policy: ambient_env=%s sandbox=%s max_duration=%s credential_exposure=%s declared=%t required=%t stdio_confinement=%s\n",
+	fmt.Fprintf(out, "execution policy: ambient_env=%s sandbox=%s max_duration=%s credential_exposure=%s supported=%t declared=%t required=%t stdio_confinement=%s\n",
 		plan.Execution.AmbientEnv, plan.Execution.Sandbox, plan.Execution.MaxDuration,
-		plan.Execution.CredentialExposure, plan.Execution.Declared, plan.Execution.Required, plan.Execution.StdioConfinement)
+		plan.Execution.CredentialExposure, plan.Execution.Supported, plan.Execution.Declared, plan.Execution.Required, plan.Execution.StdioConfinement)
 	fmt.Fprintln(out)
 
 	fmt.Fprintln(out, "servers:")

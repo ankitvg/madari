@@ -131,16 +131,19 @@ operating-system containment.
 
 The effective maximum duration covers the Codex process tree. Timeout and
 cancellation terminate the contained tree and reap the root process. Unix uses
-an isolated process session plus same-session process enumeration so descendants
-that create another process group are still reached. Windows starts the process
-suspended, assigns it to a kill-on-close Job Object, then resumes it. Madari
-returns whether complete tree termination was observed or cleanup was
-incomplete; the current CLI does not persist that result.
+an isolated process session plus same-session and PPID-ancestry snapshots, so
+observed descendants that create another process group or session are still
+reached. Windows starts the process suspended, assigns it to a kill-on-close Job
+Object, then resumes it. On Unix, `SIGINT`, `SIGTERM`, `SIGHUP`, and `SIGQUIT`
+request the same bounded cancellation path. Madari returns whether termination
+of the observed containment set completed or cleanup was incomplete; the current
+CLI does not persist that result.
 
 This mechanism is intended to stop ordinary runaway commands and descendants.
 It is not adversarial containment and does not claim protection against a
-hostile kernel, privileged process, escaped process boundary, or independently
-running external service.
+hostile kernel, privileged process, independently running external service, or
+a Unix daemon that fully double-forks out of both the session and observed PPID
+graph between snapshots.
 
 ### Stdio confinement and authority reporting
 
