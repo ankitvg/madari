@@ -1,0 +1,7 @@
+name = "cloud-sql"
+transport = "http"
+url = "https://sqladmin.googleapis.com/mcp"
+bearer_token_env_var = "CLOUDSQL_MCP_TOKEN"
+enabled = true
+clients = ["codex"]
+description = "Official Cloud SQL remote MCP server"

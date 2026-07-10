@@ -224,6 +224,8 @@ Madari can materialize skills for:
 - `docs/manifest-spec.md`
 - `docs/adr/003-capability-policy-contract-v1.md`
 - `docs/troubleshooting.md`
+- `examples/README.md` (self-contained example catalog)
+- `examples/cloudsql-readonly/README.md` (worked example: a read-only Cloud SQL ring)
 
 ## Development
 
