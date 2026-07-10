@@ -27,6 +27,7 @@ var knownServerFields = map[string]bool{
 	"command": true, "args": true, "env": true, "env_vars": true, "cwd": true,
 	"url": true, "bearer_token_env_var": true, "http_headers": true,
 	"env_http_headers": true, "oauth_resource": true, "enabled": true,
+	"auth": true, "experimental_environment": true,
 	"required": true, "startup_timeout_ms": true, "startup_timeout_sec": true, "tool_timeout_sec": true,
 	"enabled_tools": true, "disabled_tools": true, "scopes": true,
 	"default_tools_approval_mode": true, "tools": true,
@@ -121,6 +122,26 @@ func parseNativeAccess(name string, table map[string]any) (CompiledAccess, []nat
 }
 
 func validateKnownNativeExtras(name string, table map[string]any) error {
+	for key, allowed := range map[string]map[string]bool{
+		"auth": {
+			"oauth":   true,
+			"chatgpt": true,
+		},
+		"experimental_environment": {
+			"local":  true,
+			"remote": true,
+		},
+	} {
+		if raw, ok := table[key]; ok {
+			value, valid := raw.(string)
+			if !valid {
+				return fmt.Errorf("parse mcp_servers.%s.%s: expected string", name, key)
+			}
+			if !allowed[value] {
+				return fmt.Errorf("parse mcp_servers.%s.%s: unsupported value %q", name, key, value)
+			}
+		}
+	}
 	if raw, ok := table["cwd"]; ok {
 		if _, valid := raw.(string); !valid {
 			return fmt.Errorf("parse mcp_servers.%s.cwd: expected string", name)

@@ -57,6 +57,8 @@ disabled_tools = ["delete"]
 scopes = ["repo:read"]
 default_tools_approval_mode = "writes"
 startup_timeout_ms = 1500
+auth = "chatgpt"
+experimental_environment = "remote"
 future_restriction = "strict"
 
 [mcp_servers.stewreads.tools.read]
@@ -87,6 +89,9 @@ classification = "sensitive"
 	}
 	if table["startup_timeout_ms"] != int64(1500) {
 		t.Fatalf("documented millisecond timeout alias was stripped: %#v", table)
+	}
+	if table["auth"] != "chatgpt" || table["experimental_environment"] != "remote" {
+		t.Fatalf("documented native fields were stripped: %#v", table)
 	}
 	tool := table["tools"].(map[string]any)["read"].(map[string]any)
 	if tool["approval_mode"] != "prompt" || tool["classification"] != "sensitive" {
@@ -283,7 +288,7 @@ func TestRequiredSyncAcceptsDocumentedNativeCompatibilityFields(t *testing.T) {
 	configPath := filepath.Join(tmp, "config.toml")
 	statePath := filepath.Join(tmp, "state.json")
 	command := currentTestExecutable(t)
-	payload := "[mcp_servers.docs]\ncommand = " + tomlQuoted(command) + "\nenabled = false\nenabled_tools = [\"read\"]\ndefault_tools_approval_mode = \"writes\"\nstartup_timeout_ms = 1500\n\n[mcp_servers.docs.tools.read]\napproval_mode = \"writes\"\n"
+	payload := "[mcp_servers.docs]\ncommand = " + tomlQuoted(command) + "\nenabled = false\nenabled_tools = [\"read\"]\ndefault_tools_approval_mode = \"writes\"\nstartup_timeout_ms = 1500\nauth = \"chatgpt\"\nexperimental_environment = \"remote\"\n\n[mcp_servers.docs.tools.read]\napproval_mode = \"writes\"\n"
 	if err := os.WriteFile(configPath, []byte(payload), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -307,8 +312,42 @@ func TestRequiredSyncAcceptsDocumentedNativeCompatibilityFields(t *testing.T) {
 	if table["default_tools_approval_mode"] != "writes" || table["startup_timeout_ms"] != int64(1500) {
 		t.Fatalf("documented native fields were not preserved: %#v", table)
 	}
+	if table["auth"] != "chatgpt" || table["experimental_environment"] != "remote" {
+		t.Fatalf("documented native compatibility fields were not preserved: %#v", table)
+	}
 	if table["tools"].(map[string]any)["read"].(map[string]any)["approval_mode"] != "writes" {
 		t.Fatalf("documented per-tool writes approval was not preserved: %#v", table)
+	}
+}
+
+func TestSyncRejectsUnsupportedDocumentedNativeValuesWithoutMutation(t *testing.T) {
+	command := currentTestExecutable(t)
+	for _, tc := range []struct {
+		name  string
+		field string
+		value string
+	}{
+		{name: "auth", field: "auth", value: "future"},
+		{name: "experimental environment", field: "experimental_environment", value: "cloud"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			configPath := filepath.Join(tmp, "config.toml")
+			statePath := filepath.Join(tmp, "state.json")
+			original := []byte("[mcp_servers.docs]\ncommand = " + tomlQuoted(command) + "\n" + tc.field + " = " + tomlQuoted(tc.value) + "\n")
+			if err := os.WriteFile(configPath, original, 0o600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			_, err := Sync([]registry.Manifest{{Name: "docs", Command: command, Enabled: true, Clients: []string{Target}}}, SyncOptions{ConfigPath: configPath, StatePath: statePath})
+			if err == nil || !strings.Contains(err.Error(), tc.field) || !strings.Contains(err.Error(), tc.value) {
+				t.Fatalf("expected unsupported native value error, got: %v", err)
+			}
+			assertFileEquals(t, configPath, original)
+			if _, statErr := os.Stat(statePath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("parse failure wrote state: %v", statErr)
+			}
+		})
 	}
 }
 
