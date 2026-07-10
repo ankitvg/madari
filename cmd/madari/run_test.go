@@ -3200,13 +3200,16 @@ func TestRunWithStoreStatusReportsDrift(t *testing.T) {
 		t.Fatalf("expected one drift entry, got: %v", drift)
 	}
 	entry := drift[0].(map[string]any)
-	assertJSONKeys(t, entry, "target", "scope", "config_path", "status", "stale", "missing", "orphaned", "issue")
+	assertJSONKeys(t, entry, "target", "scope", "config_path", "status", "stale", "policy_stale", "missing", "orphaned", "issue")
 	if entry["target"] != "claude-code" || entry["status"] != "warn" {
 		t.Fatalf("unexpected drift entry: %v", entry)
 	}
 	orphaned := entry["orphaned"].([]any)
 	if len(orphaned) != 1 || orphaned[0] != "driftee" {
 		t.Fatalf("expected driftee orphaned, got: %v", orphaned)
+	}
+	if policyStale := entry["policy_stale"].([]any); len(policyStale) != 0 {
+		t.Fatalf("expected no policy drift for legacy manifest, got: %v", policyStale)
 	}
 }
 

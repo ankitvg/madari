@@ -1002,6 +1002,7 @@ func (a cliApp) cmdDoctor(args []string) error {
 			formatNameList(dr.Orphaned),
 			fix,
 		)
+		printPolicyDriftDetail(a.stdout, label, fix, dr.Status, dr.PolicyStale)
 	}
 
 	for _, issue := range report.RingIssues {
@@ -1212,6 +1213,7 @@ func (a cliApp) cmdStatus(args []string) error {
 			continue
 		}
 		fmt.Fprintf(a.stdout, "%s-drift: stale=%d missing=%d orphaned=%d (fix: %s)\n", label, len(dr.Stale), len(dr.Missing), len(dr.Orphaned), fix)
+		printPolicyDriftSummary(a.stdout, label, fix, dr.PolicyStale)
 	}
 	if len(report.ManifestErrors) > 0 {
 		fmt.Fprintf(a.stdout, "manifest-errors: %d\n", len(report.ManifestErrors))
@@ -1692,6 +1694,20 @@ func formatNameList(names []string) string {
 		return "-"
 	}
 	return strings.Join(names, ",")
+}
+
+func printPolicyDriftDetail(out io.Writer, label, fix string, status doctor.Status, stale []string) {
+	if len(stale) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "%s policy drift: [%s] stale=%s (fix: %s)\n", label, status, formatNameList(stale), fix)
+}
+
+func printPolicyDriftSummary(out io.Writer, label, fix string, stale []string) {
+	if len(stale) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "%s-policy-drift: stale=%d (fix: %s)\n", label, len(stale), fix)
 }
 
 func printSyncSummary(stdout, stderr io.Writer, target, configPath string, dryRun bool, added, updated, removed, unchanged, skipped []string, unsupportedRemote []unsupportedRemoteManifest, refused []string) {

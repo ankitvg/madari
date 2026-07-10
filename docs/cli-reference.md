@@ -477,6 +477,7 @@ summaries cover every sync target):
       "config_path": "/path/to/claude_desktop_config.json",
       "status": "ready",
       "stale": [],
+      "policy_stale": [],
       "missing": [],
       "orphaned": [],
       "issue": ""
@@ -486,10 +487,14 @@ summaries cover every sync target):
 ```
 
 Drift entries appear per target+scope that has managed entries: `stale`
-(materialized value differs from the manifest), `missing` (managed entry
-deleted from the client config), and `orphaned` (no longer desired; the next
-sync removes it). Drift is warning-level and never changes the exit code by
-itself.
+(materialized value differs from the manifest), `policy_stale` (the subset of
+`stale` whose declared access policy differs from the target's materialized
+policy), `missing` (managed entry deleted from the client config), and
+`orphaned` (no longer desired; the next sync removes it). Policy drift covers
+client-enforced tool filtering, requested/client-configured OAuth scopes, and
+client approval controls. It does not prove scopes were granted by the OAuth
+provider, and approval behavior is not an authorization boundary. Drift is
+warning-level and never changes the exit code by itself.
 
 `madari doctor --json`:
 
@@ -534,6 +539,7 @@ itself.
       "config_path": "/path/to/claude_desktop_config.json",
       "status": "warn",
       "stale": ["stewreads"],
+      "policy_stale": [],
       "missing": [],
       "orphaned": [],
       "issue": ""

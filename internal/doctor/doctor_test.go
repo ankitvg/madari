@@ -18,13 +18,14 @@ type testAdapter struct {
 	target         string
 	configPath     string
 	supportsRemote bool
+	syncResult     clients.SyncResult
 }
 
 func (a testAdapter) Target() string                     { return a.target }
 func (a testAdapter) DefaultConfigPath() (string, error) { return a.configPath, nil }
 func (a testAdapter) SupportsRemote(string) bool         { return a.supportsRemote }
 func (a testAdapter) Sync(_ []registry.Manifest, _ clients.SyncOptions) (clients.SyncResult, error) {
-	return clients.SyncResult{}, nil
+	return a.syncResult, nil
 }
 func (a testAdapter) AttachRing(_ registry.Ring, _ []registry.Manifest, _ clients.SyncOptions) (clients.SyncResult, error) {
 	return clients.SyncResult{}, nil
@@ -720,6 +721,56 @@ func TestRunDriftDetection(t *testing.T) {
 	}
 	if report.Summary.Warning < 1 {
 		t.Fatalf("expected drift to count as warning, got summary: %#v", report.Summary)
+	}
+}
+
+func TestRunDriftReportsPolicyStaleAsSubset(t *testing.T) {
+	tmp := t.TempDir()
+	store := registry.NewStore(filepath.Join(tmp, "servers"))
+	configPath := filepath.Join(tmp, "config.toml")
+	statePath := filepath.Join(tmp, "state", "codex-managed.json")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+	state := `{"version":2,"managed_servers":{"core-drift":["standalone"],"policy-drift":["standalone"]}}`
+	if err := os.WriteFile(statePath, []byte(state), 0o644); err != nil {
+		t.Fatalf("write state fixture: %v", err)
+	}
+
+	adapter := testAdapter{
+		target:     "codex",
+		configPath: configPath,
+		syncResult: clients.SyncResult{
+			ConfigPath:    configPath,
+			Updated:       []string{"core-drift", "policy-drift"},
+			PolicyUpdated: []string{"policy-drift"},
+		},
+	}
+	report, err := Run(store, Options{
+		DriftTargets: []DriftTarget{{
+			Adapter:    adapter,
+			StatePath:  statePath,
+			ConfigPath: configPath,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("doctor run failed: %v", err)
+	}
+	if len(report.Drift) != 1 {
+		t.Fatalf("expected one drift report, got: %#v", report.Drift)
+	}
+	dr := report.Drift[0]
+	if dr.Status != StatusWarning {
+		t.Fatalf("expected policy drift warning, got: %#v", dr)
+	}
+	if len(dr.Stale) != 2 || dr.Stale[0] != "core-drift" || dr.Stale[1] != "policy-drift" {
+		t.Fatalf("unexpected stale entries: %#v", dr.Stale)
+	}
+	if len(dr.PolicyStale) != 1 || dr.PolicyStale[0] != "policy-drift" {
+		t.Fatalf("expected policy-drift as policy stale subset, got: %#v", dr.PolicyStale)
+	}
+	if report.Summary.Warning != 1 {
+		t.Fatalf("expected one drift warning without double counting policy subset, got: %#v", report.Summary)
 	}
 }
 
