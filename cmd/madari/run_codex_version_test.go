@@ -50,7 +50,7 @@ func TestParseCodexSemanticVersion(t *testing.T) {
 	}
 }
 
-func TestValidateCodexPolicyRunVersionRejectsOlderCLI(t *testing.T) {
+func TestValidateCodexRunVersionRejectsOlderCLI(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture is Unix-specific")
 	}
@@ -60,13 +60,13 @@ func TestValidateCodexPolicyRunVersionRejectsOlderCLI(t *testing.T) {
 		t.Fatalf("write fake Codex: %v", err)
 	}
 	t.Setenv("PATH", binDir)
-	err := validateCodexPolicyRunVersion()
+	err := validateCodexRunVersion()
 	if err == nil || !strings.Contains(err.Error(), "stable Codex CLI 0.139.x") {
 		t.Fatalf("expected old Codex refusal, got: %v", err)
 	}
 }
 
-func TestValidateCodexPolicyRunCompatibilityRejectsUnvalidatedNewerSeries(t *testing.T) {
+func TestValidateCodexRunCompatibilityRejectsUnvalidatedNewerSeries(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture is Unix-specific")
 	}
@@ -77,7 +77,7 @@ func TestValidateCodexPolicyRunCompatibilityRejectsUnvalidatedNewerSeries(t *tes
 		t.Fatalf("write fake Codex: %v", err)
 	}
 	t.Setenv("PATH", binDir)
-	err := validateCodexPolicyRunCompatibility()
+	err := validateCodexRunCompatibility()
 	if err == nil || !strings.Contains(err.Error(), "stable Codex CLI 0.139.x") {
 		t.Fatalf("expected unvalidated version refusal, got: %v", err)
 	}

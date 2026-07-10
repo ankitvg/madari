@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/ankitvg/madari/internal/clients"
 	codexclient "github.com/ankitvg/madari/internal/clients/codex"
@@ -33,6 +34,7 @@ type runPlanJSON struct {
 	PolicyDigest    string               `json:"policy_digest,omitempty"`
 	ContentHashes   launch.ContentHashes `json:"content_hashes"`
 	Authority       launch.Authority     `json:"authority"`
+	Execution       runPlanExecution     `json:"execution"`
 	Servers         []runPlanServer      `json:"servers"`
 	Skills          []runPlanSkill       `json:"skills"`
 	Env             []runPlanEnv         `json:"env"`
@@ -52,6 +54,7 @@ type runLaunchPlan struct {
 	PolicyDigest    string
 	ContentHashes   launch.ContentHashes
 	Authority       launch.Authority
+	Execution       runPlanExecution
 	Servers         []runPlanServer
 	Skills          []runPlanSkill
 	Env             []runPlanEnv
@@ -110,9 +113,23 @@ type runPlanEnv struct {
 	Servers []string `json:"servers"`
 }
 
+type runPlanExecution struct {
+	AmbientEnv         string `json:"ambient_env"`
+	Sandbox            string `json:"sandbox"`
+	MaxDuration        string `json:"max_duration"`
+	CredentialExposure string `json:"credential_exposure"`
+	Declared           bool   `json:"declared"`
+	Required           bool   `json:"required"`
+	StdioConfinement   string `json:"stdio_confinement"`
+}
+
+type runBuildOptions struct {
+	maxDuration *time.Duration
+}
+
 func (a cliApp) cmdRun(args []string) error {
 	if len(args) == 0 {
-		return commandUsageError("run", "madari run <client> --ring <ring> [--ring <ring> ...] --dry-run -- <prompt>")
+		return commandUsageError("run", "madari run <client> --ring <ring> [--ring <ring> ...] [--max-duration <duration>] [--dry-run] -- <prompt>")
 	}
 	if isHelpToken(args[0]) {
 		printRunHelp(a.stdout)
@@ -125,9 +142,11 @@ func (a cliApp) cmdRun(args []string) error {
 	var rings stringList
 	var dryRun bool
 	var jsonOutput bool
+	var maxDurationText string
 	fs.Var(&rings, "ring", "Ring to include in the launch plan (repeatable)")
 	fs.BoolVar(&dryRun, "dry-run", false, "Inspect the launch plan without starting the client")
 	fs.BoolVar(&jsonOutput, "json", false, "Emit JSON instead of text")
+	fs.StringVar(&maxDurationText, "max-duration", "", "Shorten the maximum run duration")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printRunHelp(a.stdout)
@@ -151,7 +170,19 @@ func (a cliApp) cmdRun(args []string) error {
 		return commandInputError("run", "prompt is required")
 	}
 
-	plan, err := a.buildRunPlan(target, normalizedRings, prompt)
+	var buildOptions runBuildOptions
+	if maxDurationText != "" {
+		if maxDurationText != strings.TrimSpace(maxDurationText) {
+			return commandInputError("run", "--max-duration must not have leading or trailing whitespace")
+		}
+		duration, err := time.ParseDuration(maxDurationText)
+		if err != nil || duration <= 0 {
+			return commandInputError("run", "--max-duration must be a positive Go duration")
+		}
+		buildOptions.maxDuration = &duration
+	}
+
+	plan, err := a.buildRunPlanWithOptions(target, normalizedRings, prompt, buildOptions)
 	if err != nil {
 		return err
 	}
@@ -175,13 +206,19 @@ func (a cliApp) cmdRun(args []string) error {
 	if !ok {
 		return commandInputError("run", runDryRunOnlyMessage)
 	}
-	if err := executor(a, plan); err != nil {
+	ctx, stop := runExecutionContext()
+	defer stop()
+	if _, err := executor(ctx, a, plan); err != nil {
 		return err
 	}
 	return nil
 }
 
 func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (runLaunchPlan, error) {
+	return a.buildRunPlanWithOptions(target, ringNames, prompt, runBuildOptions{})
+}
+
+func (a cliApp) buildRunPlanWithOptions(target string, ringNames []string, prompt string, options runBuildOptions) (runLaunchPlan, error) {
 	plan := runLaunchPlan{
 		Target:          target,
 		Rings:           nonNilStrings(normalizedRingNames(ringNames)),
@@ -294,13 +331,23 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 			declaredAccessServers[name] = true
 		}
 	}
+	baselineEnv := map[string]string(nil)
+	clientInput := launch.ClientInput{}
+	clientCompatibilityBlocked := false
+	if target == codexclient.Target && plan.RunnerAvailable {
+		baselineEnv = codexPlatformBaseline()
+		clientInput, err = inspectCodexRunClient(baselineEnv)
+		if err != nil {
+			clientCompatibilityBlocked = true
+			addPlanError(err.Error())
+		}
+	}
 	policyRuntimeBlocked := false
 	if target == codexclient.Target && (plan.PolicyRequired || len(declaredAccessServers) > 0) {
 		if !plan.RunnerAvailable {
 			policyRuntimeBlocked = true
-		} else if err := validateCodexPolicyRunCompatibility(); err != nil {
+		} else if clientCompatibilityBlocked {
 			policyRuntimeBlocked = true
-			addPlanError(err.Error())
 		}
 		if policyRuntimeBlocked {
 			for name := range requiredByServer {
@@ -370,7 +417,7 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 
 		for _, key := range server.RuntimeEnv {
 			envRequirements[key] = appendUniqueName(envRequirements[key], name)
-			if !runtimeEnvPresent(key) {
+			if !runtimeEnvPresentForRun(target, key) {
 				server.Issues = append(server.Issues, fmt.Sprintf("runtime env %s is missing", key))
 			}
 		}
@@ -429,32 +476,48 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 	for _, key := range envKeys {
 		plan.Env = append(plan.Env, runPlanEnv{
 			Key:     key,
-			Present: runtimeEnvPresent(key),
+			Present: runtimeEnvPresentForRun(target, key),
 			Servers: nonNilStrings(envRequirements[key]),
 		})
 	}
+
+	selectedServers := make([]registry.Manifest, 0, len(plan.Servers))
+	for _, server := range plan.Servers {
+		if server.Manifest.Name != "" {
+			selectedServers = append(selectedServers, server.Manifest)
+		}
+	}
+	execution, executionIssues := compileRunExecution(selectedRings, selectedServers, options)
+	for _, issue := range executionIssues {
+		addPlanError(issue)
+	}
+	plan.Execution = runPlanExecution{
+		AmbientEnv: execution.AmbientEnv, Sandbox: execution.Sandbox,
+		MaxDuration: execution.MaxDuration.String(), CredentialExposure: execution.CredentialExposure,
+		Declared: execution.Declared, Required: execution.Required, StdioConfinement: "not-applicable",
+	}
+	if execution.HasStdio {
+		plan.Execution.StdioConfinement = "unverified"
+	}
+	plan.Authority = launch.ExplainAuthority(selectedRings, selectedServers, selectedSkills, execution)
 
 	if len(plan.Errors) == 0 && target == codexclient.Target {
 		workingDirectory, err := os.Getwd()
 		if err != nil {
 			addPlanError(fmt.Sprintf("resolve current working directory: %v", err))
 		} else {
-			callerEnv, envErr := codexCallerIsolatedEnv()
-			if envErr != nil {
-				addPlanError(envErr.Error())
+			auth, authErr := readCodexRunAuthSnapshot()
+			if authErr != nil {
+				addPlanError(authErr.Error())
 			} else {
-				selectedServers := make([]registry.Manifest, 0, len(plan.Servers))
-				for _, server := range plan.Servers {
-					selectedServers = append(selectedServers, server.Manifest)
-				}
+				clientInput.Auth = auth
 				artifact, compileErr := launch.Compile(launch.Input{
-					Target:            target,
-					WorkingDirectory:  workingDirectory,
-					Prompt:            prompt,
-					Rings:             selectedRings,
-					Servers:           selectedServers,
-					Skills:            selectedSkills,
-					CallerIsolatedEnv: callerEnv,
+					Target: target, WorkingDirectory: workingDirectory, Prompt: prompt,
+					Rings: selectedRings, Servers: selectedServers, Skills: selectedSkills,
+					Environment: launch.EnvironmentInput{
+						Baseline: baselineEnv, Declared: captureDeclaredRunEnvironment(plan.Env),
+					},
+					Client: clientInput, Execution: execution,
 				})
 				if compileErr != nil {
 					addPlanError(fmt.Sprintf("compile immutable launch artifact: %v", compileErr))
@@ -493,6 +556,7 @@ func (p runLaunchPlan) toJSON() runPlanJSON {
 		PolicyDigest:    p.PolicyDigest,
 		ContentHashes:   nonNilContentHashes(p.ContentHashes),
 		Authority:       nonNilAuthority(p.Authority),
+		Execution:       p.Execution,
 		Servers:         nonNilRunPlanServers(p.Servers),
 		Skills:          nonNilRunPlanSkills(p.Skills),
 		Env:             nonNilRunPlanEnv(p.Env),
@@ -613,6 +677,50 @@ func normalizedRingNames(names []string) []string {
 	return out
 }
 
+func compileRunExecution(rings []registry.Ring, servers []registry.Manifest, options runBuildOptions) (launch.ExecutionConfig, []string) {
+	config := launch.ExecutionConfig{
+		AmbientEnv: launch.AmbientEnvDeny, Sandbox: launch.SandboxReadOnly,
+		CredentialExposure: launch.CredentialExposureRunProcess,
+	}
+	for _, ring := range rings {
+		if ring.Policy == nil || ring.Policy.Execution == nil {
+			continue
+		}
+		config.Declared = true
+		if ring.RequiresPolicyEnforcement() {
+			config.Required = true
+		}
+		duration, err := time.ParseDuration(ring.Policy.Execution.MaxDuration)
+		if err != nil || duration <= 0 {
+			return config, []string{fmt.Sprintf("ring %s has invalid execution max_duration", ring.Name)}
+		}
+		if config.MaxDuration == 0 || duration < config.MaxDuration {
+			config.MaxDuration = duration
+		}
+	}
+	if config.MaxDuration == 0 {
+		config.MaxDuration = launch.DefaultMaxDuration
+	}
+	for _, server := range servers {
+		if !server.IsRemote() {
+			config.HasStdio = true
+			break
+		}
+	}
+	var issues []string
+	if options.maxDuration != nil {
+		if *options.maxDuration > config.MaxDuration {
+			issues = append(issues, fmt.Sprintf("--max-duration %s exceeds the selected ring maximum %s", options.maxDuration.String(), config.MaxDuration))
+		} else {
+			config.MaxDuration = *options.maxDuration
+		}
+	}
+	if config.Required && config.HasStdio {
+		issues = append(issues, "required read-only sandbox cannot confine local stdio MCP server filesystem or network access; use remote MCP servers or an OS/container boundary")
+	}
+	return config, issues
+}
+
 func countStrings(names []string) map[string]int {
 	counts := map[string]int{}
 	for _, name := range names {
@@ -650,6 +758,13 @@ func sortedStringSliceMapKeys(values map[string][]string) []string {
 func runtimeEnvPresent(key string) bool {
 	value, ok := os.LookupEnv(key)
 	return ok && strings.TrimSpace(value) != ""
+}
+
+func runtimeEnvPresentForRun(target, key string) bool {
+	if target == codexclient.Target && codexGeneratedEnvKey(key) {
+		return true
+	}
+	return runtimeEnvPresent(key)
 }
 
 func nonNilRunPlanServers(servers []runPlanServer) []runPlanServer {
@@ -720,6 +835,9 @@ func printRunPlan(out io.Writer, plan runLaunchPlan) {
 		fmt.Fprintf(out, "policy digest: %s\n", plan.PolicyDigest)
 		printRunAuthority(out, plan.Authority)
 	}
+	fmt.Fprintf(out, "execution policy: ambient_env=%s sandbox=%s max_duration=%s credential_exposure=%s declared=%t required=%t stdio_confinement=%s\n",
+		plan.Execution.AmbientEnv, plan.Execution.Sandbox, plan.Execution.MaxDuration,
+		plan.Execution.CredentialExposure, plan.Execution.Declared, plan.Execution.Required, plan.Execution.StdioConfinement)
 	fmt.Fprintln(out)
 
 	fmt.Fprintln(out, "servers:")
@@ -808,7 +926,7 @@ func printRunAuthority(out io.Writer, authority launch.Authority) {
 		}
 		fmt.Fprintf(out, "%s:\n", group.name)
 		for _, control := range group.controls {
-			fmt.Fprintf(out, "  %s enforced_by=%s verification=%s\n", control.Control, control.EnforcedBy, control.Verification)
+			fmt.Fprintf(out, "  %s enforced_by=%s verification=%s classification=%s\n", control.Control, control.EnforcedBy, control.Verification, control.Classification)
 		}
 	}
 }
@@ -899,12 +1017,13 @@ func formatStringMap(values map[string]string) string {
 
 func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  madari run <client> --ring <ring> [--ring <ring> ...] [--dry-run] -- <prompt>")
+	fmt.Fprintln(out, "  madari run <client> --ring <ring> [--ring <ring> ...] [--max-duration <duration>] [--dry-run] -- <prompt>")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
 	fmt.Fprintln(out, "  --ring <ring>             Ring to include in the launch plan (repeatable)")
 	fmt.Fprintln(out, "  --dry-run                 Inspect the launch plan without starting the client")
 	fmt.Fprintln(out, "  --json                    Emit JSON instead of text (requires --dry-run)")
+	fmt.Fprintln(out, "  --max-duration <duration> Shorten (never extend) the selected ring maximum")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Plan or start an ephemeral client launch from one or more rings. Codex")
@@ -912,17 +1031,20 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --skip-git-repo-check --sandbox read-only`, clears inherited MCP")
 	fmt.Fprintln(out, "  config, and injects selected ring MCP servers as required config")
 	fmt.Fprintln(out, "  overrides from an isolated working root and materializes selected")
-	fmt.Fprintln(out, "  ring skills into that temporary root. Stdio servers keep the original")
-	fmt.Fprintln(out, "  working directory and caller HOME/USERPROFILE; Codex gets temporary")
-	fmt.Fprintln(out, "  HOME/CODEX_HOME roots with auth copied in. Other clients are dry-run only")
-	fmt.Fprintln(out, "  for now.")
+	fmt.Fprintln(out, "  ring skills into that temporary root. Codex receives only a documented")
+	fmt.Fprintln(out, "  platform baseline, isolated HOME/CODEX_HOME/temp paths, frozen host auth,")
+	fmt.Fprintln(out, "  and explicitly declared server variables. Caller home paths are not")
+	fmt.Fprintln(out, "  forwarded into stdio server configuration. Other clients are dry-run only.")
 	fmt.Fprintln(out, "  Planning freezes normalized rings, servers, skills, the prompt, and Codex")
 	fmt.Fprintln(out, "  overrides into one immutable launch artifact. Execution never rereads the")
 	fmt.Fprintln(out, "  registry. Dry-run reports content digests and requested/effective authority")
-	fmt.Fprintln(out, "  with enforced_by and verification classifications.")
-	fmt.Fprintln(out, "  Access-bearing Codex runs add --strict-config; legacy no-access runs omit it.")
-	fmt.Fprintln(out, "  Codex policy runs require a validated stable CLI 0.139.x release; dry-run")
-	fmt.Fprintln(out, "  reports declared/effective policy separately from client enforcement and")
+	fmt.Fprintln(out, "  with enforced_by, verification, and enforcement classifications.")
+	fmt.Fprintln(out, "  Every Codex run uses --strict-config, an inherit-none shell environment")
+	fmt.Fprintln(out, "  policy, a validated stable CLI 0.139.x release, and a bounded process tree.")
+	fmt.Fprintln(out, "  The default maximum is 15m; selected rings may lower it and the CLI may")
+	fmt.Fprintln(out, "  shorten, never extend, that maximum. Required execution policy blocks local")
+	fmt.Fprintln(out, "  stdio servers because their filesystem and network confinement is unverified.")
+	fmt.Fprintln(out, "  Dry-run reports declared/effective policy separately from client enforcement and")
 	fmt.Fprintln(out, "  advisory instructions.")
 	fmt.Fprintln(out, "  Run never writes client config, managed state, or permanent skill files.")
 	fmt.Fprintln(out)
