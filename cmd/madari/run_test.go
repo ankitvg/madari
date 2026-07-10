@@ -2742,6 +2742,7 @@ func TestRunWithStoreSyncDryRunJSON(t *testing.T) {
     "stewreads"
   ],
   "updated": [],
+  "policy_updated": [],
   "removed": [],
   "unchanged": [],
   "skipped": [],
@@ -2794,6 +2795,7 @@ func TestRunWithStoreSyncReportsUnsupportedRemote(t *testing.T) {
   "dry_run": true,
   "added": [],
   "updated": [],
+  "policy_updated": [],
   "removed": [],
   "unchanged": [],
   "skipped": [],
@@ -2852,6 +2854,7 @@ func TestRunWithStoreSyncReportsUnsupportedRemoteAuth(t *testing.T) {
   "dry_run": true,
   "added": [],
   "updated": [],
+  "policy_updated": [],
   "removed": [],
   "unchanged": [],
   "skipped": [],

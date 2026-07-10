@@ -162,6 +162,7 @@ type syncJSON struct {
 	DryRun            bool     `json:"dry_run"`
 	Added             []string `json:"added"`
 	Updated           []string `json:"updated"`
+	PolicyUpdated     []string `json:"policy_updated"`
 	Removed           []string `json:"removed"`
 	Unchanged         []string `json:"unchanged"`
 	Skipped           []string `json:"skipped"`

@@ -750,18 +750,29 @@ func (a cliApp) cmdSync(args []string) error {
 	if err := preflightAttachedRequiredRingPolicies(rings, policyAttachedRings, manifests, target); err != nil {
 		return commandInputError("sync", err.Error())
 	}
-	if !dryRun {
-		if _, err := a.syncRingSkills(target, scope, rings, true, attachedRingsBeforeSync); err != nil {
-			return err
-		}
+	if err := preflightRequiredRingServerOwnership(rings, policyAttachedRings, attachedRingsBeforeSync, target); err != nil {
+		return commandInputError("sync", err.Error())
 	}
-	result, err := adapter.Sync(syncable, clients.SyncOptions{
+	syncOpts := clients.SyncOptions{
 		ConfigPath: configPath,
 		StatePath:  statePath,
 		Rings:      rings,
 		Scope:      scope,
 		DryRun:     dryRun,
-	})
+	}
+	if !dryRun && hasAttachedRequiredRingPolicy(rings, policyAttachedRings) {
+		preflightOpts := syncOpts
+		preflightOpts.DryRun = true
+		if _, err := adapter.Sync(syncable, preflightOpts); err != nil {
+			return err
+		}
+	}
+	if !dryRun {
+		if _, err := a.syncRingSkills(target, scope, rings, true, attachedRingsBeforeSync); err != nil {
+			return err
+		}
+	}
+	result, err := adapter.Sync(syncable, syncOpts)
 	if err != nil {
 		return err
 	}
@@ -778,6 +789,7 @@ func (a cliApp) cmdSync(args []string) error {
 			DryRun:            result.DryRun,
 			Added:             nonNilStrings(result.Added),
 			Updated:           nonNilStrings(result.Updated),
+			PolicyUpdated:     nonNilStrings(result.PolicyUpdated),
 			Removed:           nonNilStrings(result.Removed),
 			Unchanged:         nonNilStrings(result.Unchanged),
 			Skipped:           nonNilStrings(skipped),
