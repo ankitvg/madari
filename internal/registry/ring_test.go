@@ -125,6 +125,140 @@ enforcement = "required"
 	}
 }
 
+func TestParseAndMarshalExecutionPolicyWithoutEnforcement(t *testing.T) {
+	payload := `name = "bounded"
+members = ["tools"]
+
+[policy.execution]
+ambient_env = "deny"
+sandbox = "read-only"
+max_duration = "15m"
+credential_exposure = "run-process"
+`
+	ring, err := ParseRing([]byte(payload))
+	if err != nil {
+		t.Fatalf("parse execution policy ring: %v", err)
+	}
+	if ring.Policy == nil || ring.Policy.Execution == nil {
+		t.Fatalf("expected execution policy, got: %#v", ring.Policy)
+	}
+	if ring.Policy.Enforcement != "" || ring.Policy.Required() {
+		t.Fatalf("standalone execution policy should be advisory: %#v", ring.Policy)
+	}
+	wantExecution := ExecutionPolicy{
+		AmbientEnv:         ExecutionAmbientEnvDeny,
+		Sandbox:            ExecutionSandboxReadOnly,
+		MaxDuration:        "15m",
+		CredentialExposure: ExecutionCredentialExposureRunProcess,
+	}
+	if *ring.Policy.Execution != wantExecution {
+		t.Fatalf("unexpected execution policy: %#v", ring.Policy.Execution)
+	}
+
+	encoded, err := MarshalRing(ring)
+	if err != nil {
+		t.Fatalf("marshal execution policy ring: %v", err)
+	}
+	if string(encoded) != payload {
+		t.Fatalf("execution policy output drift:\nwant:\n%s\ngot:\n%s", payload, encoded)
+	}
+}
+
+func TestParseAndMarshalRequiredExecutionPolicy(t *testing.T) {
+	payload := `name = "bounded"
+members = ["tools"]
+
+[policy]
+enforcement = "required"
+
+[policy.execution]
+ambient_env = "deny"
+sandbox = "read-only"
+max_duration = "1h30m"
+credential_exposure = "run-process"
+`
+	ring, err := ParseRing([]byte(payload))
+	if err != nil {
+		t.Fatalf("parse required execution policy ring: %v", err)
+	}
+	if !ring.RequiresPolicyEnforcement() || ring.Policy.Execution == nil {
+		t.Fatalf("expected required execution policy, got: %#v", ring.Policy)
+	}
+	encoded, err := MarshalRing(ring)
+	if err != nil {
+		t.Fatalf("marshal required execution policy ring: %v", err)
+	}
+	if string(encoded) != payload {
+		t.Fatalf("required execution policy output drift:\nwant:\n%s\ngot:\n%s", payload, encoded)
+	}
+}
+
+func TestParseExecutionPolicyAllowsParentPolicyAfterExecution(t *testing.T) {
+	payload := `name = "bounded"
+members = ["tools"]
+
+[policy.execution]
+ambient_env = "deny"
+sandbox = "read-only"
+max_duration = "15m"
+credential_exposure = "run-process"
+
+[policy]
+enforcement = "required"
+`
+	ring, err := ParseRing([]byte(payload))
+	if err != nil {
+		t.Fatalf("parse execution-first policy: %v", err)
+	}
+	if !ring.RequiresPolicyEnforcement() || ring.Policy.Execution == nil {
+		t.Fatalf("execution-first policy lost fields: %#v", ring.Policy)
+	}
+}
+
+func TestParseRingRejectsInvalidExecutionPolicy(t *testing.T) {
+	base := `name = "bounded"
+members = ["tools"]
+
+[policy.execution]
+`
+	validFields := `ambient_env = "deny"
+sandbox = "read-only"
+max_duration = "15m"
+credential_exposure = "run-process"
+`
+	tests := []struct {
+		name    string
+		fields  string
+		expects string
+	}{
+		{name: "empty", fields: "", expects: `ambient_env must be "deny"`},
+		{name: "partial", fields: `ambient_env = "deny"` + "\n", expects: `sandbox must be "read-only"`},
+		{name: "ambient env", fields: strings.Replace(validFields, `ambient_env = "deny"`, `ambient_env = "inherit"`, 1), expects: `ambient_env must be "deny"`},
+		{name: "sandbox", fields: strings.Replace(validFields, `sandbox = "read-only"`, `sandbox = "workspace-write"`, 1), expects: `sandbox must be "read-only"`},
+		{name: "invalid duration", fields: strings.Replace(validFields, `max_duration = "15m"`, `max_duration = "forever"`, 1), expects: "max_duration must be a Go duration"},
+		{name: "zero duration", fields: strings.Replace(validFields, `max_duration = "15m"`, `max_duration = "0s"`, 1), expects: "max_duration must be positive"},
+		{name: "negative duration", fields: strings.Replace(validFields, `max_duration = "15m"`, `max_duration = "-1s"`, 1), expects: "max_duration must be positive"},
+		{name: "padded duration", fields: strings.Replace(validFields, `max_duration = "15m"`, `max_duration = " 15m "`, 1), expects: "max_duration must not have leading or trailing whitespace"},
+		{name: "credential exposure", fields: strings.Replace(validFields, `credential_exposure = "run-process"`, `credential_exposure = "brokered"`, 1), expects: `credential_exposure must be "run-process"`},
+		{name: "unknown key", fields: validFields + `unknown = "value"` + "\n", expects: `unknown key "unknown" in [policy.execution]`},
+		{name: "duplicate key", fields: validFields + `sandbox = "read-only"` + "\n", expects: `duplicate key "sandbox" in [policy.execution]`},
+		{name: "non-string", fields: strings.Replace(validFields, `max_duration = "15m"`, `max_duration = 15`, 1), expects: "invalid execution policy max_duration"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseRing([]byte(base + tt.fields))
+			if err == nil || !strings.Contains(err.Error(), tt.expects) {
+				t.Fatalf("expected error containing %q, got: %v", tt.expects, err)
+			}
+		})
+	}
+
+	duplicateSection := base + validFields + "\n[policy.execution]\n"
+	if _, err := ParseRing([]byte(duplicateSection)); err == nil || !strings.Contains(err.Error(), `duplicate section "policy.execution"`) {
+		t.Fatalf("expected duplicate execution section error, got: %v", err)
+	}
+}
+
 func TestMarshalRingOrdersContractBeforePolicy(t *testing.T) {
 	ring := Ring{
 		Name:     "bounded",
@@ -163,7 +297,7 @@ func TestParseRingRejectsInvalidPolicy(t *testing.T) {
 		{name: "unknown key", extra: "\n[policy]\nunknown = \"value\"\n", expects: `unknown key "unknown" in [policy]`},
 		{name: "duplicate key", extra: "\n[policy]\nenforcement = \"required\"\nenforcement = \"required\"\n", expects: `duplicate key "enforcement"`},
 		{name: "duplicate section", extra: "\n[policy]\nenforcement = \"required\"\n[policy]\n", expects: `duplicate section "policy"`},
-		{name: "reserved execution", extra: "\n[policy.execution]\nmode = \"sandbox\"\n", expects: `section "policy.execution" is reserved`},
+		{name: "unknown execution key", extra: "\n[policy.execution]\nmode = \"sandbox\"\n", expects: `unknown key "mode" in [policy.execution]`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

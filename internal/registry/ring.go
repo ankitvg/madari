@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Ring is a named capability set. Members reference server registry entries
@@ -21,13 +22,30 @@ type Ring struct {
 	Policy      *RingPolicy   `toml:"policy,omitempty" json:"policy,omitempty"`
 }
 
-const PolicyEnforcementRequired = "required"
+const (
+	PolicyEnforcementRequired = "required"
 
-// RingPolicy declares whether access-profile compilation is mandatory for
-// operations that select this ring. Runtime execution policy is intentionally
-// reserved for a later contract version.
+	ExecutionAmbientEnvDeny               = "deny"
+	ExecutionSandboxReadOnly              = "read-only"
+	ExecutionCredentialExposureRunProcess = "run-process"
+)
+
+// RingPolicy declares the access-profile and execution guarantees requested by
+// a ring. Enforcement is optional for advisory policies; when present, the
+// only supported value requires every declared guarantee to be enforced.
 type RingPolicy struct {
-	Enforcement string `toml:"enforcement" json:"enforcement"`
+	Enforcement string           `toml:"enforcement,omitempty" json:"enforcement,omitempty"`
+	Execution   *ExecutionPolicy `toml:"execution,omitempty" json:"execution,omitempty"`
+}
+
+// ExecutionPolicy declares the complete bounded-execution contract supported
+// by this registry version. Partial execution policies are rejected so callers
+// never have to infer omitted authority or lifetime semantics.
+type ExecutionPolicy struct {
+	AmbientEnv         string `toml:"ambient_env" json:"ambient_env"`
+	Sandbox            string `toml:"sandbox" json:"sandbox"`
+	MaxDuration        string `toml:"max_duration" json:"max_duration"`
+	CredentialExposure string `toml:"credential_exposure" json:"credential_exposure"`
 }
 
 func (p *RingPolicy) Required() bool {
@@ -38,8 +56,42 @@ func (p *RingPolicy) Validate() error {
 	if p == nil {
 		return nil
 	}
-	if p.Enforcement != PolicyEnforcementRequired {
+	if p.Enforcement == "" && p.Execution == nil {
 		return fmt.Errorf("policy enforcement must be %q", PolicyEnforcementRequired)
+	}
+	if p.Enforcement != "" && p.Enforcement != PolicyEnforcementRequired {
+		return fmt.Errorf("policy enforcement must be %q when declared", PolicyEnforcementRequired)
+	}
+	if err := p.Execution.Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p *ExecutionPolicy) Validate() error {
+	if p == nil {
+		return nil
+	}
+
+	var errs []string
+	if p.AmbientEnv != ExecutionAmbientEnvDeny {
+		errs = append(errs, fmt.Sprintf("ambient_env must be %q", ExecutionAmbientEnvDeny))
+	}
+	if p.Sandbox != ExecutionSandboxReadOnly {
+		errs = append(errs, fmt.Sprintf("sandbox must be %q", ExecutionSandboxReadOnly))
+	}
+	if p.MaxDuration != strings.TrimSpace(p.MaxDuration) {
+		errs = append(errs, "max_duration must not have leading or trailing whitespace")
+	} else if duration, err := time.ParseDuration(p.MaxDuration); err != nil {
+		errs = append(errs, "max_duration must be a Go duration")
+	} else if duration <= 0 {
+		errs = append(errs, "max_duration must be positive")
+	}
+	if p.CredentialExposure != ExecutionCredentialExposureRunProcess {
+		errs = append(errs, fmt.Sprintf("credential_exposure must be %q", ExecutionCredentialExposureRunProcess))
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("invalid execution policy: %s", strings.Join(errs, "; "))
 	}
 	return nil
 }
@@ -203,7 +255,9 @@ func ParseRing(data []byte) (Ring, error) {
 
 	section := sectionTop
 	policySectionSeen := false
+	policyExecutionSectionSeen := false
 	policyEnforcementSeen := false
+	policyExecutionKeysSeen := map[string]bool{}
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	lineNo := 0
 	for scanner.Scan() {
@@ -235,9 +289,19 @@ func ParseRing(data []byte) (Ring, error) {
 				}
 				policySectionSeen = true
 				section = name
-				ring.Policy = &RingPolicy{}
+				if ring.Policy == nil {
+					ring.Policy = &RingPolicy{}
+				}
 			case "policy.execution":
-				return Ring{}, fmt.Errorf("line %d: section %q is reserved for a future runtime policy contract and is not supported in policy V1", lineNo, name)
+				if policyExecutionSectionSeen {
+					return Ring{}, fmt.Errorf("line %d: duplicate section %q", lineNo, name)
+				}
+				policyExecutionSectionSeen = true
+				section = name
+				if ring.Policy == nil {
+					ring.Policy = &RingPolicy{}
+				}
+				ring.Policy.Execution = &ExecutionPolicy{}
 			default:
 				return Ring{}, fmt.Errorf("line %d: unknown section %q", lineNo, name)
 			}
@@ -274,6 +338,30 @@ func ParseRing(data []byte) (Ring, error) {
 			}
 			policyEnforcementSeen = true
 			ring.Policy.Enforcement = parsed
+		case "policy.execution":
+			switch key {
+			case "ambient_env", "sandbox", "max_duration", "credential_exposure":
+			default:
+				return Ring{}, fmt.Errorf("line %d: unknown key %q in [policy.execution]", lineNo, key)
+			}
+			if policyExecutionKeysSeen[key] {
+				return Ring{}, fmt.Errorf("line %d: duplicate key %q in [policy.execution]", lineNo, key)
+			}
+			parsed, err := parseString(value)
+			if err != nil {
+				return Ring{}, fmt.Errorf("line %d: invalid execution policy %s: %w", lineNo, key, err)
+			}
+			switch key {
+			case "ambient_env":
+				ring.Policy.Execution.AmbientEnv = parsed
+			case "sandbox":
+				ring.Policy.Execution.Sandbox = parsed
+			case "max_duration":
+				ring.Policy.Execution.MaxDuration = parsed
+			case "credential_exposure":
+				ring.Policy.Execution.CredentialExposure = parsed
+			}
+			policyExecutionKeysSeen[key] = true
 		default:
 			return Ring{}, fmt.Errorf("line %d: unknown parse section", lineNo)
 		}
@@ -394,8 +482,17 @@ func MarshalRing(ring Ring) ([]byte, error) {
 		writeRingContractFields(&b, ring.Contract)
 	}
 	if ring.Policy != nil {
-		b.WriteString("\n[policy]\n")
-		fmt.Fprintf(&b, "enforcement = %s\n", strconv.Quote(ring.Policy.Enforcement))
+		if ring.Policy.Enforcement != "" {
+			b.WriteString("\n[policy]\n")
+			fmt.Fprintf(&b, "enforcement = %s\n", strconv.Quote(ring.Policy.Enforcement))
+		}
+		if ring.Policy.Execution != nil {
+			b.WriteString("\n[policy.execution]\n")
+			fmt.Fprintf(&b, "ambient_env = %s\n", strconv.Quote(ring.Policy.Execution.AmbientEnv))
+			fmt.Fprintf(&b, "sandbox = %s\n", strconv.Quote(ring.Policy.Execution.Sandbox))
+			fmt.Fprintf(&b, "max_duration = %s\n", strconv.Quote(ring.Policy.Execution.MaxDuration))
+			fmt.Fprintf(&b, "credential_exposure = %s\n", strconv.Quote(ring.Policy.Execution.CredentialExposure))
+		}
 	}
 	return []byte(b.String()), nil
 }

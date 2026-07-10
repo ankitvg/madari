@@ -312,6 +312,46 @@ func TestParseSnapshotV10AcceptsAccessProfilesAndRingPolicies(t *testing.T) {
 	}
 }
 
+func TestParseSnapshotV10RejectsExecutionPolicies(t *testing.T) {
+	payload := []byte(`{"version":10,"servers":[{"name":"alpha","command":"/usr/bin/env","enabled":true,"clients":["codex"]}],"rings":[{"name":"bounded","members":["alpha"],"policy":{"execution":{"ambient_env":"deny","sandbox":"read-only","max_duration":"15m","credential_exposure":"run-process"}}}],"skills":[]}`)
+	_, err := ParseSnapshotJSON(payload)
+	if err == nil || !strings.Contains(err.Error(), "snapshot version 10 does not support ring execution policies") {
+		t.Fatalf("expected v10 execution-policy rejection, got: %v", err)
+	}
+}
+
+func TestParseSnapshotV11AcceptsExecutionPolicies(t *testing.T) {
+	payload := []byte(`{"version":11,"servers":[{"name":"alpha","command":"/usr/bin/env","enabled":true,"clients":["codex"]}],"rings":[{"name":"bounded","members":["alpha"],"policy":{"execution":{"ambient_env":"deny","sandbox":"read-only","max_duration":"15m","credential_exposure":"run-process"}}}],"skills":[]}`)
+	snapshot, err := ParseSnapshotJSON(payload)
+	if err != nil {
+		t.Fatalf("parse v11 execution-policy snapshot: %v", err)
+	}
+	if snapshot.Version != SnapshotVersion {
+		t.Fatalf("expected snapshot version %d, got %d", SnapshotVersion, snapshot.Version)
+	}
+	policy := snapshot.Rings[0].Policy
+	if policy == nil || policy.Enforcement != "" || policy.Execution == nil || policy.Execution.MaxDuration != "15m" {
+		t.Fatalf("unexpected v11 execution policy: %#v", policy)
+	}
+
+	encoded, err := MarshalSnapshotJSON(snapshot)
+	if err != nil {
+		t.Fatalf("marshal v11 execution-policy snapshot: %v", err)
+	}
+	for _, want := range []string{`"execution"`, `"ambient_env"`, `"sandbox"`, `"max_duration"`, `"credential_exposure"`} {
+		if !strings.Contains(string(encoded), want) {
+			t.Fatalf("v11 execution-policy snapshot missing %s:\n%s", want, encoded)
+		}
+	}
+	parsed, err := ParseSnapshotJSON(encoded)
+	if err != nil {
+		t.Fatalf("reparse v11 execution-policy snapshot: %v", err)
+	}
+	if !ringPoliciesEqual(parsed.Rings[0].Policy, policy) {
+		t.Fatalf("execution policy did not round trip: %#v", parsed.Rings[0].Policy)
+	}
+}
+
 func TestParseSnapshotV7AcceptsRemoteServers(t *testing.T) {
 	payload := []byte(`{"version":7,"servers":[{"name":"cloud-sql","transport":"http","url":"https://example.com/mcp","enabled":true,"clients":["codex"]}]}`)
 	snapshot, err := ParseSnapshotJSON(payload)
@@ -605,6 +645,20 @@ func TestAccessAndPolicyEqualityPreserveExplicitClears(t *testing.T) {
 	}
 	if ringPoliciesEqual(nil, &RingPolicy{Enforcement: PolicyEnforcementRequired}) {
 		t.Fatalf("absent and required ring policies must differ")
+	}
+	execution := &ExecutionPolicy{
+		AmbientEnv:         ExecutionAmbientEnvDeny,
+		Sandbox:            ExecutionSandboxReadOnly,
+		MaxDuration:        "15m",
+		CredentialExposure: ExecutionCredentialExposureRunProcess,
+	}
+	if !ringPoliciesEqual(&RingPolicy{Execution: execution}, &RingPolicy{Execution: execution}) {
+		t.Fatalf("equivalent execution policies should compare equal")
+	}
+	differentExecution := *execution
+	differentExecution.MaxDuration = "10m"
+	if ringPoliciesEqual(&RingPolicy{Execution: execution}, &RingPolicy{Execution: &differentExecution}) {
+		t.Fatalf("different execution policies must differ")
 	}
 }
 
@@ -1053,6 +1107,11 @@ func TestParseSnapshotRejectsUnknownFieldsAndTrailingData(t *testing.T) {
 			expects: `unknown field "unknown"`,
 		},
 		{
+			name:    "unknown execution policy field",
+			payload: `{"version":11,"servers":[],"rings":[{"name":"workflow","skills":["release"],"policy":{"execution":{"ambient_env":"deny","sandbox":"read-only","max_duration":"15m","credential_exposure":"run-process","unknown":true}}}],"skills":[{"name":"release","content":"# Release\n"}]}`,
+			expects: `unknown field "unknown"`,
+		},
+		{
 			name:    "second document",
 			payload: `{"version":10,"servers":[],"rings":[],"skills":[]} {}`,
 			expects: "trailing data",
@@ -1099,6 +1158,16 @@ func TestParseSnapshotRejectsNullPolicyPresenceFields(t *testing.T) {
 			name:    "policy",
 			payload: `{"version":10,"servers":[` + baseServer + `],"rings":[{"name":"research","members":["docs"],"skills":[],"policy":null}],"skills":[]}`,
 			expects: "rings[0].policy must not be null",
+		},
+		{
+			name:    "execution policy",
+			payload: `{"version":11,"servers":[` + baseServer + `],"rings":[{"name":"research","members":["docs"],"skills":[],"policy":{"execution":null}}],"skills":[]}`,
+			expects: "rings[0].policy.execution must not be null",
+		},
+		{
+			name:    "policy enforcement",
+			payload: `{"version":11,"servers":[` + baseServer + `],"rings":[{"name":"research","members":["docs"],"skills":[],"policy":{"enforcement":null,"execution":{"ambient_env":"deny","sandbox":"read-only","max_duration":"15m","credential_exposure":"run-process"}}}],"skills":[]}`,
+			expects: "rings[0].policy.enforcement must not be null",
 		},
 	}
 
