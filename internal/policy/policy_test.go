@@ -249,6 +249,30 @@ func TestValidateRequiredRingRejectsUnknownTargetAndSurface(t *testing.T) {
 	}
 }
 
+func TestValidateAttachedRequiredRingsChecksOnlyRecordedSources(t *testing.T) {
+	allowed := []string{"read"}
+	manifest := registry.Manifest{
+		Name:    "docs",
+		Enabled: true,
+		Clients: []string{"codex"},
+		Access:  &registry.AccessProfile{AllowedTools: &allowed},
+	}
+	rings := []registry.Ring{
+		{Name: "advisory", Members: []string{"docs"}},
+		requiredRing("required", "docs"),
+	}
+
+	if err := ValidateAttachedRequiredRings(rings, []string{"advisory"}, []registry.Manifest{manifest}, "codex", SurfacePersistent); err != nil {
+		t.Fatalf("advisory attached ring should remain compatible: %v", err)
+	}
+	if err := ValidateAttachedRequiredRings(rings, []string{"required", "required"}, []registry.Manifest{manifest}, "codex", SurfacePersistent); err == nil || !strings.Contains(err.Error(), "codex persistent policy support is unsupported") {
+		t.Fatalf("required attached ring should fail closed: %v", err)
+	}
+	if err := ValidateAttachedRequiredRings(rings, []string{"missing"}, []registry.Manifest{manifest}, "codex", SurfacePersistent); err == nil || !strings.Contains(err.Error(), `attached ring "missing" is missing`) {
+		t.Fatalf("missing attached ring should fail closed: %v", err)
+	}
+}
+
 func requiredRing(name string, members ...string) registry.Ring {
 	return registry.Ring{
 		Name:    name,

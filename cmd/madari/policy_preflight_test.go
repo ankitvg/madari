@@ -252,6 +252,14 @@ func TestPolicyRequiredAttachedRingSyncFailsBeforeConfigStateOrSkillMutation(t *
 	if result.code == 0 || !strings.Contains(result.stderr, "behavior-affecting native fields") || !strings.Contains(result.stderr, "future_policy") {
 		t.Fatalf("expected attached required ring sync refusal: stdout=%s stderr=%s", result.stdout, result.stderr)
 	}
+	doctorResult := runCmd(store, "doctor", "--client-config", "codex="+configPath)
+	if doctorResult.code == 0 || !strings.Contains(doctorResult.stdout, "codex drift: [error] policy preflight:") || !strings.Contains(doctorResult.stdout, "codex persistent policy support is unsupported") {
+		t.Fatalf("doctor hid attached policy preflight failure: stdout=%s stderr=%s", doctorResult.stdout, doctorResult.stderr)
+	}
+	statusResult := runCmd(store, "status", "--client-config", "codex="+configPath)
+	if statusResult.code == 0 || !strings.Contains(statusResult.stdout, "codex-drift: error policy preflight:") || !strings.Contains(statusResult.stdout, "codex persistent policy support is unsupported") {
+		t.Fatalf("status hid attached policy preflight failure: stdout=%s stderr=%s", statusResult.stdout, statusResult.stderr)
+	}
 	assertPolicyTestFileUnchanged(t, configPath, configBefore)
 	assertPolicyTestFileUnchanged(t, statePath, stateBefore)
 	skillPath := filepath.Join(projectDir, ".agents", "skills", "release", registry.SkillFileName)
