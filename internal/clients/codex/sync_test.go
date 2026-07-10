@@ -211,7 +211,7 @@ STEWREADS_CONFIG_PATH = "~/.config/stewreads/config.toml"
 	}
 }
 
-func TestSyncConflictsOnDisabledUnmanagedEntry(t *testing.T) {
+func TestSyncRefusesDisabledUnmanagedEntry(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "config.toml")
 	statePath := filepath.Join(tmp, "state", "codex-managed.json")
@@ -231,12 +231,15 @@ STEWREADS_CONFIG_PATH = "~/.config/stewreads/config.toml"
 		StatePath:  statePath,
 		DryRun:     true,
 	})
-	if !errors.Is(err, clients.ErrConflict) {
-		t.Fatalf("expected disabled unmanaged entry to conflict, got: %v", err)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("expected disabled unmanaged entry conflict, got: %v", err)
+	}
+	if _, statErr := os.Stat(statePath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("unmanaged conflict wrote state: %v", statErr)
 	}
 }
 
-func TestSyncUpdatesOwnedDisabledEntry(t *testing.T) {
+func TestSyncReenablesOwnedDisabledEntry(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "config.toml")
 	statePath := filepath.Join(tmp, "state", "codex-managed.json")
@@ -259,13 +262,15 @@ STEWREADS_CONFIG_PATH = "~/.config/stewreads/config.toml"
 	result, err := Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
 		ConfigPath: configPath,
 		StatePath:  statePath,
-		DryRun:     true,
 	})
 	if err != nil {
 		t.Fatalf("sync dry-run failed: %v", err)
 	}
 	if !reflect.DeepEqual(result.Updated, []string{"stewreads"}) {
-		t.Fatalf("expected owned disabled entry to be reported updated, got: %+v", result)
+		t.Fatalf("expected registry-enabled server to reconcile native enabled=false, got: %+v", result)
+	}
+	if enabled := readServers(t, configPath)["stewreads"].Enabled; enabled != nil {
+		t.Fatalf("reconciled entry should use Codex's enabled-by-default state: %#v", enabled)
 	}
 }
 

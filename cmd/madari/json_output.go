@@ -22,14 +22,23 @@ type listJSON struct {
 }
 
 type serverJSON struct {
-	Name              string   `json:"name"`
-	Enabled           bool     `json:"enabled"`
-	Transport         string   `json:"transport"`
-	Command           string   `json:"command"`
-	URL               string   `json:"url,omitempty"`
-	BearerTokenEnvVar string   `json:"bearer_token_env_var,omitempty"`
-	Clients           []string `json:"clients"`
-	Sources           []string `json:"sources"`
+	Name              string      `json:"name"`
+	Enabled           bool        `json:"enabled"`
+	Transport         string      `json:"transport"`
+	Command           string      `json:"command"`
+	URL               string      `json:"url,omitempty"`
+	BearerTokenEnvVar string      `json:"bearer_token_env_var,omitempty"`
+	Clients           []string    `json:"clients"`
+	Access            *accessJSON `json:"access,omitempty"`
+	Sources           []string    `json:"sources"`
+}
+
+type accessJSON struct {
+	AllowedTools    *[]string          `json:"allowed_tools,omitempty"`
+	DeniedTools     *[]string          `json:"denied_tools,omitempty"`
+	OAuthScopes     *[]string          `json:"oauth_scopes,omitempty"`
+	DefaultApproval *string            `json:"default_approval,omitempty"`
+	ToolApprovals   *map[string]string `json:"tool_approvals,omitempty"`
 }
 
 type statusJSON struct {
@@ -101,14 +110,15 @@ func ringIssuesToJSON(issues []doctor.RingIssue) []ringIssueJSON {
 }
 
 type driftJSON struct {
-	Target     string   `json:"target"`
-	Scope      string   `json:"scope"`
-	ConfigPath string   `json:"config_path"`
-	Status     string   `json:"status"`
-	Stale      []string `json:"stale"`
-	Missing    []string `json:"missing"`
-	Orphaned   []string `json:"orphaned"`
-	Issue      string   `json:"issue"`
+	Target      string   `json:"target"`
+	Scope       string   `json:"scope"`
+	ConfigPath  string   `json:"config_path"`
+	Status      string   `json:"status"`
+	Stale       []string `json:"stale"`
+	PolicyStale []string `json:"policy_stale"`
+	Missing     []string `json:"missing"`
+	Orphaned    []string `json:"orphaned"`
+	Issue       string   `json:"issue"`
 }
 
 type doctorServerJSON struct {
@@ -120,6 +130,7 @@ type doctorServerJSON struct {
 	URL               string      `json:"url,omitempty"`
 	OAuthResource     string      `json:"oauth_resource,omitempty"`
 	BearerTokenEnvVar string      `json:"bearer_token_env_var,omitempty"`
+	Access            *accessJSON `json:"access,omitempty"`
 	Status            string      `json:"status"`
 	Issues            []issueJSON `json:"issues"`
 }
@@ -151,6 +162,7 @@ type syncJSON struct {
 	DryRun            bool     `json:"dry_run"`
 	Added             []string `json:"added"`
 	Updated           []string `json:"updated"`
+	PolicyUpdated     []string `json:"policy_updated"`
 	Removed           []string `json:"removed"`
 	Unchanged         []string `json:"unchanged"`
 	Skipped           []string `json:"skipped"`
@@ -179,7 +191,12 @@ type ringJSON struct {
 	Members     []string          `json:"members"`
 	Skills      []string          `json:"skills"`
 	Description string            `json:"description"`
+	Policy      *ringPolicyJSON   `json:"policy,omitempty"`
 	Contract    *ringContractJSON `json:"contract,omitempty"`
+}
+
+type ringPolicyJSON struct {
+	Enforcement string `json:"enforcement"`
 }
 
 type ringContractJSON struct {
@@ -212,7 +229,45 @@ func ringToJSON(ring registry.Ring) ringJSON {
 			ExpectedOutputs: nonNilStrings(ring.Contract.ExpectedOutputs),
 		}
 	}
+	if ring.Policy != nil {
+		out.Policy = &ringPolicyJSON{Enforcement: ring.Policy.Enforcement}
+	}
 	return out
+}
+
+func accessToJSON(access *registry.AccessProfile) *accessJSON {
+	if access == nil {
+		return nil
+	}
+	out := &accessJSON{
+		AllowedTools: copySortedStringPointer(access.AllowedTools),
+		DeniedTools:  copySortedStringPointer(access.DeniedTools),
+		OAuthScopes:  copySortedStringPointer(access.OAuthScopes),
+	}
+	if access.DefaultApproval != nil {
+		value := string(*access.DefaultApproval)
+		out.DefaultApproval = &value
+	}
+	if access.ToolApprovals != nil {
+		values := make(map[string]string, len(*access.ToolApprovals))
+		for tool, approval := range *access.ToolApprovals {
+			values[tool] = string(approval)
+		}
+		out.ToolApprovals = &values
+	}
+	return out
+}
+
+func copySortedStringPointer(values *[]string) *[]string {
+	if values == nil {
+		return nil
+	}
+	out := append([]string(nil), (*values)...)
+	sort.Strings(out)
+	if out == nil {
+		out = []string{}
+	}
+	return &out
 }
 
 type ringStatusJSON struct {
@@ -330,14 +385,15 @@ func driftToJSON(reports []doctor.DriftReport) []driftJSON {
 			scope = "default"
 		}
 		out = append(out, driftJSON{
-			Target:     dr.Target,
-			Scope:      scope,
-			ConfigPath: dr.ConfigPath,
-			Status:     string(dr.Status),
-			Stale:      nonNilStrings(dr.Stale),
-			Missing:    nonNilStrings(dr.Missing),
-			Orphaned:   nonNilStrings(dr.Orphaned),
-			Issue:      dr.Issue,
+			Target:      dr.Target,
+			Scope:       scope,
+			ConfigPath:  dr.ConfigPath,
+			Status:      string(dr.Status),
+			Stale:       nonNilStrings(dr.Stale),
+			PolicyStale: nonNilStrings(dr.PolicyStale),
+			Missing:     nonNilStrings(dr.Missing),
+			Orphaned:    nonNilStrings(dr.Orphaned),
+			Issue:       dr.Issue,
 		})
 	}
 	return out

@@ -26,6 +26,78 @@ runtime env key that contains a bearer token. `madari list` and `madari doctor`
 show each server's transport and endpoint so remote entries are visible where
 materialization is pending.
 
+Server manifests can also carry an optional portable `[access]` profile. The
+profile fields are `allowed_tools`, `denied_tools`, `oauth_scopes`,
+`default_approval`, and `[access.tool_approvals]`. Access profiles are stored on
+the server rather than duplicated into rings. See the manifest spec for strict
+validation and presence semantics.
+
+Both `madari add` and `madari install` can create a profile with repeatable
+`--allow-tool`, `--deny-tool`, and `--tool-approval TOOL=BEHAVIOR` flags plus
+`--default-tool-approval BEHAVIOR`. Remote-capable `madari add` also accepts
+repeatable `--oauth-scope` values. Direct TOML or snapshot editing remains the
+way to express an explicit empty list or table clear.
+
+## Capability Policy V1
+
+The portable server shape is:
+
+```toml
+[access]
+allowed_tools = ["issues.get", "issues.list"]
+denied_tools = ["issues.delete"]
+oauth_scopes = ["issues:read"]
+default_approval = "always-prompt"
+
+[access.tool_approvals]
+"issues.get" = "always-allow"
+```
+
+The supported approval values are `inherit`, `automatic`, `always-prompt`, and
+`always-allow`. Raw client-native enum values are rejected. `inherit` explicitly
+clears an approval override. Approval behavior controls client prompts and is
+not an authorization boundary.
+
+Presence is preserved across TOML, snapshots, the store, and JSON output. No
+`[access]` section means no Madari policy declaration. An absent field preserves
+the corresponding native field during persistent sync; render and run omit it.
+Explicitly empty tool/scope arrays clear that native override, a present empty
+`[access.tool_approvals]` table clears the per-tool table, and an empty or absent
+allowlist is unbounded.
+
+Rings request mandatory enforcement separately:
+
+```toml
+[policy]
+enforcement = "required"
+```
+
+`madari ring create ... --enforcement required` writes the same ring policy.
+
+A required ring must have an explicit non-empty allowlist on every server. All
+members must exist, be enabled, target the selected client, and compile exactly
+for the selected operation surface. Missing, disabled, wrong-target, unbounded,
+unsupported, and unrepresentable members are errors; Madari never substitutes
+an advisory prompt or a weaker native control.
+
+Policy support is declared independently for persistent sync/attach, render,
+and run. Codex compiles all five V1 fields on all three surfaces. Every policy
+surface for other targets remains unsupported.
+Required sync or attach fails before config, managed state, or skill mutation;
+required render fails before partial output; and required run fails before skill
+materialization or client execution. Detach remains available for cleanup.
+Manifests without `[access]` and rings without `[policy]` preserve existing
+behavior.
+
+Access profiles outside required rings are stored, validated, exported,
+imported, reported, and compiled when the selected target surface supports
+them. They do not turn an advisory ring into a mandatory enforcement claim.
+
+`oauth_scopes` is requested and client-configured; it does not prove that an
+OAuth provider granted the scopes or that a token contains them.
+`[policy.execution]` is reserved for a later runtime contract and is rejected in
+V1.
+
 ## Install Workflow
 
 ```bash
@@ -81,6 +153,17 @@ as Codex `http_headers`. `sse` manifests stay pending (Codex's documented
 remote support is Streamable HTTP), and `timeout_ms` has no Codex equivalent
 and is not emitted.
 
+Codex compiles `allowed_tools`, `denied_tools`, `oauth_scopes`,
+`default_approval`, and per-tool approvals into `enabled_tools`,
+`disabled_tools`, `scopes`, `default_tools_approval_mode`, and
+`tools.<tool>.approval_mode`. Routine sync preserves undeclared native policy
+fields, including on core command or URL updates. Explicit empty declarations
+and portable `inherit` remove the corresponding native override. A required
+ring refuses unknown behavior-affecting native fields or native approval values
+that Madari cannot prove equivalent instead of rewriting them. Policy-only
+differences are reported separately by doctor/status while remaining a subset
+of ordinary stale entries.
+
 `vibe` sync targets Vibe's user config (`$VIBE_HOME/config.toml`, or
 `~/.vibe/config.toml` when `VIBE_HOME` is unset). Static `[env]` values are
 written into `[[mcp_servers]]` stdio entries. Existing unmanaged HTTP,
@@ -126,6 +209,12 @@ replaces the whole contract from a standalone TOML file, `ring contract show`
 prints that same standalone file shape, and `ring contract clear` removes the
 contract. Contract commands do not change members, skills, attach state, sync
 behavior, or render output.
+
+Ring policy is distinct from the advisory contract. A ring file may set
+`[policy] enforcement = "required"`, but each referenced server remains the
+source of truth for its own `[access]` profile. Codex required attach, render,
+and run are supported when every member compiles exactly. Unsupported target
+surfaces fail during preflight.
 
 ```toml
 summary = "Collect source context and prepare a research brief."
@@ -175,6 +264,11 @@ with warnings for targets, transports, or auth modes without support (codex
 SSE, bearer-token-env auth outside Codex, claude-desktop, vibe).
 Ring skill members are not embedded in MCP render output; use `ring attach`
 for native skill materialization.
+Policy-required render does not use the legacy omit-and-warn behavior: if any
+restriction cannot be represented exactly, it fails before writing partial
+stdout. Codex render emits the five native policy fields, with dotted server and
+tool names quoted as literal TOML keys. Other render targets remain unsupported
+for required policy.
 Ephemeral-session recipe:
 
 ```bash
@@ -221,6 +315,12 @@ checks runtime env keys by name, and reports the launch plan. Run never writes
 client config, creates managed state, or permanently materializes skill
 packages.
 
+When any selected server declares `[access]`, Codex execution also adds
+`--strict-config` and requires a stable Codex CLI 0.139.x release. This applies
+to advisory profiles as well as policy-required rings so Madari never drops a
+declared restriction. Legacy runs with no access declarations omit the newer
+flag and version gate, preserving their existing compatibility behavior.
+
 Unlike `ring render`, `run` is fail-closed. A disabled member, missing member,
 unsupported remote transport or auth mode, missing runtime env key, or
 unsupported skill target blocks the plan instead of silently omitting that
@@ -228,6 +328,21 @@ capability.
 Codex execution also blocks when a non-empty admin/system skill root is
 present, because Madari cannot guarantee ring-only skill isolation in that
 case.
+Policy-required run adds a stricter preflight boundary: every declared member
+restriction must compile exactly before any temporary skill package is
+materialized or the client starts. Codex maps every V1 access field into the
+single ephemeral `mcp_servers={...}` override. The plan and executor both check
+the bounded version range Madari has validated for this complete contract.
+`--strict-config` is an additional config-parser safeguard, not proof that
+nested MCP policy fields retain their semantics outside the validated range.
+
+Dry-run text and JSON report each server's portable declared policy, the
+Codex-native effective policy, support state, and enforcement classification.
+If a server is shared, any selected required ring wins and is listed in
+`required_by`. The control labels are intentionally distinct: tool filtering is
+client-enforced; OAuth scopes are requested/client-configured and
+provider-unverified; approval modes are client controls rather than an
+authorization boundary; contracts and skills remain advisory instructions.
 
 ## Skills
 
@@ -289,12 +404,15 @@ madari import --file madari-snapshot.json --apply
 ```
 
 Snapshots are versioned JSON documents containing server manifests, ring
-definitions, and skill packages. Export writes the current snapshot version
-with `servers`, `rings`, and `skills`. Snapshot version 6 stores skills as
-deterministic package file entries with relative paths, base64 content, and
-file modes; older snapshots with a single skill `content` string remain
-importable and are converted to package-backed `SKILL.md`. Import is a dry-run
-by default; `--apply` adds or updates listed servers, rings, and skills, never
+definitions, and skill packages. Export writes V10 with `servers`, `rings`, and
+`skills`; V10 adds server access profiles and ring policy. V1 through V9 remain
+importable. An older snapshot version carrying V10 fields is rejected so access
+or enforcement data cannot be discarded silently. Snapshot version 6 introduced
+deterministic skill package file entries with relative paths, base64 content,
+and file modes; older snapshots with a single skill `content` string remain
+importable and are converted to package-backed `SKILL.md`. Import validates the
+complete resulting server/ring graph before its first write. It is a dry-run by
+default; `--apply` adds or updates listed servers, rings, and skills, never
 deletes entries absent from the snapshot, and never attaches or syncs imported
 rings.
 Ring membership changes converge through the normal reconciliation pass on
@@ -307,9 +425,12 @@ the next sync, attach, or detach.
 single JSON document on stdout with nothing else.
 Every payload carries the envelope fields `schema_version` (currently `1`)
 and `command`. Field additions are backward-compatible; renames or removals
-bump `schema_version`. List-valued fields are always present (empty arrays,
-never `null`) when their containing object is emitted. Optional objects such as
-ring `contract` are omitted when absent.
+bump `schema_version`. Except for presence-sensitive access-profile fields,
+list-valued fields are always present (empty arrays, never `null`) when their
+containing object is emitted. Optional objects such as server `access`, ring
+`contract`, and ring `policy` are omitted when absent. Inside `access`, absent
+fields are omitted while explicitly cleared arrays or the per-tool table are
+emitted as `[]` or `{}` so presence semantics survive the JSON round trip.
 
 ```bash
 madari list --json
@@ -343,6 +464,10 @@ the target client output unchanged.
       "transport": "stdio",
       "command": "/abs/path/stewreads-mcp",
       "clients": ["claude-desktop"],
+      "access": {
+        "allowed_tools": ["books.create"],
+        "default_approval": "always-prompt"
+      },
       "sources": ["standalone"]
     }
   ]
@@ -381,6 +506,7 @@ summaries cover every sync target):
       "config_path": "/path/to/claude_desktop_config.json",
       "status": "ready",
       "stale": [],
+      "policy_stale": [],
       "missing": [],
       "orphaned": [],
       "issue": ""
@@ -390,10 +516,14 @@ summaries cover every sync target):
 ```
 
 Drift entries appear per target+scope that has managed entries: `stale`
-(materialized value differs from the manifest), `missing` (managed entry
-deleted from the client config), and `orphaned` (no longer desired; the next
-sync removes it). Drift is warning-level and never changes the exit code by
-itself.
+(materialized value differs from the manifest), `policy_stale` (the subset of
+`stale` whose declared access policy differs from the target's materialized
+policy), `missing` (managed entry deleted from the client config), and
+`orphaned` (no longer desired; the next sync removes it). Policy drift covers
+client-enforced tool filtering, requested/client-configured OAuth scopes, and
+client approval controls. It does not prove scopes were granted by the OAuth
+provider, and approval behavior is not an authorization boundary. Drift is
+warning-level and never changes the exit code by itself.
 
 `madari doctor --json`:
 
@@ -438,6 +568,7 @@ itself.
       "config_path": "/path/to/claude_desktop_config.json",
       "status": "warn",
       "stale": ["stewreads"],
+      "policy_stale": [],
       "missing": [],
       "orphaned": [],
       "issue": ""
@@ -458,6 +589,7 @@ itself.
   "dry_run": true,
   "added": ["stewreads"],
   "updated": [],
+  "policy_updated": [],
   "removed": [],
   "unchanged": [],
   "skipped": [],
@@ -470,6 +602,10 @@ itself.
 }
 ```
 
+For Codex, `policy_updated` is the sorted subset of `updated` whose declared
+access fields differ from the native configuration. Undeclared preserved fields
+do not appear as policy drift.
+
 `madari run <client> --ring <ring> --dry-run --json`:
 
 ```json
@@ -481,6 +617,13 @@ itself.
   "ready": true,
   "runner_available": true,
   "prompt_provided": true,
+  "policy_required": true,
+  "policy_controls": {
+    "tool_filtering": "client-enforced",
+    "oauth_scopes": "requested/client-configured/provider-unverified",
+    "approvals": "client-control/not-authorization",
+    "instructions": "contracts-and-skills-advisory"
+  },
   "servers": [
     {
       "name": "cloud-sql",
@@ -490,7 +633,20 @@ itself.
       "auth": "bearer_token_env_var",
       "runtime_env": ["CLOUDSQL_MCP_TOKEN"],
       "rings": ["cloudsql-readonly"],
-      "issues": []
+      "issues": [],
+      "policy": {
+        "declared": {"allowed_tools": ["query"]},
+        "ring_enforcement": "required",
+        "required_by": ["cloudsql-readonly"],
+        "effective": {
+          "enabled_tools": ["query"],
+          "disabled_tools": [],
+          "requested_oauth_scopes": [],
+          "tool_approval_modes": {}
+        },
+        "support_state": "supported",
+        "enforcement_classification": "exact"
+      }
     }
   ],
   "skills": [],
@@ -514,6 +670,7 @@ itself.
       "members": ["arxiv", "stewreads"],
       "skills": ["release"],
       "description": "Research helpers",
+      "policy": {"enforcement": "required"},
       "contract": {
         "summary": "Collect source context and prepare a research brief.",
         "good_for": ["source collection", "evidence review"],
@@ -538,6 +695,7 @@ itself.
     "members": ["arxiv", "stewreads"],
     "skills": ["release"],
     "description": "Research helpers",
+    "policy": {"enforcement": "required"},
     "contract": {
       "summary": "Collect source context and prepare a research brief.",
       "good_for": ["source collection", "evidence review"],

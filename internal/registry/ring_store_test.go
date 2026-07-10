@@ -109,6 +109,71 @@ func TestAddRingRejectsUnknownSkills(t *testing.T) {
 	}
 }
 
+func TestAddRequiredRingRejectsUnboundedMembers(t *testing.T) {
+	store := newRingTestStore(t)
+	ring := Ring{
+		Name:    "bounded",
+		Members: []string{"stewreads", "arxiv"},
+		Policy:  &RingPolicy{Enforcement: PolicyEnforcementRequired},
+	}
+	err := store.AddRing(ring)
+	if err == nil || !strings.Contains(err.Error(), "servers without an explicit non-empty allowed_tools allowlist: arxiv, stewreads") {
+		t.Fatalf("expected sorted unbounded-member rejection, got: %v", err)
+	}
+	if _, getErr := store.GetRing("bounded"); !errors.Is(getErr, ErrRingNotFound) {
+		t.Fatalf("required ring validation failure must write nothing, got: %v", getErr)
+	}
+}
+
+func TestAddRequiredRingAcceptsBoundedMembers(t *testing.T) {
+	store := newRingTestStore(t)
+	for _, name := range []string{"stewreads", "arxiv"} {
+		manifest, err := store.Get(name)
+		if err != nil {
+			t.Fatalf("get manifest %s: %v", name, err)
+		}
+		manifest.Access = &AccessProfile{AllowedTools: stringListPointer("read")}
+		if err := store.Save(manifest); err != nil {
+			t.Fatalf("save bounded manifest %s: %v", name, err)
+		}
+	}
+	ring := Ring{
+		Name:    "bounded",
+		Members: []string{"stewreads", "arxiv"},
+		Policy:  &RingPolicy{Enforcement: PolicyEnforcementRequired},
+	}
+	if err := store.AddRing(ring); err != nil {
+		t.Fatalf("add bounded required ring: %v", err)
+	}
+	got, err := store.GetRing("bounded")
+	if err != nil {
+		t.Fatalf("get bounded required ring: %v", err)
+	}
+	if !got.RequiresPolicyEnforcement() {
+		t.Fatalf("expected required policy to persist: %#v", got.Policy)
+	}
+}
+
+func TestAddRequiredRingRejectsExplicitEmptyAllowlist(t *testing.T) {
+	store := newRingTestStore(t)
+	manifest, err := store.Get("stewreads")
+	if err != nil {
+		t.Fatalf("get manifest: %v", err)
+	}
+	manifest.Access = &AccessProfile{AllowedTools: stringListPointer()}
+	if err := store.Save(manifest); err != nil {
+		t.Fatalf("save explicit allowlist clear: %v", err)
+	}
+	err = store.AddRing(Ring{
+		Name:    "bounded",
+		Members: []string{"stewreads"},
+		Policy:  &RingPolicy{Enforcement: PolicyEnforcementRequired},
+	})
+	if err == nil || !strings.Contains(err.Error(), "without an explicit non-empty allowed_tools") {
+		t.Fatalf("expected explicit empty allowlist rejection, got: %v", err)
+	}
+}
+
 func TestListRingsEmptyWithoutDirectory(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "servers"))
 	rings, err := store.ListRings()

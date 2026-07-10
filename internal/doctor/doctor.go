@@ -12,6 +12,7 @@ import (
 	"github.com/ankitvg/madari/internal/clients"
 	"github.com/ankitvg/madari/internal/clients/codex"
 	"github.com/ankitvg/madari/internal/clients/syncshared"
+	"github.com/ankitvg/madari/internal/policy"
 	"github.com/ankitvg/madari/internal/registry"
 	"github.com/pelletier/go-toml/v2"
 )
@@ -47,6 +48,7 @@ type ServerReport struct {
 	URL               string
 	OAuthResource     string
 	BearerTokenEnvVar string
+	Access            *registry.AccessProfile
 	Status            Status
 	Issues            []Issue
 }
@@ -104,6 +106,10 @@ type DriftTarget struct {
 	StatePath string
 	// ConfigPath overrides the adapter's default config path when non-empty.
 	ConfigPath string
+	// SkillAttachedRings carries ring ownership found in the target's skill
+	// attachment state. A skill-only attachment must participate in policy
+	// preflight even when the server managed state is empty.
+	SkillAttachedRings []string
 }
 
 // DriftReport diffs materialized client entries against current manifests
@@ -115,6 +121,9 @@ type DriftReport struct {
 	// Stale are managed entries whose materialized values differ from the
 	// manifest.
 	Stale []string
+	// PolicyStale is the subset of Stale whose declared access policy differs
+	// from the target's materialized policy.
+	PolicyStale []string
 	// Missing are managed entries absent from the client config.
 	Missing []string
 	// Orphaned are managed entries no longer desired; the next sync removes
@@ -281,6 +290,22 @@ func checkDrift(manifests []registry.Manifest, targets []DriftTarget, rings []re
 			reports = append(reports, dr)
 			continue
 		}
+		attachedRings := append(syncshared.AttachedRings(state), target.SkillAttachedRings...)
+		if len(state) == 0 && len(attachedRings) == 0 {
+			continue
+		}
+		if err := policy.ValidateAttachedRequiredRings(
+			rings,
+			attachedRings,
+			manifests,
+			target.Adapter.Target(),
+			policy.SurfacePersistent,
+		); err != nil {
+			dr.Status = StatusError
+			dr.Issue = fmt.Sprintf("policy preflight: %v", err)
+			reports = append(reports, dr)
+			continue
+		}
 		if len(state) == 0 {
 			continue
 		}
@@ -301,13 +326,14 @@ func checkDrift(manifests []registry.Manifest, targets []DriftTarget, rings []re
 
 		dr.ConfigPath = plan.ConfigPath
 		dr.Stale = append([]string(nil), plan.Updated...)
+		dr.PolicyStale = append([]string(nil), plan.PolicyUpdated...)
 		for _, name := range plan.Added {
 			if _, managed := state[name]; managed {
 				dr.Missing = append(dr.Missing, name)
 			}
 		}
 		dr.Orphaned = append([]string(nil), plan.Removed...)
-		if len(dr.Stale)+len(dr.Missing)+len(dr.Orphaned) > 0 {
+		if len(dr.Stale)+len(dr.PolicyStale)+len(dr.Missing)+len(dr.Orphaned) > 0 {
 			dr.Status = StatusWarning
 		}
 		reports = append(reports, dr)
@@ -385,6 +411,7 @@ func inspectServer(manifest registry.Manifest, envLookup func(string) string, ta
 		URL:               manifest.URL,
 		OAuthResource:     manifest.OAuthResource,
 		BearerTokenEnvVar: manifest.BearerTokenEnvVar,
+		Access:            manifest.Access,
 		Status:            StatusSkipped,
 		Issues:            []Issue{},
 	}

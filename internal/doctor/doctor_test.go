@@ -3,13 +3,16 @@ package doctor
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/ankitvg/madari/internal/clients"
 	"github.com/ankitvg/madari/internal/clients/claudecode"
+	"github.com/ankitvg/madari/internal/clients/codex"
 	"github.com/ankitvg/madari/internal/clients/gemini"
+	"github.com/ankitvg/madari/internal/clients/syncshared"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -18,13 +21,14 @@ type testAdapter struct {
 	target         string
 	configPath     string
 	supportsRemote bool
+	syncResult     clients.SyncResult
 }
 
 func (a testAdapter) Target() string                     { return a.target }
 func (a testAdapter) DefaultConfigPath() (string, error) { return a.configPath, nil }
 func (a testAdapter) SupportsRemote(string) bool         { return a.supportsRemote }
 func (a testAdapter) Sync(_ []registry.Manifest, _ clients.SyncOptions) (clients.SyncResult, error) {
-	return clients.SyncResult{}, nil
+	return a.syncResult, nil
 }
 func (a testAdapter) AttachRing(_ registry.Ring, _ []registry.Manifest, _ clients.SyncOptions) (clients.SyncResult, error) {
 	return clients.SyncResult{}, nil
@@ -720,6 +724,123 @@ func TestRunDriftDetection(t *testing.T) {
 	}
 	if report.Summary.Warning < 1 {
 		t.Fatalf("expected drift to count as warning, got summary: %#v", report.Summary)
+	}
+}
+
+func TestRunDriftReportsPolicyStaleAsSubset(t *testing.T) {
+	tmp := t.TempDir()
+	store := registry.NewStore(filepath.Join(tmp, "servers"))
+	configPath := filepath.Join(tmp, "config.toml")
+	statePath := filepath.Join(tmp, "state", "codex-managed.json")
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+	state := `{"version":2,"managed_servers":{"core-drift":["standalone"],"policy-drift":["standalone"]}}`
+	if err := os.WriteFile(statePath, []byte(state), 0o644); err != nil {
+		t.Fatalf("write state fixture: %v", err)
+	}
+
+	adapter := testAdapter{
+		target:     "codex",
+		configPath: configPath,
+		syncResult: clients.SyncResult{
+			ConfigPath:    configPath,
+			Updated:       []string{"core-drift", "policy-drift"},
+			PolicyUpdated: []string{"policy-drift"},
+		},
+	}
+	report, err := Run(store, Options{
+		DriftTargets: []DriftTarget{{
+			Adapter:    adapter,
+			StatePath:  statePath,
+			ConfigPath: configPath,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("doctor run failed: %v", err)
+	}
+	if len(report.Drift) != 1 {
+		t.Fatalf("expected one drift report, got: %#v", report.Drift)
+	}
+	dr := report.Drift[0]
+	if dr.Status != StatusWarning {
+		t.Fatalf("expected policy drift warning, got: %#v", dr)
+	}
+	if len(dr.Stale) != 2 || dr.Stale[0] != "core-drift" || dr.Stale[1] != "policy-drift" {
+		t.Fatalf("unexpected stale entries: %#v", dr.Stale)
+	}
+	if len(dr.PolicyStale) != 1 || dr.PolicyStale[0] != "policy-drift" {
+		t.Fatalf("expected policy-drift as policy stale subset, got: %#v", dr.PolicyStale)
+	}
+	if report.Summary.Warning != 1 {
+		t.Fatalf("expected one drift warning without double counting policy subset, got: %#v", report.Summary)
+	}
+}
+
+func TestRunDriftPreflightsSkillAttachedRingWithoutServerState(t *testing.T) {
+	tmp := t.TempDir()
+	store := registry.NewStore(filepath.Join(tmp, "servers"))
+	commandPath := writeTestExecutable(t, tmp, "policy-mcp")
+	if err := store.Save(registry.Manifest{
+		Name: "docs", Command: commandPath, Enabled: true, Clients: []string{"codex"},
+	}); err != nil {
+		t.Fatalf("save unbounded policy manifest: %v", err)
+	}
+	ring := registry.Ring{
+		Name: "workflow", Members: []string{"docs"}, Skills: []string{"release"},
+		Policy: &registry.RingPolicy{Enforcement: registry.PolicyEnforcementRequired},
+	}
+	adapter := testAdapter{target: "codex"}
+	report, err := Run(store, Options{
+		Rings: []registry.Ring{ring},
+		DriftTargets: []DriftTarget{{
+			Adapter: adapter, StatePath: filepath.Join(tmp, "missing-server-state.json"),
+			SkillAttachedRings: []string{"workflow"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("doctor run failed: %v", err)
+	}
+	if len(report.Drift) != 1 || report.Drift[0].Status != StatusError ||
+		!strings.Contains(report.Drift[0].Issue, "policy preflight") ||
+		!strings.Contains(report.Drift[0].Issue, "non-empty [access].allowed_tools allowlist") {
+		t.Fatalf("skill-only policy attachment bypassed drift preflight: %#v", report.Drift)
+	}
+}
+
+func TestRunDriftUsesCodexDeclaredPolicyComparator(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix fixture mode bits are used in this test")
+	}
+	tmp := t.TempDir()
+	store := registry.NewStore(filepath.Join(tmp, "servers"))
+	commandPath := writeTestExecutable(t, tmp, "policy-mcp")
+	allowed := []string{"read"}
+	if err := store.Save(registry.Manifest{
+		Name: "docs", Command: commandPath, Enabled: true, Clients: []string{"codex"},
+		Access: &registry.AccessProfile{AllowedTools: &allowed},
+	}); err != nil {
+		t.Fatalf("save policy manifest: %v", err)
+	}
+	configPath := filepath.Join(tmp, "config.toml")
+	config := "[mcp_servers.docs]\ncommand = \"" + commandPath + "\"\nenabled_tools = [\"write\"]\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write Codex config: %v", err)
+	}
+	statePath := filepath.Join(tmp, "state", "codex-managed.json")
+	if err := syncshared.SaveManagedState(statePath, map[string][]string{"docs": {syncshared.SourceStandalone}}); err != nil {
+		t.Fatalf("write managed state: %v", err)
+	}
+
+	adapter := codex.Adapter{}
+	report, err := Run(store, Options{DriftTargets: []DriftTarget{{
+		Adapter: adapter, StatePath: statePath, ConfigPath: configPath,
+	}}})
+	if err != nil {
+		t.Fatalf("doctor run: %v", err)
+	}
+	if len(report.Drift) != 1 || !reflect.DeepEqual(report.Drift[0].Stale, []string{"docs"}) || !reflect.DeepEqual(report.Drift[0].PolicyStale, []string{"docs"}) {
+		t.Fatalf("Codex policy drift was not propagated: %#v", report.Drift)
 	}
 }
 

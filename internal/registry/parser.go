@@ -15,6 +15,8 @@ const (
 	sectionRequiredEnv = "required_env"
 	sectionSecretEnv   = "secret_env"
 	sectionSecretHdrs  = "secret_headers"
+	sectionAccess      = "access"
+	sectionAccessTools = "access.tool_approvals"
 )
 
 // ParseManifest parses a constrained TOML manifest format and rejects unknown fields.
@@ -27,6 +29,8 @@ func ParseManifest(data []byte) (Manifest, error) {
 	}
 
 	section := sectionTop
+	accessSectionSeen := false
+	accessToolsSectionSeen := false
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	lineNo := 0
 
@@ -50,6 +54,26 @@ func ParseManifest(data []byte) (Manifest, error) {
 			switch name {
 			case sectionEnv, sectionHeaders, sectionRequiredEnv, sectionSecretEnv, sectionSecretHdrs:
 				section = name
+			case sectionAccess:
+				if accessSectionSeen {
+					return Manifest{}, fmt.Errorf("line %d: duplicate section %q", lineNo, name)
+				}
+				accessSectionSeen = true
+				section = name
+				if m.Access == nil {
+					m.Access = &AccessProfile{}
+				}
+			case sectionAccessTools:
+				if accessToolsSectionSeen {
+					return Manifest{}, fmt.Errorf("line %d: duplicate section %q", lineNo, name)
+				}
+				accessToolsSectionSeen = true
+				section = name
+				if m.Access == nil {
+					m.Access = &AccessProfile{}
+				}
+				approvals := map[string]ApprovalBehavior{}
+				m.Access.ToolApprovals = &approvals
 			default:
 				return Manifest{}, fmt.Errorf("line %d: unknown section %q", lineNo, name)
 			}
@@ -108,6 +132,23 @@ func ParseManifest(data []byte) (Manifest, error) {
 				return Manifest{}, fmt.Errorf("line %d: invalid secret_headers keys: %w", lineNo, err)
 			}
 			m.SecretHeaders.Keys = arr
+		case sectionAccess:
+			if err := parseAccessKey(m.Access, key, value); err != nil {
+				return Manifest{}, fmt.Errorf("line %d: %w", lineNo, err)
+			}
+		case sectionAccessTools:
+			tool, err := parseDynamicTableKey(key)
+			if err != nil {
+				return Manifest{}, fmt.Errorf("line %d: invalid tool_approvals tool name: %w", lineNo, err)
+			}
+			approval, err := parseString(value)
+			if err != nil {
+				return Manifest{}, fmt.Errorf("line %d: invalid approval for tool %q: %w", lineNo, tool, err)
+			}
+			if _, exists := (*m.Access.ToolApprovals)[tool]; exists {
+				return Manifest{}, fmt.Errorf("line %d: duplicate tool_approvals tool %q", lineNo, tool)
+			}
+			(*m.Access.ToolApprovals)[tool] = ApprovalBehavior(approval)
 		default:
 			return Manifest{}, fmt.Errorf("line %d: unknown parse section", lineNo)
 		}
@@ -199,7 +240,99 @@ func MarshalManifest(m Manifest) ([]byte, error) {
 		fmt.Fprintf(&b, "keys = %s\n", formatStringArray(keys))
 	}
 
+	if m.Access != nil {
+		b.WriteString("\n[access]\n")
+		if m.Access.AllowedTools != nil {
+			values := append([]string(nil), (*m.Access.AllowedTools)...)
+			sort.Strings(values)
+			fmt.Fprintf(&b, "allowed_tools = %s\n", formatStringArray(values))
+		}
+		if m.Access.DeniedTools != nil {
+			values := append([]string(nil), (*m.Access.DeniedTools)...)
+			sort.Strings(values)
+			fmt.Fprintf(&b, "denied_tools = %s\n", formatStringArray(values))
+		}
+		if m.Access.OAuthScopes != nil {
+			values := append([]string(nil), (*m.Access.OAuthScopes)...)
+			sort.Strings(values)
+			fmt.Fprintf(&b, "oauth_scopes = %s\n", formatStringArray(values))
+		}
+		if m.Access.DefaultApproval != nil {
+			fmt.Fprintf(&b, "default_approval = %s\n", strconv.Quote(string(*m.Access.DefaultApproval)))
+		}
+		if m.Access.ToolApprovals != nil {
+			b.WriteString("\n[access.tool_approvals]\n")
+			tools := make([]string, 0, len(*m.Access.ToolApprovals))
+			for tool := range *m.Access.ToolApprovals {
+				tools = append(tools, tool)
+			}
+			sort.Strings(tools)
+			for _, tool := range tools {
+				fmt.Fprintf(&b, "%s = %s\n", strconv.Quote(tool), strconv.Quote(string((*m.Access.ToolApprovals)[tool])))
+			}
+		}
+	}
+
 	return []byte(b.String()), nil
+}
+
+func parseAccessKey(access *AccessProfile, key, value string) error {
+	if access == nil {
+		return fmt.Errorf("access profile is required")
+	}
+	switch key {
+	case "allowed_tools":
+		if access.AllowedTools != nil {
+			return fmt.Errorf("duplicate key %q in [access]", key)
+		}
+		values, err := parseStringArray(value)
+		if err != nil {
+			return fmt.Errorf("invalid access allowed_tools: %w", err)
+		}
+		access.AllowedTools = &values
+	case "denied_tools":
+		if access.DeniedTools != nil {
+			return fmt.Errorf("duplicate key %q in [access]", key)
+		}
+		values, err := parseStringArray(value)
+		if err != nil {
+			return fmt.Errorf("invalid access denied_tools: %w", err)
+		}
+		access.DeniedTools = &values
+	case "oauth_scopes":
+		if access.OAuthScopes != nil {
+			return fmt.Errorf("duplicate key %q in [access]", key)
+		}
+		values, err := parseStringArray(value)
+		if err != nil {
+			return fmt.Errorf("invalid access oauth_scopes: %w", err)
+		}
+		access.OAuthScopes = &values
+	case "default_approval":
+		if access.DefaultApproval != nil {
+			return fmt.Errorf("duplicate key %q in [access]", key)
+		}
+		parsed, err := parseString(value)
+		if err != nil {
+			return fmt.Errorf("invalid access default_approval: %w", err)
+		}
+		approval := ApprovalBehavior(parsed)
+		access.DefaultApproval = &approval
+	default:
+		return fmt.Errorf("unknown key %q in [access]", key)
+	}
+	return nil
+}
+
+func parseDynamicTableKey(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "\"") || strings.HasSuffix(raw, "\"") {
+		return parseString(raw)
+	}
+	if raw == "" {
+		return "", fmt.Errorf("empty key")
+	}
+	return raw, nil
 }
 
 func parseTopLevel(m *Manifest, key, value string) error {

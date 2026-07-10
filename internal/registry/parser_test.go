@@ -123,6 +123,137 @@ func TestParseAndMarshalRemoteManifestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestParseAndMarshalAccessProfileRoundTrip(t *testing.T) {
+	payload := `name = "remote-tools"
+transport = "http"
+url = "https://example.com/mcp"
+enabled = true
+clients = ["codex"]
+
+[access]
+allowed_tools = ["repos.search", "issues.read"]
+denied_tools = ["issues.delete"]
+oauth_scopes = ["repo.read", "openid"]
+default_approval = "always-prompt"
+
+[access.tool_approvals]
+"repos.search" = "automatic"
+"issues.read" = "always-allow"
+`
+
+	manifest, err := ParseManifest([]byte(payload))
+	if err != nil {
+		t.Fatalf("parse access profile: %v", err)
+	}
+	if manifest.Access == nil || manifest.Access.AllowedTools == nil || manifest.Access.ToolApprovals == nil {
+		t.Fatalf("expected access profile presence to survive parse: %#v", manifest.Access)
+	}
+	if got := (*manifest.Access.ToolApprovals)["issues.read"]; got != ApprovalBehaviorAlwaysAllow {
+		t.Fatalf("unexpected dotted-tool approval: %q", got)
+	}
+
+	encoded, err := MarshalManifest(manifest)
+	if err != nil {
+		t.Fatalf("marshal access profile: %v", err)
+	}
+	wantAccess := `[access]
+allowed_tools = ["issues.read", "repos.search"]
+denied_tools = ["issues.delete"]
+oauth_scopes = ["openid", "repo.read"]
+default_approval = "always-prompt"
+
+[access.tool_approvals]
+"issues.read" = "always-allow"
+"repos.search" = "automatic"
+`
+	if !strings.Contains(string(encoded), wantAccess) {
+		t.Fatalf("expected deterministic access profile:\n%s\ngot:\n%s", wantAccess, encoded)
+	}
+
+	roundTripped, err := ParseManifest(encoded)
+	if err != nil {
+		t.Fatalf("parse marshaled access profile: %v", err)
+	}
+	if !accessProfilesEqual(manifest.Access, roundTripped.Access) {
+		t.Fatalf("access profile roundtrip mismatch: %#v vs %#v", manifest.Access, roundTripped.Access)
+	}
+}
+
+func TestParseAndMarshalAccessExplicitClears(t *testing.T) {
+	payload := `name = "tools"
+command = "/usr/bin/env"
+args = []
+enabled = true
+clients = ["codex"]
+
+[access]
+allowed_tools = []
+denied_tools = []
+oauth_scopes = []
+
+[access.tool_approvals]
+`
+	manifest, err := ParseManifest([]byte(payload))
+	if err != nil {
+		t.Fatalf("parse explicit access clears: %v", err)
+	}
+	if manifest.Access == nil || manifest.Access.AllowedTools == nil || manifest.Access.DeniedTools == nil || manifest.Access.OAuthScopes == nil || manifest.Access.ToolApprovals == nil {
+		t.Fatalf("expected every explicit clear to remain present: %#v", manifest.Access)
+	}
+	if manifest.HasExplicitToolAllowlist() {
+		t.Fatalf("empty allowed_tools is a clear, not a bounded allowlist")
+	}
+
+	encoded, err := MarshalManifest(manifest)
+	if err != nil {
+		t.Fatalf("marshal explicit access clears: %v", err)
+	}
+	for _, want := range []string{"allowed_tools = []", "denied_tools = []", "oauth_scopes = []", "[access.tool_approvals]"} {
+		if !strings.Contains(string(encoded), want) {
+			t.Fatalf("expected %q in marshaled clears:\n%s", want, encoded)
+		}
+	}
+	roundTripped, err := ParseManifest(encoded)
+	if err != nil {
+		t.Fatalf("parse marshaled clears: %v", err)
+	}
+	if !accessProfilesEqual(manifest.Access, roundTripped.Access) {
+		t.Fatalf("explicit clear presence changed after roundtrip")
+	}
+}
+
+func TestParseManifestRejectsInvalidAccessSyntax(t *testing.T) {
+	base := `name = "tools"
+command = "/usr/bin/env"
+args = []
+enabled = true
+clients = ["codex"]
+`
+	tests := []struct {
+		name    string
+		extra   string
+		expects string
+	}{
+		{name: "empty access", extra: "\n[access]\n", expects: "access must declare at least one field"},
+		{name: "unknown access key", extra: "\n[access]\nunknown = []\n", expects: `unknown key "unknown" in [access]`},
+		{name: "unknown nested section", extra: "\n[access.unknown]\nvalue = \"x\"\n", expects: "unknown section"},
+		{name: "duplicate access key", extra: "\n[access]\nallowed_tools = [\"read\"]\nallowed_tools = [\"search\"]\n", expects: `duplicate key "allowed_tools"`},
+		{name: "duplicate access section", extra: "\n[access]\nallowed_tools = [\"read\"]\n[access]\ndenied_tools = []\n", expects: "duplicate section"},
+		{name: "duplicate approvals section", extra: "\n[access.tool_approvals]\n\"read\" = \"automatic\"\n[access.tool_approvals]\n", expects: "duplicate section"},
+		{name: "duplicate approval tool", extra: "\n[access.tool_approvals]\n\"read\" = \"automatic\"\n\"read\" = \"always-prompt\"\n", expects: `duplicate tool_approvals tool "read"`},
+		{name: "malformed quoted tool", extra: "\n[access.tool_approvals]\n\"read = \"automatic\"\n", expects: "invalid tool_approvals tool name"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseManifest([]byte(base + tt.extra))
+			if err == nil || !strings.Contains(err.Error(), tt.expects) {
+				t.Fatalf("expected error containing %q, got: %v", tt.expects, err)
+			}
+		})
+	}
+}
+
 func TestParseManifestRejectsUnknownSection(t *testing.T) {
 	manifest := `
 name = "stewreads"

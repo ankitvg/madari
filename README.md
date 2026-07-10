@@ -1,9 +1,9 @@
 # madari (muh-DAA-ree)
 
 Madari is a local-first CLI for managing MCP capability setup across AI clients.
-It registers MCP servers, stores reusable skills, groups them into rings,
-plans ring-based agent launches, and syncs only the entries it owns into
-client config files.
+It registers MCP servers and their optional access profiles, stores reusable
+skills, groups them into rings, plans ring-based agent launches, and syncs only
+the entries it owns into client config files.
 
 Madari is intentionally static: no daemon, proxy, or background mux. It helps
 the AI clients and agents you already use get the right capabilities with
@@ -116,7 +116,9 @@ syntax.
 
 **Servers** are MCP server capabilities. Madari stores stdio commands or remote
 HTTP/SSE URLs, environment or header metadata, supported clients, and ownership
-state.
+state. A server may also declare one portable `[access]` profile with an exact
+tool allowlist, an optional deny list, requested OAuth scopes, and default or
+per-tool approval behavior.
 
 **Skills** are official Agent Skill packages: directories with `SKILL.md`
 frontmatter and optional bundled files such as `references/`, `scripts/`, and
@@ -124,11 +126,13 @@ frontmatter and optional bundled files such as `references/`, `scripts/`, and
 rings, where Madari materializes the full package for the target.
 
 **Rings** are named capability sets. A ring can contain server members and skill
-members, then attach to a client as one unit. Rings can also carry an advisory
-contract for delegation: when to use the ring, what context to provide, and
-what outputs to expect. Contracts can be managed from standalone TOML files with
-`madari ring contract`. Ring ownership is reference counted, so overlapping
-rings and standalone entries detach cleanly in any order.
+members, then attach to a client as one unit. A ring `[policy]` can require exact
+compilation of every server member's access profile for the selected target.
+Rings can also carry an advisory contract for delegation: when to use the ring,
+what context to provide, and what outputs to expect. Contracts never authorize
+tool access. They can be managed from standalone TOML files with `madari ring
+contract`. Ring ownership is reference counted, so overlapping rings and
+standalone entries detach cleanly in any order.
 
 **Sync** writes managed server entries into client config files. Madari backs up
 before writing, skips ineligible entries instead of aborting the whole sync, and
@@ -150,6 +154,17 @@ MCP servers still receive the caller's non-secret `HOME`, `USERPROFILE`, and
 `CODEX_HOME` values when present so home-based server credentials keep working;
 secret declarations for those isolated env keys are blocked. Other clients
 remain dry-run only for now.
+Every access-bearing Codex run requires a stable Codex CLI 0.139.x release and
+passes the complete profile through one strict ephemeral config override. A
+required ring upgrades that supported profile from advisory to exact
+enforcement and blocks before temporary skill materialization on any downgrade.
+
+Capability Policy Contract V1 preserves existing behavior for manifests without
+`[access]` and rings without `[policy]`. Codex compiles all five V1 access fields
+for persistent sync/attach, render, and ephemeral run. Required operations fail
+during preflight if a member, native field, or installed Codex version cannot
+represent the contract exactly. Other target policy surfaces remain unsupported
+until their own compilers land.
 
 ## Safety Model
 
@@ -165,6 +180,12 @@ remain dry-run only for now.
   stays in the runtime environment
 - `madari run` checks runtime env keys by name without printing their values;
   Codex execution passes bearer-token env var names, not token values
+- Policy-required operations fail closed instead of approximating or dropping
+  an access restriction
+- OAuth scopes are requested and client-configured; Madari cannot prove that an
+  OAuth provider granted them
+- Tool approval behavior controls client prompts and is not an authorization
+  boundary
 - Diagnostics through `madari doctor`, `madari status`, and `madari ring status`
 
 ## Supported Clients
@@ -183,6 +204,12 @@ remote manifests and report them as pending. Remote entries that require
 `oauth_resource` or `bearer_token_env_var` currently materialize only for
 `codex`.
 
+Transport, auth, and skill support are separate from capability-policy support.
+Codex supports exact policy compilation on persistent sync/attach, render, and
+run. Every policy surface for other clients remains unsupported. Legacy
+operations remain available; rings with `[policy] enforcement = "required"`
+block whenever the selected target surface lacks an exact compiler.
+
 Madari can materialize skills for:
 
 - `claude-code`
@@ -195,6 +222,7 @@ Madari can materialize skills for:
 - `docs/cli-reference.md`
 - `docs/architecture.md`
 - `docs/manifest-spec.md`
+- `docs/adr/003-capability-policy-contract-v1.md`
 - `docs/troubleshooting.md`
 
 ## Development

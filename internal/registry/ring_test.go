@@ -20,6 +20,7 @@ func TestParseAndMarshalRingRoundTrip(t *testing.T) {
 			OptionalContext: []string{"artifact id", "request id"},
 			ExpectedOutputs: []string{"findings summary", "recommended next check"},
 		},
+		Policy: &RingPolicy{Enforcement: PolicyEnforcementRequired},
 	}
 
 	encoded, err := MarshalRing(in)
@@ -42,6 +43,9 @@ func TestParseAndMarshalRingRoundTrip(t *testing.T) {
 	}
 	if !ringContractsEqual(out.Contract, in.Contract) {
 		t.Fatalf("expected contract to survive roundtrip, got: %#v", out.Contract)
+	}
+	if !ringPoliciesEqual(out.Policy, in.Policy) {
+		t.Fatalf("expected policy to survive roundtrip, got: %#v", out.Policy)
 	}
 }
 
@@ -95,6 +99,79 @@ expected_outputs = ["findings", "evidence", "next check"]
 `
 	if string(encoded) != expected {
 		t.Fatalf("expected contract order to be preserved:\n%s\ngot:\n%s", expected, encoded)
+	}
+}
+
+func TestParseAndMarshalRequiredRingPolicy(t *testing.T) {
+	payload := `name = "bounded"
+members = ["tools"]
+
+[policy]
+enforcement = "required"
+`
+	ring, err := ParseRing([]byte(payload))
+	if err != nil {
+		t.Fatalf("parse policy ring: %v", err)
+	}
+	if !ring.RequiresPolicyEnforcement() || ring.Policy == nil || !ring.Policy.Required() {
+		t.Fatalf("expected required policy, got: %#v", ring.Policy)
+	}
+	encoded, err := MarshalRing(ring)
+	if err != nil {
+		t.Fatalf("marshal policy ring: %v", err)
+	}
+	if string(encoded) != payload {
+		t.Fatalf("policy ring output drift:\nwant:\n%s\ngot:\n%s", payload, encoded)
+	}
+}
+
+func TestMarshalRingOrdersContractBeforePolicy(t *testing.T) {
+	ring := Ring{
+		Name:     "bounded",
+		Members:  []string{"tools"},
+		Contract: &RingContract{Summary: "Use bounded tools"},
+		Policy:   &RingPolicy{Enforcement: PolicyEnforcementRequired},
+	}
+	encoded, err := MarshalRing(ring)
+	if err != nil {
+		t.Fatalf("marshal contract and policy: %v", err)
+	}
+	want := `name = "bounded"
+members = ["tools"]
+
+[contract]
+summary = "Use bounded tools"
+
+[policy]
+enforcement = "required"
+`
+	if string(encoded) != want {
+		t.Fatalf("contract/policy order drift:\nwant:\n%s\ngot:\n%s", want, encoded)
+	}
+}
+
+func TestParseRingRejectsInvalidPolicy(t *testing.T) {
+	base := "name = \"bounded\"\nmembers = [\"tools\"]\n"
+	tests := []struct {
+		name    string
+		extra   string
+		expects string
+	}{
+		{name: "missing enforcement", extra: "\n[policy]\n", expects: `policy enforcement must be "required"`},
+		{name: "invalid enforcement", extra: "\n[policy]\nenforcement = \"best-effort\"\n", expects: `policy enforcement must be "required"`},
+		{name: "padded enforcement", extra: "\n[policy]\nenforcement = \" required \"\n", expects: `policy enforcement must be "required"`},
+		{name: "unknown key", extra: "\n[policy]\nunknown = \"value\"\n", expects: `unknown key "unknown" in [policy]`},
+		{name: "duplicate key", extra: "\n[policy]\nenforcement = \"required\"\nenforcement = \"required\"\n", expects: `duplicate key "enforcement"`},
+		{name: "duplicate section", extra: "\n[policy]\nenforcement = \"required\"\n[policy]\n", expects: `duplicate section "policy"`},
+		{name: "reserved execution", extra: "\n[policy.execution]\nmode = \"sandbox\"\n", expects: `section "policy.execution" is reserved`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseRing([]byte(base + tt.extra))
+			if err == nil || !strings.Contains(err.Error(), tt.expects) {
+				t.Fatalf("expected error containing %q, got: %v", tt.expects, err)
+			}
+		})
 	}
 }
 
@@ -251,6 +328,11 @@ func TestRingValidate(t *testing.T) {
 			name:    "invalid skill name",
 			mutate:  func(r *Ring) { r.Members = nil; r.Skills = []string{"Not Valid"} },
 			expects: "invalid skill",
+		},
+		{
+			name:    "invalid policy enforcement",
+			mutate:  func(r *Ring) { r.Policy = &RingPolicy{Enforcement: "best-effort"} },
+			expects: "policy enforcement must be",
 		},
 	}
 

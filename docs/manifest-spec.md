@@ -94,6 +94,69 @@ case-insensitive). Use `[secret_headers]` to mark additional headers whose
 values must stay out of committed configs. `ring render` never emits secret
 header values; the warning names the headers to provide manually.
 
+### `[access]`
+
+An optional access profile owned by this server manifest. No `[access]` section
+means a legacy manifest makes no Madari access-policy declaration. A present
+section must declare at least one field:
+
+- `allowed_tools` (array of strings, optional): exact tool allowlist.
+- `denied_tools` (array of strings, optional): second-stage deny list applied
+  after the allowlist.
+- `oauth_scopes` (array of strings, optional): scopes Madari asks the selected
+  client to request. A non-empty declaration is remote-only because stdio
+  transports have no OAuth client flow for Madari to configure.
+- `default_approval` (string, optional): portable default approval behavior.
+
+`oauth_scopes` records requested, client-configured values. Madari can verify
+that a target config carries them, but cannot prove that an OAuth provider
+granted them or that a token contains them.
+
+Approval values use Madari's portable vocabulary only:
+
+- `inherit`: explicitly remove the target-native override and use the client
+  default.
+- `automatic`: let the client choose from its native tool metadata and policy.
+- `always-prompt`: prompt for every invocation covered by the value.
+- `always-allow`: do not add an approval prompt for the invocation.
+
+Raw client-native approval enum values are invalid Madari values. Approval
+behavior controls client prompts; it does not authorize a server-side action.
+The server and OAuth provider remain responsible for authorization.
+
+### `[access.tool_approvals]`
+
+An optional table mapping literal tool names to the same portable approval
+values. Dotted tool names are identifiers, not nested paths, and must be quoted:
+
+```toml
+[access]
+allowed_tools = ["issues.get", "issues.list"]
+denied_tools = ["issues.delete"]
+oauth_scopes = ["issues:read"]
+default_approval = "always-prompt"
+
+[access.tool_approvals]
+"issues.get" = "always-allow"
+```
+
+Presence is part of the access contract:
+
+- An absent field inside `[access]` tells persistent sync to preserve that
+  native field on an existing managed entry. Render and ephemeral run omit the
+  field and use the target default.
+- Explicitly empty `allowed_tools`, `denied_tools`, or `oauth_scopes` arrays
+  clear the corresponding native override. An empty `allowed_tools` array is
+  unbounded from Madari's perspective.
+- An absent `[access.tool_approvals]` table preserves the existing native table.
+  A present empty table clears all native per-tool overrides.
+- `default_approval = "inherit"` explicitly clears the native default approval
+  override.
+
+Required enforcement needs an explicit, non-empty `allowed_tools` declaration.
+Both an absent allowlist and an explicitly cleared allowlist are unbounded and
+invalid for a required ring.
+
 ## Example
 
 Stdio server:
@@ -138,6 +201,15 @@ description = "Official Cloud SQL remote MCP server"
   `CLOUDSQL_MCP_TOKEN`.
 - `[secret_headers]` is remote-only; names must be valid header names and
   unique (case-insensitive).
+- Unknown `[access]` fields and nested access sections are rejected.
+- Tool and scope values, including per-tool approval names, must be non-blank
+  and have no surrounding whitespace. Array values must be unique. Set-like
+  arrays and per-tool keys marshal in lexical order.
+- A tool cannot appear in both `allowed_tools` and `denied_tools`.
+- A denied tool cannot have a per-tool approval. When a non-empty allowlist is
+  declared, each per-tool approval must name an allowed tool.
+- `default_approval` and every `[access.tool_approvals]` value must be one of
+  `inherit`, `automatic`, `always-prompt`, or `always-allow`.
 
 ## Ring Files
 
@@ -154,13 +226,43 @@ document per ring at
   reference managed skill entries by name only — rings never embed Markdown
   content.
 - `description` (string, optional): friendly description.
+- `[policy]` (optional): required-enforcement metadata described below.
 
 At least one `members` or `skills` entry is required. Every referenced server
 and skill must exist in the registry when a ring is created or imported.
 Ring manifests support only the top-level fields above plus the optional
-`[contract]` section. Unknown top-level keys, unknown sections, and unknown
-`[contract]` keys are rejected. Files are written deterministically with sorted
-server and skill members; contract arrays preserve authored order.
+`[contract]` and `[policy]` sections. Unknown top-level keys, unknown sections,
+and unknown contract or policy keys are rejected. Files are written
+deterministically with sorted server and skill members; contract arrays preserve
+authored order.
+
+### `[policy]`
+
+A ring can require exact access-profile enforcement for the selected operation:
+
+```toml
+[policy]
+enforcement = "required"
+```
+
+`required` is the only V1 enforcement value. Every server member must exist, be
+enabled, target the selected client, and declare an explicit non-empty
+`allowed_tools` list. The selected target and operation surface must represent
+every declared access field without approximation. Missing, disabled,
+wrong-target, unbounded, unsupported, or unrepresentable members block the
+operation.
+
+Policy capability support is declared separately for persistent sync/attach,
+render, and run. Codex compiles every V1 access field on all three surfaces.
+Access-bearing Codex runs additionally require a validated stable CLI 0.139.x
+release. All other target policy surfaces remain unsupported. Any
+required operation that cannot compile exactly fails during preflight: sync and
+attach before config, state, or skills change; render before partial output; and
+run before skill materialization or client execution. Detach remains available
+for cleanup. Rings without `[policy]` preserve legacy behavior.
+
+`[policy.execution]` is reserved for a later runtime-policy contract and is
+rejected in V1.
 
 ### `[contract]`
 
@@ -200,6 +302,15 @@ required_context = ["research question"]
 optional_context = ["time window", "known source URLs"]
 expected_outputs = ["findings summary", "sources inspected", "recommended next check"]
 ```
+
+## Snapshot Compatibility
+
+Snapshot format V10 adds server access profiles and ring policies. Snapshot V1
+through V9 documents remain importable; entries from formats without those
+fields make no new access or enforcement declaration. An older snapshot version
+that carries V10 access or policy fields is rejected so version mismatch cannot
+silently discard policy data. Import validates the complete resulting
+server/ring graph before its first write.
 
 ## Skill Packages
 
