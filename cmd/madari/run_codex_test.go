@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/ankitvg/madari/internal/registry"
+	"github.com/pelletier/go-toml/v2"
 )
 
 func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
@@ -423,6 +424,60 @@ func TestCodexRunServerConfigValueBlocksSecretIsolatedEnvKeys(t *testing.T) {
 	}
 }
 
+func TestCodexRunConfigOverridesCompilePolicyDeterministically(t *testing.T) {
+	store := newTestStore(t)
+	allowed := []string{"tools.write", "tools.inherit", "tools.read\x7f"}
+	denied := []string{"tools.remove", "tools.delete"}
+	scopes := []string{"repo.write", "repo.read"}
+	defaultApproval := registry.ApprovalBehaviorAlwaysPrompt
+	toolApprovals := map[string]registry.ApprovalBehavior{
+		"tools.write":    registry.ApprovalBehaviorAlwaysAllow,
+		"tools.inherit":  registry.ApprovalBehaviorInherit,
+		"tools.read\x7f": registry.ApprovalBehaviorAutomatic,
+	}
+	if err := store.Save(registry.Manifest{
+		Name: "docs.server", Transport: registry.TransportHTTP, URL: "https://example.com/mcp",
+		Enabled: true, Clients: []string{"codex"},
+		Access: &registry.AccessProfile{
+			AllowedTools: &allowed, DeniedTools: &denied, OAuthScopes: &scopes,
+			DefaultApproval: &defaultApproval, ToolApprovals: &toolApprovals,
+		},
+	}); err != nil {
+		t.Fatalf("save policy server: %v", err)
+	}
+	empty := []string{}
+	inherit := registry.ApprovalBehaviorInherit
+	clearApprovals := map[string]registry.ApprovalBehavior{"tools.clear": registry.ApprovalBehaviorInherit}
+	if err := store.Save(registry.Manifest{
+		Name: "z-last", Transport: registry.TransportHTTP, URL: "https://example.com/last",
+		Enabled: true, Clients: []string{"codex"},
+		Access: &registry.AccessProfile{
+			AllowedTools: &empty, DeniedTools: &empty, OAuthScopes: &empty,
+			DefaultApproval: &inherit, ToolApprovals: &clearApprovals,
+		},
+	}); err != nil {
+		t.Fatalf("save explicit-clear server: %v", err)
+	}
+
+	overrides, err := codexRunConfigOverrides(store, runLaunchPlan{
+		Servers: []runPlanServer{{Name: "z-last"}, {Name: "docs.server"}},
+	}, t.TempDir())
+	if err != nil {
+		t.Fatalf("compile Codex run overrides: %v", err)
+	}
+	want := `mcp_servers={ "docs.server" = { url = "https://example.com/mcp", required = true, enabled_tools = ["tools.inherit", "tools.read\u007F", "tools.write"], disabled_tools = ["tools.delete", "tools.remove"], scopes = ["repo.read", "repo.write"], default_tools_approval_mode = "prompt", tools = { "tools.read\u007F" = { approval_mode = "auto" }, "tools.write" = { approval_mode = "approve" } } }, z-last = { url = "https://example.com/last", required = true } }`
+	if len(overrides) != 1 || overrides[0] != want {
+		t.Fatalf("unexpected deterministic policy override:\nwant %#v\ngot  %#v", []string{want}, overrides)
+	}
+	if strings.ContainsRune(overrides[0], '\x7f') || strings.Contains(overrides[0], `approval_mode = ""`) {
+		t.Fatalf("override did not omit inherit or escape controls: %q", overrides[0])
+	}
+	var parsed map[string]any
+	if err := toml.Unmarshal([]byte(overrides[0]), &parsed); err != nil {
+		t.Fatalf("compiled policy override is not valid TOML: %v\n%s", err, overrides[0])
+	}
+}
+
 func withCodexAdminSkillRoots(t *testing.T, roots []string) {
 	t.Helper()
 	previous := codexAdminSkillRoots
@@ -448,6 +503,7 @@ func installFakeCodex(t *testing.T, exitCode int) string {
 	logPath := filepath.Join(t.TempDir(), "codex-args.bin")
 	name := "codex"
 	script := []byte("#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then printf 'codex-cli 0.139.0\\n'; exit 0; fi\n" +
 		"printf '%s' \"$PWD\" > '" + logPath + ".pwd'\n" +
 		"printf '%s' \"$HOME\" > '" + logPath + ".home'\n" +
 		"printf '%s' \"$CODEX_HOME\" > '" + logPath + ".codexhome'\n" +
@@ -464,7 +520,7 @@ func installFakeCodex(t *testing.T, exitCode int) string {
 		"exit " + strconv.Itoa(exitCode) + "\n")
 	if runtime.GOOS == "windows" {
 		name = "codex.bat"
-		script = []byte("@echo off\r\nexit /b " + strconv.Itoa(exitCode) + "\r\n")
+		script = []byte("@echo off\r\nif \"%1\"==\"--version\" (\r\n  echo codex-cli 0.139.0\r\n  exit /b 0\r\n)\r\nexit /b " + strconv.Itoa(exitCode) + "\r\n")
 	}
 	codexPath := filepath.Join(binDir, name)
 	if err := os.WriteFile(codexPath, script, 0o755); err != nil {

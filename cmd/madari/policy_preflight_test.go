@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -268,8 +269,9 @@ func TestPolicyRequiredAttachedRingSyncFailsBeforeConfigStateOrSkillMutation(t *
 	}
 }
 
-func TestPolicyRequiredRingMakesRunPlanNotReady(t *testing.T) {
+func TestPolicyRequiredRingMakesCodexRunPlanExact(t *testing.T) {
 	store := newTestStore(t)
+	installFakeCodex(t, 0)
 	savePolicyTestManifest(t, store, "docs", "codex")
 	savePolicyTestRing(t, store, "restricted", []string{"docs"}, nil, true)
 
@@ -277,16 +279,20 @@ func TestPolicyRequiredRingMakesRunPlanNotReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build run plan: %v", err)
 	}
-	if plan.Ready {
-		t.Fatalf("required policy must block execution while run compiler is unsupported: %#v", plan)
+	if !plan.Ready {
+		t.Fatalf("required Codex policy run should be ready: %#v", plan)
 	}
-	if !containsPolicyTestSubstring(plan.Errors, "codex run policy support is unsupported") {
-		t.Fatalf("run plan missing policy support error: %#v", plan.Errors)
+	if len(plan.Servers) != 1 || plan.Servers[0].Policy.SupportState != "supported" || plan.Servers[0].Policy.EnforcementClassification != "exact" {
+		t.Fatalf("run plan missing exact policy classification: %#v", plan.Servers)
+	}
+	if plan.Servers[0].Policy.Effective == nil || !reflect.DeepEqual(plan.Servers[0].Policy.Effective.EnabledTools, []string{"read"}) {
+		t.Fatalf("run plan missing effective policy: %#v", plan.Servers[0].Policy)
 	}
 }
 
-func TestPolicyRequiredSkillOnlyRingAttachesButRunRemainsBlocked(t *testing.T) {
+func TestPolicyRequiredSkillOnlyRingAttachesAndRunCompilesAfterMemberEdit(t *testing.T) {
 	store := newTestStore(t)
+	installFakeCodex(t, 0)
 	projectDir := t.TempDir()
 	chdirForTest(t, projectDir)
 	skillSource := writeSkillFile(t, t.TempDir(), "release.md", "# Release\n")
@@ -318,8 +324,8 @@ func TestPolicyRequiredSkillOnlyRingAttachesButRunRemainsBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build run plan: %v", err)
 	}
-	if plan.Ready || !containsPolicyTestSubstring(plan.Errors, "codex run has no lossless policy compiler yet") {
-		t.Fatalf("skill-only required run must be blocked: %#v", plan)
+	if !plan.Ready || len(plan.Servers) != 1 || plan.Servers[0].Policy.EnforcementClassification != "exact" {
+		t.Fatalf("required run should compile independently of persistent ownership: %#v", plan)
 	}
 }
 

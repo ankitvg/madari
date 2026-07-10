@@ -154,12 +154,17 @@ MCP servers still receive the caller's non-secret `HOME`, `USERPROFILE`, and
 `CODEX_HOME` values when present so home-based server credentials keep working;
 secret declarations for those isolated env keys are blocked. Other clients
 remain dry-run only for now.
+Every access-bearing Codex run requires a stable Codex CLI 0.139.x release and
+passes the complete profile through one strict ephemeral config override. A
+required ring upgrades that supported profile from advisory to exact
+enforcement and blocks before temporary skill materialization on any downgrade.
 
 Capability Policy Contract V1 preserves existing behavior for manifests without
-`[access]` and rings without `[policy]`. Codex persistent sync/attach and render
-compile all five V1 access fields. Required operations fail during preflight if
-a member or native field cannot be represented exactly; Codex run and all other
-target policy surfaces remain unsupported until their own compilers land.
+`[access]` and rings without `[policy]`. Codex compiles all five V1 access fields
+for persistent sync/attach, render, and ephemeral run. Required operations fail
+during preflight if a member, native field, or installed Codex version cannot
+represent the contract exactly. Other target policy surfaces remain unsupported
+until their own compilers land.
 
 ## Safety Model
 
@@ -200,8 +205,8 @@ remote manifests and report them as pending. Remote entries that require
 `codex`.
 
 Transport, auth, and skill support are separate from capability-policy support.
-Codex supports exact policy compilation on persistent sync/attach and render.
-Codex run and every policy surface for other clients remain unsupported. Legacy
+Codex supports exact policy compilation on persistent sync/attach, render, and
+run. Every policy surface for other clients remains unsupported. Legacy
 operations remain available; rings with `[policy] enforcement = "required"`
 block whenever the selected target surface lacks an exact compiler.
 

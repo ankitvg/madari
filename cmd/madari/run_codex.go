@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	codexclient "github.com/ankitvg/madari/internal/clients/codex"
 	"github.com/ankitvg/madari/internal/clients/syncshared"
 	"github.com/ankitvg/madari/internal/registry"
 )
@@ -19,6 +20,11 @@ func runCodex(a cliApp, plan runLaunchPlan, prompt string) error {
 	codexPath, err := exec.LookPath("codex")
 	if err != nil {
 		return fmt.Errorf("codex not found in PATH; install Codex CLI or use --dry-run to inspect the launch plan")
+	}
+	if runPlanUsesPolicyContract(plan) {
+		if err := validateCodexPolicyRunCompatibility(); err != nil {
+			return err
+		}
 	}
 
 	workingDir, err := os.Getwd()
@@ -48,7 +54,11 @@ func runCodex(a cliApp, plan runLaunchPlan, prompt string) error {
 		return err
 	}
 
-	args := []string{"exec", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--cd", runRoot}
+	args := []string{"exec"}
+	if runPlanHasDeclaredAccess(plan) {
+		args = append(args, "--strict-config")
+	}
+	args = append(args, "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--cd", runRoot)
 	for _, override := range overrides {
 		args = append(args, "-c", override)
 	}
@@ -63,6 +73,22 @@ func runCodex(a cliApp, plan runLaunchPlan, prompt string) error {
 		return fmt.Errorf("run codex exec: %w", err)
 	}
 	return nil
+}
+
+func runPlanUsesPolicyContract(plan runLaunchPlan) bool {
+	if plan.PolicyRequired {
+		return true
+	}
+	return runPlanHasDeclaredAccess(plan)
+}
+
+func runPlanHasDeclaredAccess(plan runLaunchPlan) bool {
+	for _, server := range plan.Servers {
+		if server.Policy.Declared != nil || server.Manifest.Access != nil {
+			return true
+		}
+	}
+	return false
 }
 
 var codexAdminSkillRoots = []string{
@@ -189,17 +215,29 @@ func withEnvValue(env []string, key, value string) []string {
 }
 
 func codexRunConfigOverrides(store *registry.Store, plan runLaunchPlan, workingDir string) ([]string, error) {
-	manifests, err := store.List()
-	if err != nil {
-		return nil, err
-	}
 	callerEnv, err := codexCallerIsolatedEnv()
 	if err != nil {
 		return nil, err
 	}
-	byName := make(map[string]registry.Manifest, len(manifests))
-	for _, manifest := range manifests {
-		byName[manifest.Name] = manifest
+	byName := make(map[string]registry.Manifest, len(plan.Servers))
+	needsStoreFallback := false
+	for _, server := range plan.Servers {
+		if server.Manifest.Name == server.Name {
+			byName[server.Name] = server.Manifest
+		} else {
+			needsStoreFallback = true
+		}
+	}
+	if needsStoreFallback {
+		manifests, err := store.List()
+		if err != nil {
+			return nil, err
+		}
+		for _, manifest := range manifests {
+			if _, planned := byName[manifest.Name]; !planned {
+				byName[manifest.Name] = manifest
+			}
+		}
 	}
 
 	names := make([]string, 0, len(plan.Servers))
@@ -261,6 +299,7 @@ func codexRunServerConfigValue(manifest registry.Manifest, workingDir string, ca
 		if len(manifest.Headers) > 0 {
 			fields = append(fields, fmt.Sprintf("http_headers = %s", tomlInlineStringMap(manifest.Headers)))
 		}
+		fields = append(fields, codexRunAccessConfigFields(manifest.Access)...)
 		return "{ " + strings.Join(fields, ", ") + " }", nil
 	}
 	if issues := codexRunServerPlanIssues(manifest); len(issues) > 0 {
@@ -278,7 +317,39 @@ func codexRunServerConfigValue(manifest registry.Manifest, workingDir string, ca
 	if env := codexRunStaticEnv(manifest, callerEnv); len(env) > 0 {
 		fields = append(fields, fmt.Sprintf("env = %s", tomlInlineStringMap(env)))
 	}
+	fields = append(fields, codexRunAccessConfigFields(manifest.Access)...)
 	return "{ " + strings.Join(fields, ", ") + " }", nil
+}
+
+func codexRunAccessConfigFields(access *registry.AccessProfile) []string {
+	compiled := codexclient.CompileAccess(access)
+	fields := make([]string, 0, 5)
+	if compiled.EnabledTools != nil && len(*compiled.EnabledTools) > 0 {
+		fields = append(fields, fmt.Sprintf("enabled_tools = %s", tomlStringArray(*compiled.EnabledTools)))
+	}
+	if compiled.DisabledTools != nil && len(*compiled.DisabledTools) > 0 {
+		fields = append(fields, fmt.Sprintf("disabled_tools = %s", tomlStringArray(*compiled.DisabledTools)))
+	}
+	if compiled.Scopes != nil && len(*compiled.Scopes) > 0 {
+		fields = append(fields, fmt.Sprintf("scopes = %s", tomlStringArray(*compiled.Scopes)))
+	}
+	if compiled.DefaultApproval != nil && *compiled.DefaultApproval != "" {
+		fields = append(fields, fmt.Sprintf("default_tools_approval_mode = %s", tomlString(*compiled.DefaultApproval)))
+	}
+	if compiled.ToolApprovals != nil {
+		tools := make([]string, 0, len(*compiled.ToolApprovals))
+		for _, tool := range sortedMapKeys(*compiled.ToolApprovals) {
+			approval := (*compiled.ToolApprovals)[tool]
+			if approval == "" {
+				continue
+			}
+			tools = append(tools, fmt.Sprintf("%s = { approval_mode = %s }", tomlKey(tool), tomlString(approval)))
+		}
+		if len(tools) > 0 {
+			fields = append(fields, "tools = { "+strings.Join(tools, ", ")+" }")
+		}
+	}
+	return fields
 }
 
 func codexRunServerPlanIssues(manifest registry.Manifest) []string {
