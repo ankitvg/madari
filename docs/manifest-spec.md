@@ -50,7 +50,9 @@ that require `oauth_resource` or `bearer_token_env_var` stay pending for those
 clients until equivalent auth config shapes are validated. `oauth_resource` is
 for clients and servers that support OAuth resource metadata;
 `bearer_token_env_var` stores only the env var name, never the bearer token
-value.
+value. For `madari run codex`, the named value is read and frozen during launch
+compilation, then exposed to the bounded Codex run process so the configured
+remote recipient can use it. It is not a brokered or per-request credential.
 
 ### `[headers]`
 
@@ -63,11 +65,19 @@ credential headers follow the `[secret_headers]` placement policy below.
 
 ### `[env]`
 
-Key/value static environment variables for stdio transports.
+Key/value static environment variables for stdio transports. During
+`madari run codex`, these values are attached only to the declared stdio server
+configuration; isolated home and temporary-path keys cannot be overridden.
 
 ### `[required_env]`
 
 - `keys` (array of strings): env vars that must exist in runtime context.
+
+For `madari run codex`, required values are read once while compiling the
+immutable launch artifact. The Codex process receives only a documented
+platform baseline, isolated home and temporary paths, and the union of runtime
+keys explicitly declared by selected manifests. It does not inherit the caller's
+ambient environment.
 
 ### `[secret_env]`
 
@@ -79,6 +89,12 @@ Key/value static environment variables for stdio transports.
   write static secret values into Codex config. Vibe sync targets the user
   config, so static secret values are allowed there like other user-scoped
   configs.
+
+For a bounded Codex run, secret runtime values are frozen in memory and omitted
+from hashes and reporting. They remain visible to the Codex run process and the
+declared stdio server. Codex shell subprocesses use an independently configured
+environment policy with `inherit = "none"`, so MCP credential values are not
+automatically copied into shell commands.
 
 ### `[secret_headers]`
 
@@ -226,43 +242,93 @@ document per ring at
   reference managed skill entries by name only — rings never embed Markdown
   content.
 - `description` (string, optional): friendly description.
-- `[policy]` (optional): required-enforcement metadata described below.
+- `[policy]` (optional): access-enforcement and bounded-execution metadata
+  described below.
 
 At least one `members` or `skills` entry is required. Every referenced server
 and skill must exist in the registry when a ring is created or imported.
 Ring manifests support only the top-level fields above plus the optional
-`[contract]` and `[policy]` sections. Unknown top-level keys, unknown sections,
-and unknown contract or policy keys are rejected. Files are written
-deterministically with sorted server and skill members; contract arrays preserve
-authored order.
+`[contract]`, `[policy]`, and `[policy.execution]` sections. Unknown top-level
+keys, unknown sections, and unknown contract or policy keys are rejected. Files
+are written deterministically with sorted server and skill members; contract
+arrays preserve authored order.
 
 ### `[policy]`
 
-A ring can require exact access-profile enforcement for the selected operation:
+A ring can require exact enforcement for every policy guarantee selected by the
+operation:
 
 ```toml
 [policy]
 enforcement = "required"
 ```
 
-`required` is the only V1 enforcement value. Every server member must exist, be
-enabled, target the selected client, and declare an explicit non-empty
-`allowed_tools` list. The selected target and operation surface must represent
-every declared access field without approximation. Missing, disabled,
-wrong-target, unbounded, unsupported, or unrepresentable members block the
-operation.
+`required` is the only enforcement value. The `enforcement` key is optional when
+the ring declares only advisory execution policy. For required access policy,
+every server member must exist, be enabled, target the selected client, and
+declare an explicit non-empty `allowed_tools` list. The selected target and
+operation surface must represent every declared access field without
+approximation. Missing, disabled, wrong-target, unbounded, unsupported, or
+unrepresentable members block the operation.
 
 Policy capability support is declared separately for persistent sync/attach,
 render, and run. Codex compiles every V1 access field on all three surfaces.
-Access-bearing Codex runs additionally require a validated stable CLI 0.139.x
-release. All other target policy surfaces remain unsupported. Any
+Every Codex run requires a validated stable CLI 0.139.x release and uses strict
+configuration parsing. All other target policy surfaces remain unsupported. Any
 required operation that cannot compile exactly fails during preflight: sync and
 attach before config, state, or skills change; render before partial output; and
 run before skill materialization or client execution. Detach remains available
-for cleanup. Rings without `[policy]` preserve legacy behavior.
+for cleanup. Rings without required enforcement make no mandatory access claim;
+the bounded execution defaults described below still apply to Codex run.
 
-`[policy.execution]` is reserved for a later runtime-policy contract and is
-rejected in V1.
+### `[policy.execution]`
+
+Bounded execution policy is optional. When present it is all-or-nothing and
+requires exactly the four currently supported values:
+
+```toml
+[policy.execution]
+ambient_env = "deny"
+sandbox = "read-only"
+max_duration = "15m"
+credential_exposure = "run-process"
+```
+
+- `ambient_env` must be `deny`.
+- `sandbox` must be `read-only`.
+- `max_duration` must be a positive Go duration with no surrounding whitespace,
+  such as `30s`, `15m`, or `1h30m`.
+- `credential_exposure` must be `run-process`.
+
+Partial sections, unknown keys, and other values are invalid. The execution
+section can appear without `[policy] enforcement = "required"`; in that form it
+is advisory. If enforcement is required, any execution guarantee Madari cannot
+provide blocks the run.
+
+Safe effective defaults apply to every Codex run even when selected rings omit
+this section: denied ambient environment, read-only Codex sandbox, a 15-minute
+maximum, and run-process credential exposure. Multiple selected rings compose
+by taking the shortest declared maximum; if none declares one, the maximum is
+the default 15 minutes. The run flag `--max-duration` can shorten, but never
+extend, the selected maximum.
+
+Madari isolates `HOME`, `USERPROFILE`, `CODEX_HOME`, `TMPDIR`, `TEMP`, and `TMP`
+(plus the Windows application-data paths), freezes Codex authentication and
+declared runtime values in the immutable launch artifact, and configures Codex
+shell environment inheritance as `none`. Bearer, static, and runtime-declared
+credentials remain visible to the bounded run process or declared MCP recipient;
+this policy does not promise a credential broker or token TTL.
+
+The Codex read-only sandbox does not confine a local stdio MCP server that Codex
+spawns as a separate process. Filesystem and network confinement for such a
+server are unverified. A required execution policy therefore blocks rings with
+stdio members; advisory execution policy remains runnable but is reported as
+degraded and unverified.
+
+The maximum applies to the complete contained process tree. Timeout and
+cancellation terminate that tree on supported Unix and Windows platforms. This
+is an honest bounded-lifetime mechanism, not adversarial container or kernel
+isolation.
 
 ### `[contract]`
 
@@ -305,12 +371,14 @@ expected_outputs = ["findings summary", "sources inspected", "recommended next c
 
 ## Snapshot Compatibility
 
-Snapshot format V10 adds server access profiles and ring policies. Snapshot V1
-through V9 documents remain importable; entries from formats without those
-fields make no new access or enforcement declaration. An older snapshot version
-that carries V10 access or policy fields is rejected so version mismatch cannot
-silently discard policy data. Import validates the complete resulting
-server/ring graph before its first write.
+Snapshot format V10 adds server access profiles and ring policies. V11 adds ring
+execution policy. Snapshot V1 through V10 documents remain importable; entries
+from formats without those fields make no new policy declaration. Any snapshot
+older than V11 that carries execution policy is rejected so a version mismatch
+cannot silently discard environment, sandbox, lifetime, or credential-exposure
+requirements. Existing older-version checks continue to reject fields introduced
+by their successors. Import validates the complete resulting server/ring graph
+before its first write.
 
 ## Skill Packages
 

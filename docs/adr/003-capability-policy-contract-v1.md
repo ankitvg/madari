@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-10
+- Follow-on: ADR 004 implements the separately versioned bounded-execution
+  contract that this access-policy decision deferred.
 
 ## Context
 
@@ -26,8 +28,8 @@ it can silently widen access.
 - A ring continues to compose server profiles and skills by reference.
 - `[contract]` remains advisory and is never an authorization mechanism.
 - A new ring `[policy]` section declares whether exact enforcement is required.
-- `[policy.execution]` is reserved for a later runtime-policy goal and is
-  rejected in V1.
+- This V1 access-policy decision reserves `[policy.execution]` for the later
+  runtime-policy goal; ADR 004 defines the implemented execution contract.
 
 The V1 server shape is:
 
@@ -186,4 +188,5 @@ write.
   approximate mappings are not accepted for required rings.
 - Environment sanitization, TTLs, receipts, credential brokers, audit,
   OpenCode support, production examples, and runtime `[policy.execution]`
-  semantics remain outside this decision.
+  semantics remain outside this access-policy decision. ADR 004 owns the
+  bounded environment and execution semantics.
