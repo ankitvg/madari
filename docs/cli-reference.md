@@ -81,8 +81,8 @@ unsupported, and unrepresentable members are errors; Madari never substitutes
 an advisory prompt or a weaker native control.
 
 Policy support is declared independently for persistent sync/attach, render,
-and run. Codex persistent sync/attach and render compile all five V1 fields.
-Codex run and every policy surface for other targets remain unsupported.
+and run. Codex compiles all five V1 fields on all three surfaces. Every policy
+surface for other targets remains unsupported.
 Required sync or attach fails before config, managed state, or skill mutation;
 required render fails before partial output; and required run fails before skill
 materialization or client execution. Detach remains available for cleanup.
@@ -212,9 +212,9 @@ behavior, or render output.
 
 Ring policy is distinct from the advisory contract. A ring file may set
 `[policy] enforcement = "required"`, but each referenced server remains the
-source of truth for its own `[access]` profile. Codex required attach and render
-are supported when every member compiles exactly. Required Codex run and all
-other unsupported target surfaces fail during preflight.
+source of truth for its own `[access]` profile. Codex required attach, render,
+and run are supported when every member compiles exactly. Unsupported target
+surfaces fail during preflight.
 
 ```toml
 summary = "Collect source context and prepare a research brief."
@@ -315,6 +315,12 @@ checks runtime env keys by name, and reports the launch plan. Run never writes
 client config, creates managed state, or permanently materializes skill
 packages.
 
+When any selected server declares `[access]`, Codex execution also adds
+`--strict-config` and requires a stable Codex CLI 0.139.x release. This applies
+to advisory profiles as well as policy-required rings so Madari never drops a
+declared restriction. Legacy runs with no access declarations omit the newer
+flag and version gate, preserving their existing compatibility behavior.
+
 Unlike `ring render`, `run` is fail-closed. A disabled member, missing member,
 unsupported remote transport or auth mode, missing runtime env key, or
 unsupported skill target blocks the plan instead of silently omitting that
@@ -324,8 +330,19 @@ present, because Madari cannot guarantee ring-only skill isolation in that
 case.
 Policy-required run adds a stricter preflight boundary: every declared member
 restriction must compile exactly before any temporary skill package is
-materialized or the client starts. No run policy compiler is enabled yet, so
-required runs are currently blocked while legacy runs remain unchanged.
+materialized or the client starts. Codex maps every V1 access field into the
+single ephemeral `mcp_servers={...}` override. The plan and executor both check
+the bounded version range Madari has validated for this complete contract.
+`--strict-config` is an additional config-parser safeguard, not proof that
+nested MCP policy fields retain their semantics outside the validated range.
+
+Dry-run text and JSON report each server's portable declared policy, the
+Codex-native effective policy, support state, and enforcement classification.
+If a server is shared, any selected required ring wins and is listed in
+`required_by`. The control labels are intentionally distinct: tool filtering is
+client-enforced; OAuth scopes are requested/client-configured and
+provider-unverified; approval modes are client controls rather than an
+authorization boundary; contracts and skills remain advisory instructions.
 
 ## Skills
 
@@ -600,6 +617,13 @@ do not appear as policy drift.
   "ready": true,
   "runner_available": true,
   "prompt_provided": true,
+  "policy_required": true,
+  "policy_controls": {
+    "tool_filtering": "client-enforced",
+    "oauth_scopes": "requested/client-configured/provider-unverified",
+    "approvals": "client-control/not-authorization",
+    "instructions": "contracts-and-skills-advisory"
+  },
   "servers": [
     {
       "name": "cloud-sql",
@@ -609,7 +633,20 @@ do not appear as policy drift.
       "auth": "bearer_token_env_var",
       "runtime_env": ["CLOUDSQL_MCP_TOKEN"],
       "rings": ["cloudsql-readonly"],
-      "issues": []
+      "issues": [],
+      "policy": {
+        "declared": {"allowed_tools": ["query"]},
+        "ring_enforcement": "required",
+        "required_by": ["cloudsql-readonly"],
+        "effective": {
+          "enabled_tools": ["query"],
+          "disabled_tools": [],
+          "requested_oauth_scopes": [],
+          "tool_approval_modes": {}
+        },
+        "support_state": "supported",
+        "enforcement_classification": "exact"
+      }
     }
   ],
   "skills": [],
