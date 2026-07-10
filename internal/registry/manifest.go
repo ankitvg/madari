@@ -19,6 +19,30 @@ const (
 	TransportSSE   = "sse"
 )
 
+// ApprovalBehavior is Madari's portable vocabulary for client-side MCP tool
+// approval behavior. Client adapters map these values to their native enums;
+// the native values are deliberately not part of the registry contract.
+type ApprovalBehavior string
+
+const (
+	ApprovalBehaviorInherit      ApprovalBehavior = "inherit"
+	ApprovalBehaviorAutomatic    ApprovalBehavior = "automatic"
+	ApprovalBehaviorAlwaysPrompt ApprovalBehavior = "always-prompt"
+	ApprovalBehaviorAlwaysAllow  ApprovalBehavior = "always-allow"
+)
+
+// AccessProfile describes the access restrictions Madari should compile for
+// one MCP server. Pointer fields preserve the distinction between an absent
+// declaration (leave the target-native value untouched) and an explicit empty
+// declaration (clear the target-native override).
+type AccessProfile struct {
+	AllowedTools    *[]string                    `toml:"allowed_tools,omitempty" json:"allowed_tools,omitempty"`
+	DeniedTools     *[]string                    `toml:"denied_tools,omitempty" json:"denied_tools,omitempty"`
+	OAuthScopes     *[]string                    `toml:"oauth_scopes,omitempty" json:"oauth_scopes,omitempty"`
+	DefaultApproval *ApprovalBehavior            `toml:"default_approval,omitempty" json:"default_approval,omitempty"`
+	ToolApprovals   *map[string]ApprovalBehavior `toml:"tool_approvals,omitempty" json:"tool_approvals,omitempty"`
+}
+
 // Manifest is the canonical configuration for one local MCP server.
 type Manifest struct {
 	Name              string            `toml:"name" json:"name"`
@@ -37,6 +61,7 @@ type Manifest struct {
 	RequiredEnv       RequiredEnv       `toml:"required_env,omitempty" json:"required_env,omitempty"`
 	SecretEnv         SecretEnv         `toml:"secret_env,omitempty" json:"secret_env,omitempty"`
 	SecretHeaders     SecretHeaders     `toml:"secret_headers,omitempty" json:"secret_headers,omitempty"`
+	Access            *AccessProfile    `toml:"access,omitempty" json:"access,omitempty"`
 }
 
 // RequiredEnv describes environment variables that must be present at runtime.
@@ -172,6 +197,113 @@ func (m Manifest) RequiresBearerTokenEnv() bool {
 	return strings.TrimSpace(m.BearerTokenEnvVar) != ""
 }
 
+// HasExplicitToolAllowlist reports whether the manifest declares a non-empty
+// exact tool allowlist. Policy-required rings use this as their bounded-access
+// prerequisite; an explicitly empty allowlist clears a native override and is
+// therefore unbounded.
+func (m Manifest) HasExplicitToolAllowlist() bool {
+	return m.Access != nil && m.Access.AllowedTools != nil && len(*m.Access.AllowedTools) > 0
+}
+
+func (a *AccessProfile) Validate() error {
+	if a == nil {
+		return nil
+	}
+	if a.AllowedTools == nil && a.DeniedTools == nil && a.OAuthScopes == nil && a.DefaultApproval == nil && a.ToolApprovals == nil {
+		return fmt.Errorf("access must declare at least one field")
+	}
+
+	var errs []string
+	allowed, allowedErrs := validateAccessStringSet("allowed_tools", a.AllowedTools)
+	errs = append(errs, allowedErrs...)
+	denied, deniedErrs := validateAccessStringSet("denied_tools", a.DeniedTools)
+	errs = append(errs, deniedErrs...)
+	_, scopeErrs := validateAccessStringSet("oauth_scopes", a.OAuthScopes)
+	errs = append(errs, scopeErrs...)
+
+	if a.DefaultApproval != nil && !validApprovalBehavior(*a.DefaultApproval) {
+		errs = append(errs, fmt.Sprintf("invalid default_approval %q (supported: %s)", *a.DefaultApproval, supportedApprovalBehaviors()))
+	}
+
+	for tool := range allowed {
+		if _, exists := denied[tool]; exists {
+			errs = append(errs, fmt.Sprintf("tool %q cannot appear in both allowed_tools and denied_tools", tool))
+		}
+	}
+
+	if a.ToolApprovals != nil {
+		tools := make([]string, 0, len(*a.ToolApprovals))
+		for tool := range *a.ToolApprovals {
+			tools = append(tools, tool)
+		}
+		sort.Strings(tools)
+		for _, tool := range tools {
+			approval := (*a.ToolApprovals)[tool]
+			trimmed := strings.TrimSpace(tool)
+			switch {
+			case trimmed == "":
+				errs = append(errs, "tool_approvals names must be non-empty")
+			case tool != trimmed:
+				errs = append(errs, fmt.Sprintf("tool_approvals name %q must not have leading or trailing whitespace", tool))
+			}
+			if !validApprovalBehavior(approval) {
+				errs = append(errs, fmt.Sprintf("invalid approval %q for tool %q (supported: %s)", approval, tool, supportedApprovalBehaviors()))
+			}
+			if _, exists := denied[tool]; exists {
+				errs = append(errs, fmt.Sprintf("tool_approvals cannot configure denied tool %q", tool))
+			}
+			if a.AllowedTools != nil && len(*a.AllowedTools) > 0 {
+				if _, exists := allowed[tool]; !exists {
+					errs = append(errs, fmt.Sprintf("tool_approvals tool %q is not in allowed_tools", tool))
+				}
+			}
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("invalid access profile: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+func validateAccessStringSet(field string, values *[]string) (map[string]struct{}, []string) {
+	seen := map[string]struct{}{}
+	if values == nil {
+		return seen, nil
+	}
+	var errs []string
+	for _, value := range *values {
+		trimmed := strings.TrimSpace(value)
+		switch {
+		case trimmed == "":
+			errs = append(errs, fmt.Sprintf("%s values must be non-empty", field))
+			continue
+		case value != trimmed:
+			errs = append(errs, fmt.Sprintf("%s value %q must not have leading or trailing whitespace", field, value))
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			errs = append(errs, fmt.Sprintf("duplicate %s value %q", field, value))
+			continue
+		}
+		seen[value] = struct{}{}
+	}
+	return seen, errs
+}
+
+func validApprovalBehavior(value ApprovalBehavior) bool {
+	switch value {
+	case ApprovalBehaviorInherit, ApprovalBehaviorAutomatic, ApprovalBehaviorAlwaysPrompt, ApprovalBehaviorAlwaysAllow:
+		return true
+	default:
+		return false
+	}
+}
+
+func supportedApprovalBehaviors() string {
+	return fmt.Sprintf("%q, %q, %q, or %q", ApprovalBehaviorInherit, ApprovalBehaviorAutomatic, ApprovalBehaviorAlwaysPrompt, ApprovalBehaviorAlwaysAllow)
+}
+
 // Validate enforces manifest-level invariants.
 func (m Manifest) Validate() error {
 	var errs []string
@@ -241,6 +373,13 @@ func (m Manifest) Validate() error {
 		} else if !envKeyPattern.MatchString(key) {
 			errs = append(errs, fmt.Sprintf("invalid bearer_token_env_var key %q", key))
 		}
+	}
+
+	if err := m.Access.Validate(); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if !m.IsRemote() && m.Access != nil && m.Access.OAuthScopes != nil && len(*m.Access.OAuthScopes) > 0 {
+		errs = append(errs, "oauth_scopes requires a remote transport with an OAuth client flow")
 	}
 
 	for key := range m.Headers {

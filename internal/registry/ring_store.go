@@ -31,6 +31,9 @@ func (s *Store) AddRing(ring Ring) error {
 	if err := s.ValidateRingMembers(ring); err != nil {
 		return err
 	}
+	if err := s.ValidateRingPolicy(ring); err != nil {
+		return err
+	}
 	return s.SaveRing(ring)
 }
 
@@ -158,6 +161,71 @@ func (s *Store) ValidateRingMembers(ring Ring) error {
 		return fmt.Errorf("ring %q references unknown skills: %s", ring.Name, strings.Join(missingSkills, ", "))
 	}
 	return nil
+}
+
+// ValidateRingPolicy checks the registry-level prerequisites for a
+// policy-required ring. Target-specific eligibility and compiler support are
+// operation-level checks; the store only requires every referenced server to
+// carry an explicit non-empty exact allowlist.
+func (s *Store) ValidateRingPolicy(ring Ring) error {
+	if !ring.RequiresPolicyEnforcement() {
+		return nil
+	}
+	manifests := make([]Manifest, 0, len(ring.Members))
+	for _, member := range ring.Members {
+		manifest, err := s.Get(strings.TrimSpace(member))
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return fmt.Errorf("ring %q policy requires unknown server %q", ring.Name, strings.TrimSpace(member))
+			}
+			return err
+		}
+		manifests = append(manifests, manifest)
+	}
+	return ValidateRequiredRingAccess(ring, manifests)
+}
+
+// ValidateRequiredRingAccess validates the registry-level bounded-access
+// invariant against a manifest set. It is shared by store and snapshot paths
+// so both reject an invalid required ring before writing anything.
+func ValidateRequiredRingAccess(ring Ring, manifests []Manifest) error {
+	byName := make(map[string]Manifest, len(manifests))
+	for _, manifest := range manifests {
+		byName[manifest.Name] = manifest
+	}
+	return validateRequiredRingAccessAgainst(ring, byName)
+}
+
+func validateRequiredRingAccessAgainst(ring Ring, manifests map[string]Manifest) error {
+	if !ring.RequiresPolicyEnforcement() {
+		return nil
+	}
+	var missing []string
+	var unbounded []string
+	for _, member := range ring.Members {
+		name := strings.TrimSpace(member)
+		manifest, exists := manifests[name]
+		if !exists {
+			missing = append(missing, name)
+			continue
+		}
+		if !manifest.HasExplicitToolAllowlist() {
+			unbounded = append(unbounded, name)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(unbounded)
+	var errs []string
+	if len(missing) > 0 {
+		errs = append(errs, fmt.Sprintf("unknown servers: %s", strings.Join(missing, ", ")))
+	}
+	if len(unbounded) > 0 {
+		errs = append(errs, fmt.Sprintf("servers without an explicit non-empty allowed_tools allowlist: %s", strings.Join(unbounded, ", ")))
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("ring %q requires policy enforcement but has %s", ring.Name, strings.Join(errs, "; "))
 }
 
 func (s *Store) pathForRing(name string) (string, error) {

@@ -16,6 +16,9 @@ func TestSnapshotExportParseRoundTrip(t *testing.T) {
 		Command: "/usr/bin/env",
 		Enabled: true,
 		Clients: []string{"claude-desktop"},
+		Access: &AccessProfile{
+			AllowedTools: stringListPointer("read", "search"),
+		},
 	}); err != nil {
 		t.Fatalf("save alpha manifest: %v", err)
 	}
@@ -24,6 +27,9 @@ func TestSnapshotExportParseRoundTrip(t *testing.T) {
 		Command: "/usr/bin/env",
 		Enabled: false,
 		Clients: []string{"claude-desktop"},
+		Access: &AccessProfile{
+			AllowedTools: stringListPointer("inspect"),
+		},
 	}); err != nil {
 		t.Fatalf("save beta manifest: %v", err)
 	}
@@ -38,6 +44,7 @@ func TestSnapshotExportParseRoundTrip(t *testing.T) {
 			RequiredContext: []string{"research question"},
 			ExpectedOutputs: []string{"findings summary"},
 		},
+		Policy: &RingPolicy{Enforcement: PolicyEnforcementRequired},
 	}); err != nil {
 		t.Fatalf("save ring: %v", err)
 	}
@@ -83,6 +90,12 @@ func TestSnapshotExportParseRoundTrip(t *testing.T) {
 	if parsed.Rings[0].Contract == nil || parsed.Rings[0].Contract.Summary != "Collect research evidence" {
 		t.Fatalf("expected ring contract in parsed snapshot, got: %#v", parsed.Rings[0].Contract)
 	}
+	if !parsed.Rings[0].RequiresPolicyEnforcement() {
+		t.Fatalf("expected required ring policy in parsed snapshot, got: %#v", parsed.Rings[0].Policy)
+	}
+	if parsed.Servers[0].Access == nil && parsed.Servers[1].Access == nil {
+		t.Fatalf("expected server access profiles in parsed snapshot: %#v", parsed.Servers)
+	}
 	if len(parsed.Skills) != 1 || parsed.Skills[0].Name != "release" {
 		t.Fatalf("expected release skill in parsed snapshot, got: %#v", parsed.Skills)
 	}
@@ -111,6 +124,14 @@ func TestMarshalSnapshotUsesSnakeCaseKeys(t *testing.T) {
 				RequiredEnv: RequiredEnv{
 					Keys: []string{"SMTP_PASSWORD"},
 				},
+				Access: &AccessProfile{
+					AllowedTools:    stringListPointer("read"),
+					DeniedTools:     stringListPointer("delete"),
+					DefaultApproval: approvalPointer(ApprovalBehaviorAlwaysPrompt),
+					ToolApprovals: approvalMapPointer(map[string]ApprovalBehavior{
+						"read": ApprovalBehaviorAlwaysAllow,
+					}),
+				},
 			},
 		},
 		Rings: []Ring{
@@ -127,6 +148,7 @@ func TestMarshalSnapshotUsesSnakeCaseKeys(t *testing.T) {
 					OptionalContext: []string{"time window"},
 					ExpectedOutputs: []string{"findings summary"},
 				},
+				Policy: &RingPolicy{Enforcement: PolicyEnforcementRequired},
 			},
 		},
 		Skills: []SnapshotSkill{
@@ -145,7 +167,7 @@ func TestMarshalSnapshotUsesSnakeCaseKeys(t *testing.T) {
 		t.Fatalf("marshal snapshot failed: %v", err)
 	}
 	text := string(payload)
-	for _, key := range []string{`"name"`, `"command"`, `"args"`, `"enabled"`, `"clients"`, `"required_env"`, `"keys"`, `"rings"`, `"members"`, `"skills"`, `"files"`, `"path"`, `"content"`, `"mode"`, `"description"`, `"contract"`, `"summary"`, `"good_for"`, `"not_for"`, `"required_context"`, `"optional_context"`, `"expected_outputs"`} {
+	for _, key := range []string{`"name"`, `"command"`, `"args"`, `"enabled"`, `"clients"`, `"required_env"`, `"keys"`, `"access"`, `"allowed_tools"`, `"denied_tools"`, `"default_approval"`, `"tool_approvals"`, `"rings"`, `"members"`, `"policy"`, `"enforcement"`, `"skills"`, `"files"`, `"path"`, `"content"`, `"mode"`, `"description"`, `"contract"`, `"summary"`, `"good_for"`, `"not_for"`, `"required_context"`, `"optional_context"`, `"expected_outputs"`} {
 		if !strings.Contains(text, key) {
 			t.Fatalf("expected payload to contain key %s, payload=%s", key, text)
 		}
@@ -250,6 +272,43 @@ func TestParseSnapshotV9AcceptsBearerTokenEnv(t *testing.T) {
 	}
 	if len(snapshot.Servers) != 1 || snapshot.Servers[0].BearerTokenEnvVar != "CLOUDSQL_MCP_TOKEN" {
 		t.Fatalf("expected bearer_token_env_var to parse, got: %#v", snapshot.Servers)
+	}
+}
+
+func TestParseSnapshotV9RejectsAccessProfilesAndRingPolicies(t *testing.T) {
+	accessPayload := []byte(`{"version":9,"servers":[{"name":"alpha","command":"/usr/bin/env","enabled":true,"clients":["codex"],"access":{"allowed_tools":["read"]}}]}`)
+	if _, err := ParseSnapshotJSON(accessPayload); err == nil || !strings.Contains(err.Error(), "does not support server access profiles") {
+		t.Fatalf("expected v9 access-profile rejection, got: %v", err)
+	}
+
+	policyPayload := []byte(`{"version":9,"servers":[],"rings":[{"name":"bounded","skills":["release"],"policy":{"enforcement":"required"}}],"skills":[{"name":"release","content":"# Release\n"}]}`)
+	if _, err := ParseSnapshotJSON(policyPayload); err == nil || !strings.Contains(err.Error(), "does not support ring policies") {
+		t.Fatalf("expected v9 ring-policy rejection, got: %v", err)
+	}
+}
+
+func TestParseSnapshotV10AcceptsAccessProfilesAndRingPolicies(t *testing.T) {
+	payload := []byte(`{"version":10,"servers":[{"name":"alpha","command":"/usr/bin/env","enabled":true,"clients":["codex"],"access":{"allowed_tools":["read"],"denied_tools":[],"oauth_scopes":[],"default_approval":"always-prompt","tool_approvals":{}}}],"rings":[{"name":"bounded","members":["alpha"],"policy":{"enforcement":"required"}}],"skills":[]}`)
+	snapshot, err := ParseSnapshotJSON(payload)
+	if err != nil {
+		t.Fatalf("parse v10 policy snapshot: %v", err)
+	}
+	access := snapshot.Servers[0].Access
+	if access == nil || access.AllowedTools == nil || access.DeniedTools == nil || access.OAuthScopes == nil || access.ToolApprovals == nil {
+		t.Fatalf("expected v10 access field presence, got: %#v", access)
+	}
+	if !snapshot.Rings[0].RequiresPolicyEnforcement() {
+		t.Fatalf("expected v10 required ring policy: %#v", snapshot.Rings[0].Policy)
+	}
+
+	encoded, err := MarshalSnapshotJSON(snapshot)
+	if err != nil {
+		t.Fatalf("marshal v10 policy snapshot: %v", err)
+	}
+	for _, want := range []string{`"allowed_tools": [`, `"denied_tools": []`, `"oauth_scopes": []`, `"tool_approvals": {}`, `"enforcement": "required"`} {
+		if !strings.Contains(string(encoded), want) {
+			t.Fatalf("expected %s in v10 snapshot:\n%s", want, encoded)
+		}
 	}
 }
 
@@ -406,6 +465,146 @@ func TestImportSnapshotDetectsRemoteFieldChanges(t *testing.T) {
 	}
 	if len(result.Updated) != 0 || len(result.Unchanged) != 1 {
 		t.Fatalf("expected identical snapshot to be unchanged, got: %+v", result)
+	}
+}
+
+func TestImportSnapshotDetectsAccessAndPolicyChanges(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "servers"))
+	if err := store.Save(Manifest{
+		Name:    "alpha",
+		Command: "/usr/bin/env",
+		Enabled: true,
+		Clients: []string{"codex"},
+		Access:  &AccessProfile{AllowedTools: stringListPointer("read")},
+	}); err != nil {
+		t.Fatalf("save initial manifest: %v", err)
+	}
+	if err := store.SaveRing(Ring{Name: "bounded", Members: []string{"alpha"}}); err != nil {
+		t.Fatalf("save initial ring: %v", err)
+	}
+
+	snapshot := Snapshot{
+		Version: SnapshotVersion,
+		Servers: []Manifest{
+			{
+				Name:    "alpha",
+				Command: "/usr/bin/env",
+				Enabled: true,
+				Clients: []string{"codex"},
+				Access: &AccessProfile{
+					AllowedTools: stringListPointer("read"),
+					DeniedTools:  stringListPointer(),
+				},
+			},
+		},
+		Rings: []Ring{
+			{
+				Name:    "bounded",
+				Members: []string{"alpha"},
+				Policy:  &RingPolicy{Enforcement: PolicyEnforcementRequired},
+			},
+		},
+	}
+
+	result, err := ImportSnapshot(store, snapshot, true)
+	if err != nil {
+		t.Fatalf("import access/policy changes: %v", err)
+	}
+	if len(result.Updated) != 1 || result.Updated[0] != "alpha" {
+		t.Fatalf("expected access-only server update, got: %+v", result)
+	}
+	if len(result.RingsUpdated) != 1 || result.RingsUpdated[0] != "bounded" {
+		t.Fatalf("expected policy-only ring update, got: %+v", result)
+	}
+	manifest, err := store.Get("alpha")
+	if err != nil {
+		t.Fatalf("get imported manifest: %v", err)
+	}
+	if manifest.Access == nil || manifest.Access.DeniedTools == nil || len(*manifest.Access.DeniedTools) != 0 {
+		t.Fatalf("expected explicit denied_tools clear to persist: %#v", manifest.Access)
+	}
+	ring, err := store.GetRing("bounded")
+	if err != nil {
+		t.Fatalf("get imported ring: %v", err)
+	}
+	if !ring.RequiresPolicyEnforcement() {
+		t.Fatalf("expected imported required policy: %#v", ring.Policy)
+	}
+
+	result, err = ImportSnapshot(store, snapshot, false)
+	if err != nil {
+		t.Fatalf("repeat dry-run import: %v", err)
+	}
+	if len(result.Unchanged) != 1 || len(result.RingsUnchanged) != 1 {
+		t.Fatalf("expected identical access/policy snapshot unchanged, got: %+v", result)
+	}
+}
+
+func TestImportSnapshotPolicyPrevalidationUsesFinalStateBeforeWrites(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "servers"))
+	if err := store.Save(Manifest{
+		Name:    "alpha",
+		Command: "/usr/bin/env",
+		Enabled: true,
+		Clients: []string{"codex"},
+		Access:  &AccessProfile{AllowedTools: stringListPointer("read")},
+	}); err != nil {
+		t.Fatalf("save initial manifest: %v", err)
+	}
+	if err := store.SaveRing(Ring{
+		Name:    "bounded",
+		Members: []string{"alpha"},
+		Policy:  &RingPolicy{Enforcement: PolicyEnforcementRequired},
+	}); err != nil {
+		t.Fatalf("save required ring: %v", err)
+	}
+
+	snapshot := Snapshot{
+		Version: SnapshotVersion,
+		Servers: []Manifest{
+			{
+				Name:    "alpha",
+				Command: "/usr/bin/env",
+				Enabled: true,
+				Clients: []string{"codex"},
+				Access:  &AccessProfile{AllowedTools: stringListPointer()},
+			},
+			{
+				Name:    "beta",
+				Command: "/usr/bin/env",
+				Enabled: true,
+				Clients: []string{"codex"},
+			},
+		},
+	}
+
+	_, err := ImportSnapshot(store, snapshot, true)
+	if err == nil || !strings.Contains(err.Error(), "without an explicit non-empty allowed_tools allowlist: alpha") {
+		t.Fatalf("expected final-state policy rejection, got: %v", err)
+	}
+	alpha, getErr := store.Get("alpha")
+	if getErr != nil {
+		t.Fatalf("get alpha after rejected import: %v", getErr)
+	}
+	if !alpha.HasExplicitToolAllowlist() || len(*alpha.Access.AllowedTools) != 1 || (*alpha.Access.AllowedTools)[0] != "read" {
+		t.Fatalf("rejected import changed alpha: %#v", alpha.Access)
+	}
+	if _, getErr := store.Get("beta"); !errors.Is(getErr, ErrNotFound) {
+		t.Fatalf("rejected import partially wrote beta: %v", getErr)
+	}
+}
+
+func TestAccessAndPolicyEqualityPreserveExplicitClears(t *testing.T) {
+	baseAccess := &AccessProfile{AllowedTools: stringListPointer("read")}
+	withClear := &AccessProfile{AllowedTools: stringListPointer("read"), DeniedTools: stringListPointer()}
+	if accessProfilesEqual(baseAccess, withClear) {
+		t.Fatalf("absent denied_tools and explicit empty denied_tools must differ")
+	}
+	if !accessProfilesEqual(withClear, &AccessProfile{AllowedTools: stringListPointer("read"), DeniedTools: stringListPointer()}) {
+		t.Fatalf("equivalent explicit clears should compare equal")
+	}
+	if ringPoliciesEqual(nil, &RingPolicy{Enforcement: PolicyEnforcementRequired}) {
+		t.Fatalf("absent and required ring policies must differ")
 	}
 }
 
@@ -832,6 +1031,87 @@ func TestParseSnapshotRejectsInvalidPayloads(t *testing.T) {
 	}
 }
 
+func TestParseSnapshotRejectsUnknownFieldsAndTrailingData(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		expects string
+	}{
+		{
+			name:    "unknown top-level field",
+			payload: `{"version":10,"servers":[],"rings":[],"skills":[],"unknown":true}`,
+			expects: `unknown field "unknown"`,
+		},
+		{
+			name:    "unknown access field",
+			payload: `{"version":10,"servers":[{"name":"alpha","command":"/usr/bin/env","enabled":true,"clients":["codex"],"access":{"allowed_tools":["read"],"unknown":true}}],"rings":[],"skills":[]}`,
+			expects: `unknown field "unknown"`,
+		},
+		{
+			name:    "unknown policy field",
+			payload: `{"version":10,"servers":[],"rings":[{"name":"workflow","skills":["release"],"policy":{"enforcement":"required","unknown":true}}],"skills":[{"name":"release","content":"# Release\n"}]}`,
+			expects: `unknown field "unknown"`,
+		},
+		{
+			name:    "second document",
+			payload: `{"version":10,"servers":[],"rings":[],"skills":[]} {}`,
+			expects: "trailing data",
+		},
+		{
+			name:    "trailing garbage",
+			payload: `{"version":10,"servers":[],"rings":[],"skills":[]} nope`,
+			expects: "trailing data",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseSnapshotJSON([]byte(tt.payload))
+			if err == nil || !strings.Contains(err.Error(), tt.expects) {
+				t.Fatalf("expected error containing %q, got: %v", tt.expects, err)
+			}
+		})
+	}
+}
+
+func TestParseSnapshotRejectsNullPolicyPresenceFields(t *testing.T) {
+	baseServer := `{"name":"docs","command":"/bin/docs","args":[],"enabled":true,"clients":["codex"]}`
+	tests := []struct {
+		name    string
+		payload string
+		expects string
+	}{
+		{
+			name:    "access",
+			payload: `{"version":10,"servers":[{"name":"docs","command":"/bin/docs","args":[],"enabled":true,"clients":["codex"],"access":null}],"rings":[],"skills":[]}`,
+			expects: "servers[0].access must not be null",
+		},
+		{
+			name:    "allowed tools",
+			payload: `{"version":10,"servers":[{"name":"docs","command":"/bin/docs","args":[],"enabled":true,"clients":["codex"],"access":{"allowed_tools":null,"denied_tools":[]}}],"rings":[],"skills":[]}`,
+			expects: "servers[0].access.allowed_tools must not be null",
+		},
+		{
+			name:    "tool approvals",
+			payload: `{"version":10,"servers":[{"name":"docs","command":"/bin/docs","args":[],"enabled":true,"clients":["codex"],"access":{"allowed_tools":["read"],"tool_approvals":null}}],"rings":[],"skills":[]}`,
+			expects: "servers[0].access.tool_approvals must not be null",
+		},
+		{
+			name:    "policy",
+			payload: `{"version":10,"servers":[` + baseServer + `],"rings":[{"name":"research","members":["docs"],"skills":[],"policy":null}],"skills":[]}`,
+			expects: "rings[0].policy must not be null",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseSnapshotJSON([]byte(tt.payload))
+			if err == nil || !strings.Contains(err.Error(), tt.expects) {
+				t.Fatalf("expected error containing %q, got: %v", tt.expects, err)
+			}
+		})
+	}
+}
+
 func TestMarshalSnapshotWritesNewline(t *testing.T) {
 	snapshot := Snapshot{Version: SnapshotVersion, Servers: []Manifest{}}
 	payload, err := MarshalSnapshotJSON(snapshot)
@@ -937,5 +1217,28 @@ func TestExportSnapshotRejectsStaleRings(t *testing.T) {
 		!strings.Contains(err.Error(), `ring "research" references unknown servers: alpha`) ||
 		!strings.Contains(err.Error(), "update or delete the ring before exporting") {
 		t.Fatalf("expected stale-ring export refusal, got: %v", err)
+	}
+}
+
+func TestExportSnapshotRejectsUnboundedRequiredRing(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "servers"))
+	if err := store.Save(Manifest{Name: "alpha", Command: "/usr/bin/env", Enabled: true, Clients: []string{"codex"}}); err != nil {
+		t.Fatalf("save alpha: %v", err)
+	}
+	// SaveRing intentionally validates shape only, so export must still reject
+	// a required ring that cannot round-trip as a valid bounded policy set.
+	if err := store.SaveRing(Ring{
+		Name:    "bounded",
+		Members: []string{"alpha"},
+		Policy:  &RingPolicy{Enforcement: PolicyEnforcementRequired},
+	}); err != nil {
+		t.Fatalf("save unbounded required ring fixture: %v", err)
+	}
+
+	_, err := ExportSnapshot(store)
+	if err == nil ||
+		!strings.Contains(err.Error(), "without an explicit non-empty allowed_tools allowlist: alpha") ||
+		!strings.Contains(err.Error(), "update the ring or its server access profiles before exporting") {
+		t.Fatalf("expected unbounded required-ring export refusal, got: %v", err)
 	}
 }

@@ -18,6 +18,34 @@ type Ring struct {
 	Skills      []string      `toml:"skills,omitempty" json:"skills,omitempty"`
 	Description string        `toml:"description,omitempty" json:"description,omitempty"`
 	Contract    *RingContract `toml:"contract,omitempty" json:"contract,omitempty"`
+	Policy      *RingPolicy   `toml:"policy,omitempty" json:"policy,omitempty"`
+}
+
+const PolicyEnforcementRequired = "required"
+
+// RingPolicy declares whether access-profile compilation is mandatory for
+// operations that select this ring. Runtime execution policy is intentionally
+// reserved for a later contract version.
+type RingPolicy struct {
+	Enforcement string `toml:"enforcement" json:"enforcement"`
+}
+
+func (p *RingPolicy) Required() bool {
+	return p != nil && p.Enforcement == PolicyEnforcementRequired
+}
+
+func (p *RingPolicy) Validate() error {
+	if p == nil {
+		return nil
+	}
+	if p.Enforcement != PolicyEnforcementRequired {
+		return fmt.Errorf("policy enforcement must be %q", PolicyEnforcementRequired)
+	}
+	return nil
+}
+
+func (r Ring) RequiresPolicyEnforcement() bool {
+	return r.Policy.Required()
 }
 
 // RingContract is advisory metadata that helps an orchestrating agent decide
@@ -79,6 +107,9 @@ func (r Ring) Validate() error {
 			continue
 		}
 		seenSkills[skill] = struct{}{}
+	}
+	if err := r.Policy.Validate(); err != nil {
+		errs = append(errs, err.Error())
 	}
 
 	if len(errs) > 0 {
@@ -171,6 +202,8 @@ func ParseRing(data []byte) (Ring, error) {
 	ring := Ring{Members: []string{}, Skills: []string{}}
 
 	section := sectionTop
+	policySectionSeen := false
+	policyEnforcementSeen := false
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	lineNo := 0
 	for scanner.Scan() {
@@ -196,6 +229,15 @@ func ParseRing(data []byte) (Ring, error) {
 				if ring.Contract == nil {
 					ring.Contract = &RingContract{}
 				}
+			case "policy":
+				if policySectionSeen {
+					return Ring{}, fmt.Errorf("line %d: duplicate section %q", lineNo, name)
+				}
+				policySectionSeen = true
+				section = name
+				ring.Policy = &RingPolicy{}
+			case "policy.execution":
+				return Ring{}, fmt.Errorf("line %d: section %q is reserved for a future runtime policy contract and is not supported in policy V1", lineNo, name)
 			default:
 				return Ring{}, fmt.Errorf("line %d: unknown section %q", lineNo, name)
 			}
@@ -219,6 +261,19 @@ func ParseRing(data []byte) (Ring, error) {
 			if err := parseRingContract(ring.Contract, key, value); err != nil {
 				return Ring{}, fmt.Errorf("line %d: %w", lineNo, err)
 			}
+		case "policy":
+			if key != "enforcement" {
+				return Ring{}, fmt.Errorf("line %d: unknown key %q in [policy]", lineNo, key)
+			}
+			if policyEnforcementSeen {
+				return Ring{}, fmt.Errorf("line %d: duplicate key %q in [policy]", lineNo, key)
+			}
+			parsed, err := parseString(value)
+			if err != nil {
+				return Ring{}, fmt.Errorf("line %d: invalid policy enforcement: %w", lineNo, err)
+			}
+			policyEnforcementSeen = true
+			ring.Policy.Enforcement = parsed
 		default:
 			return Ring{}, fmt.Errorf("line %d: unknown parse section", lineNo)
 		}
@@ -337,6 +392,10 @@ func MarshalRing(ring Ring) ([]byte, error) {
 	if !ring.Contract.Empty() {
 		b.WriteString("\n[contract]\n")
 		writeRingContractFields(&b, ring.Contract)
+	}
+	if ring.Policy != nil {
+		b.WriteString("\n[policy]\n")
+		fmt.Fprintf(&b, "enforcement = %s\n", strconv.Quote(ring.Policy.Enforcement))
 	}
 	return []byte(b.String()), nil
 }

@@ -19,6 +19,23 @@ func baseManifest() Manifest {
 	}
 }
 
+func stringListPointer(values ...string) *[]string {
+	copy := append([]string(nil), values...)
+	return &copy
+}
+
+func approvalPointer(value ApprovalBehavior) *ApprovalBehavior {
+	return &value
+}
+
+func approvalMapPointer(values map[string]ApprovalBehavior) *map[string]ApprovalBehavior {
+	copy := make(map[string]ApprovalBehavior, len(values))
+	for key, value := range values {
+		copy[key] = value
+	}
+	return &copy
+}
+
 func TestManifestValidateOK(t *testing.T) {
 	m := baseManifest()
 	if err := m.Validate(); err != nil {
@@ -31,6 +48,157 @@ func TestManifestValidateAllowsDotsInName(t *testing.T) {
 	m.Name = "awslabs.core-mcp-server"
 	if err := m.Validate(); err != nil {
 		t.Fatalf("expected dotted name to validate, got error: %v", err)
+	}
+}
+
+func TestManifestValidateAccessProfile(t *testing.T) {
+	m := baseManifest()
+	m.Access = &AccessProfile{
+		AllowedTools:    stringListPointer("issues.read", "repos.search"),
+		DeniedTools:     stringListPointer("issues.delete"),
+		DefaultApproval: approvalPointer(ApprovalBehaviorAlwaysPrompt),
+		ToolApprovals: approvalMapPointer(map[string]ApprovalBehavior{
+			"issues.read": ApprovalBehaviorAlwaysAllow,
+		}),
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("expected access profile to validate, got: %v", err)
+	}
+	if !m.HasExplicitToolAllowlist() {
+		t.Fatalf("expected non-empty allowed_tools to bound the manifest")
+	}
+
+	m.Access.AllowedTools = stringListPointer()
+	m.Access.DeniedTools = stringListPointer()
+	m.Access.ToolApprovals = approvalMapPointer(map[string]ApprovalBehavior{})
+	if err := m.Validate(); err != nil {
+		t.Fatalf("expected explicit empty clear declarations to validate, got: %v", err)
+	}
+	if m.HasExplicitToolAllowlist() {
+		t.Fatalf("explicit empty allowed_tools must be treated as unbounded clear")
+	}
+}
+
+func TestManifestValidateRemoteOAuthScopes(t *testing.T) {
+	m := Manifest{
+		Name:      "cloud-sql",
+		Transport: TransportHTTP,
+		URL:       "https://example.com/mcp",
+		Enabled:   true,
+		Clients:   []string{"codex"},
+		Access: &AccessProfile{
+			OAuthScopes: stringListPointer("database.read", "openid"),
+		},
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("expected remote oauth scopes to validate, got: %v", err)
+	}
+
+	stdio := baseManifest()
+	stdio.Access = &AccessProfile{OAuthScopes: stringListPointer("database.read")}
+	if err := stdio.Validate(); err == nil || !strings.Contains(err.Error(), "oauth_scopes requires a remote transport") {
+		t.Fatalf("expected non-empty stdio oauth_scopes rejection, got: %v", err)
+	}
+	stdio.Access.OAuthScopes = stringListPointer()
+	if err := stdio.Validate(); err != nil {
+		t.Fatalf("expected explicit empty stdio oauth_scopes clear to validate, got: %v", err)
+	}
+}
+
+func TestManifestValidateAccessProfileErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		access  *AccessProfile
+		expects string
+	}{
+		{name: "empty access", access: &AccessProfile{}, expects: "access must declare at least one field"},
+		{name: "blank allowed tool", access: &AccessProfile{AllowedTools: stringListPointer("")}, expects: "allowed_tools values must be non-empty"},
+		{name: "padded allowed tool", access: &AccessProfile{AllowedTools: stringListPointer(" read ")}, expects: "allowed_tools value"},
+		{name: "duplicate allowed tool", access: &AccessProfile{AllowedTools: stringListPointer("read", "read")}, expects: "duplicate allowed_tools"},
+		{name: "duplicate denied tool", access: &AccessProfile{DeniedTools: stringListPointer("delete", "delete")}, expects: "duplicate denied_tools"},
+		{name: "blank oauth scope", access: &AccessProfile{OAuthScopes: stringListPointer("")}, expects: "oauth_scopes values must be non-empty"},
+		{name: "padded oauth scope", access: &AccessProfile{OAuthScopes: stringListPointer(" repo.read ")}, expects: "oauth_scopes value"},
+		{name: "duplicate oauth scope", access: &AccessProfile{OAuthScopes: stringListPointer("repo.read", "repo.read")}, expects: "duplicate oauth_scopes"},
+		{name: "invalid default approval", access: &AccessProfile{DefaultApproval: approvalPointer("prompt-on-write")}, expects: "invalid default_approval"},
+		{
+			name: "allow deny overlap",
+			access: &AccessProfile{
+				AllowedTools: stringListPointer("read"),
+				DeniedTools:  stringListPointer("read"),
+			},
+			expects: "cannot appear in both",
+		},
+		{
+			name: "approval for denied tool",
+			access: &AccessProfile{
+				DeniedTools:   stringListPointer("delete"),
+				ToolApprovals: approvalMapPointer(map[string]ApprovalBehavior{"delete": ApprovalBehaviorAlwaysPrompt}),
+			},
+			expects: "cannot configure denied tool",
+		},
+		{
+			name: "approval outside non-empty allowlist",
+			access: &AccessProfile{
+				AllowedTools:  stringListPointer("read"),
+				ToolApprovals: approvalMapPointer(map[string]ApprovalBehavior{"write": ApprovalBehaviorAlwaysPrompt}),
+			},
+			expects: "is not in allowed_tools",
+		},
+		{
+			name: "invalid tool approval",
+			access: &AccessProfile{
+				ToolApprovals: approvalMapPointer(map[string]ApprovalBehavior{"read": "approve"}),
+			},
+			expects: "invalid approval",
+		},
+		{
+			name: "blank approval tool",
+			access: &AccessProfile{
+				ToolApprovals: approvalMapPointer(map[string]ApprovalBehavior{"": ApprovalBehaviorAutomatic}),
+			},
+			expects: "tool_approvals names must be non-empty",
+		},
+		{
+			name: "padded approval tool",
+			access: &AccessProfile{
+				ToolApprovals: approvalMapPointer(map[string]ApprovalBehavior{" read ": ApprovalBehaviorAutomatic}),
+			},
+			expects: "must not have leading or trailing whitespace",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := baseManifest()
+			m.Access = tt.access
+			err := m.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.expects) {
+				t.Fatalf("expected error containing %q, got: %v", tt.expects, err)
+			}
+		})
+	}
+}
+
+func TestApprovalBehaviorVocabulary(t *testing.T) {
+	valid := []ApprovalBehavior{
+		ApprovalBehaviorInherit,
+		ApprovalBehaviorAutomatic,
+		ApprovalBehaviorAlwaysPrompt,
+		ApprovalBehaviorAlwaysAllow,
+	}
+	for _, value := range valid {
+		m := baseManifest()
+		m.Access = &AccessProfile{DefaultApproval: approvalPointer(value)}
+		if err := m.Validate(); err != nil {
+			t.Fatalf("expected approval %q to validate: %v", value, err)
+		}
+	}
+	for _, value := range []ApprovalBehavior{"", "auto", "prompt", "approve", "prompt-on-write"} {
+		m := baseManifest()
+		m.Access = &AccessProfile{DefaultApproval: approvalPointer(value)}
+		if err := m.Validate(); err == nil {
+			t.Fatalf("expected non-portable approval %q to be rejected", value)
+		}
 	}
 }
 

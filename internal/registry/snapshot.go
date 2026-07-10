@@ -1,9 +1,11 @@
 package registry
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 	"sort"
@@ -26,7 +28,11 @@ const (
 	snapshotVersionV8 = 8
 	// SnapshotVersion 9 adds bearer_token_env_var; older importers reject by
 	// version instead of silently dropping the runtime auth env reference.
-	SnapshotVersion = 9
+	snapshotVersionV9 = 9
+	// SnapshotVersion 10 adds server access profiles and required ring policy;
+	// older importers reject v10 rather than silently widening access by
+	// dropping policy declarations.
+	SnapshotVersion = 10
 )
 
 type Snapshot struct {
@@ -86,8 +92,10 @@ func ExportSnapshot(store *Store) (Snapshot, error) {
 	// in the exported primitive sets, or the fresh import of this backup would
 	// be refused. Fail loudly instead of writing a broken artifact.
 	exportableServers := make(map[string]struct{}, len(servers))
+	exportableManifests := make(map[string]Manifest, len(servers))
 	for _, server := range servers {
 		exportableServers[server.Name] = struct{}{}
+		exportableManifests[server.Name] = server
 	}
 	exportableSkills := make(map[string]struct{}, len(skills))
 	for _, skill := range skills {
@@ -96,6 +104,9 @@ func ExportSnapshot(store *Store) (Snapshot, error) {
 	for _, ring := range rings {
 		if err := validateRingReferencesAgainst(ring, exportableServers, exportableSkills); err != nil {
 			return Snapshot{}, fmt.Errorf("%w; update or delete the ring before exporting", err)
+		}
+		if err := validateRequiredRingAccessAgainst(ring, exportableManifests); err != nil {
+			return Snapshot{}, fmt.Errorf("%w; update the ring or its server access profiles before exporting", err)
 		}
 	}
 
@@ -136,7 +147,19 @@ func ParseSnapshotJSON(payload []byte) (Snapshot, error) {
 		return Snapshot{}, fmt.Errorf("snapshot payload is empty")
 	}
 	var snapshot Snapshot
-	if err := json.Unmarshal(payload, &snapshot); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&snapshot); err != nil {
+		return Snapshot{}, fmt.Errorf("parse snapshot json: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return Snapshot{}, fmt.Errorf("parse snapshot json: trailing data after snapshot document")
+		}
+		return Snapshot{}, fmt.Errorf("parse snapshot json: trailing data: %w", err)
+	}
+	if err := validateSnapshotPolicyPresence(payload); err != nil {
 		return Snapshot{}, fmt.Errorf("parse snapshot json: %w", err)
 	}
 	if snapshot.Version == 0 {
@@ -155,6 +178,68 @@ func ParseSnapshotJSON(payload []byte) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	return snapshot, nil
+}
+
+// validateSnapshotPolicyPresence rejects explicit JSON null values on V10
+// fields whose presence has policy meaning. The ordinary encoding/json pointer
+// decoder maps both an omitted field and an explicit null to nil; accepting
+// null would therefore turn an explicit declaration into legacy absence.
+func validateSnapshotPolicyPresence(payload []byte) error {
+	var raw struct {
+		Servers []json.RawMessage `json:"servers"`
+		Rings   []json.RawMessage `json:"rings"`
+	}
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return err
+	}
+	for i, serverRaw := range raw.Servers {
+		server, err := rawJSONObject(serverRaw)
+		if err != nil {
+			return fmt.Errorf("servers[%d]: %w", i, err)
+		}
+		accessRaw, exists := server["access"]
+		if !exists {
+			continue
+		}
+		if rawJSONNull(accessRaw) {
+			return fmt.Errorf("servers[%d].access must not be null; omit it for legacy absence", i)
+		}
+		access, err := rawJSONObject(accessRaw)
+		if err != nil {
+			return fmt.Errorf("servers[%d].access: %w", i, err)
+		}
+		for _, field := range []string{"allowed_tools", "denied_tools", "oauth_scopes", "default_approval", "tool_approvals"} {
+			value, exists := access[field]
+			if exists && rawJSONNull(value) {
+				return fmt.Errorf("servers[%d].access.%s must not be null; omit it for absence or use an explicit clear value", i, field)
+			}
+		}
+	}
+	for i, ringRaw := range raw.Rings {
+		ring, err := rawJSONObject(ringRaw)
+		if err != nil {
+			return fmt.Errorf("rings[%d]: %w", i, err)
+		}
+		if policyRaw, exists := ring["policy"]; exists && rawJSONNull(policyRaw) {
+			return fmt.Errorf("rings[%d].policy must not be null; omit it for advisory behavior", i)
+		}
+	}
+	return nil
+}
+
+func rawJSONObject(raw json.RawMessage) (map[string]json.RawMessage, error) {
+	value := map[string]json.RawMessage{}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, fmt.Errorf("expected object: %w", err)
+	}
+	if value == nil {
+		return nil, fmt.Errorf("expected object")
+	}
+	return value, nil
+}
+
+func rawJSONNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
 func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, error) {
@@ -211,6 +296,35 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 	}
 	for _, ring := range snapshot.Rings {
 		if err := validateRingReferencesAgainst(ring, allowedMembers, allowedSkills); err != nil {
+			return ImportResult{}, err
+		}
+	}
+
+	// Validate policy against the final registry state before any write. An
+	// incoming manifest may replace the access profile used by an existing
+	// required ring, and an incoming ring may reference a manifest that remains
+	// local rather than appearing in the snapshot.
+	finalManifests := make(map[string]Manifest, len(existingByName)+len(snapshot.Servers))
+	for name, manifest := range existingByName {
+		finalManifests[name] = manifest
+	}
+	for _, manifest := range snapshot.Servers {
+		finalManifests[manifest.Name] = manifest
+	}
+	finalRings := make(map[string]Ring, len(existingRingsByName)+len(snapshot.Rings))
+	for name, ring := range existingRingsByName {
+		finalRings[name] = ring
+	}
+	for _, ring := range snapshot.Rings {
+		finalRings[ring.Name] = ring
+	}
+	finalRingNames := make([]string, 0, len(finalRings))
+	for name := range finalRings {
+		finalRingNames = append(finalRingNames, name)
+	}
+	sort.Strings(finalRingNames)
+	for _, name := range finalRingNames {
+		if err := validateRequiredRingAccessAgainst(finalRings[name], finalManifests); err != nil {
 			return ImportResult{}, err
 		}
 	}
@@ -320,7 +434,7 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 }
 
 func (s Snapshot) Validate() error {
-	if s.Version != snapshotVersionV1 && s.Version != snapshotVersionV2 && s.Version != snapshotVersionV3 && s.Version != snapshotVersionV4 && s.Version != snapshotVersionV5 && s.Version != snapshotVersionV6 && s.Version != snapshotVersionV7 && s.Version != snapshotVersionV8 && s.Version != SnapshotVersion {
+	if s.Version != snapshotVersionV1 && s.Version != snapshotVersionV2 && s.Version != snapshotVersionV3 && s.Version != snapshotVersionV4 && s.Version != snapshotVersionV5 && s.Version != snapshotVersionV6 && s.Version != snapshotVersionV7 && s.Version != snapshotVersionV8 && s.Version != snapshotVersionV9 && s.Version != SnapshotVersion {
 		return fmt.Errorf("unsupported snapshot version %d (supported: %d)", s.Version, SnapshotVersion)
 	}
 	if s.Version == snapshotVersionV1 && len(s.Rings) > 0 {
@@ -341,8 +455,14 @@ func (s Snapshot) Validate() error {
 	if s.Version < snapshotVersionV8 && snapshotHasSecretHeaders(s) {
 		return fmt.Errorf("snapshot version %d does not support secret_headers", s.Version)
 	}
-	if s.Version < SnapshotVersion && snapshotHasBearerTokenEnv(s) {
+	if s.Version < snapshotVersionV9 && snapshotHasBearerTokenEnv(s) {
 		return fmt.Errorf("snapshot version %d does not support bearer_token_env_var", s.Version)
+	}
+	if s.Version < SnapshotVersion && snapshotHasAccessProfiles(s) {
+		return fmt.Errorf("snapshot version %d does not support server access profiles", s.Version)
+	}
+	if s.Version < SnapshotVersion && snapshotHasRingPolicies(s) {
+		return fmt.Errorf("snapshot version %d does not support ring policies", s.Version)
 	}
 
 	seen := map[string]struct{}{}
@@ -474,7 +594,7 @@ func manifestsEqual(a, b Manifest) bool {
 	bSecretHeaders := append([]string(nil), b.SecretHeaders.Keys...)
 	sort.Strings(aSecretHeaders)
 	sort.Strings(bSecretHeaders)
-	return slices.Equal(aSecretHeaders, bSecretHeaders)
+	return slices.Equal(aSecretHeaders, bSecretHeaders) && accessProfilesEqual(a.Access, b.Access)
 }
 
 func ringsEqual(a, b Ring) bool {
@@ -488,7 +608,55 @@ func ringsEqual(a, b Ring) bool {
 	}
 	aSkills := normalizedRingSkills(a)
 	bSkills := normalizedRingSkills(b)
-	return slices.Equal(aSkills, bSkills) && ringContractsEqual(a.Contract, b.Contract)
+	return slices.Equal(aSkills, bSkills) && ringContractsEqual(a.Contract, b.Contract) && ringPoliciesEqual(a.Policy, b.Policy)
+}
+
+func accessProfilesEqual(a, b *AccessProfile) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if !optionalStringSetsEqual(a.AllowedTools, b.AllowedTools) ||
+		!optionalStringSetsEqual(a.DeniedTools, b.DeniedTools) ||
+		!optionalStringSetsEqual(a.OAuthScopes, b.OAuthScopes) {
+		return false
+	}
+	if a.DefaultApproval == nil || b.DefaultApproval == nil {
+		if a.DefaultApproval != nil || b.DefaultApproval != nil {
+			return false
+		}
+	} else if *a.DefaultApproval != *b.DefaultApproval {
+		return false
+	}
+	if a.ToolApprovals == nil || b.ToolApprovals == nil {
+		return a.ToolApprovals == nil && b.ToolApprovals == nil
+	}
+	if len(*a.ToolApprovals) != len(*b.ToolApprovals) {
+		return false
+	}
+	for tool, approval := range *a.ToolApprovals {
+		if other, exists := (*b.ToolApprovals)[tool]; !exists || other != approval {
+			return false
+		}
+	}
+	return true
+}
+
+func optionalStringSetsEqual(a, b *[]string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	aValues := append([]string(nil), (*a)...)
+	bValues := append([]string(nil), (*b)...)
+	sort.Strings(aValues)
+	sort.Strings(bValues)
+	return slices.Equal(aValues, bValues)
+}
+
+func ringPoliciesEqual(a, b *RingPolicy) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Enforcement == b.Enforcement
 }
 
 func ringContractsEqual(a, b *RingContract) bool {
@@ -648,6 +816,24 @@ func snapshotHasSecretHeaders(snapshot Snapshot) bool {
 func snapshotHasBearerTokenEnv(snapshot Snapshot) bool {
 	for _, server := range snapshot.Servers {
 		if strings.TrimSpace(server.BearerTokenEnvVar) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func snapshotHasAccessProfiles(snapshot Snapshot) bool {
+	for _, server := range snapshot.Servers {
+		if server.Access != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func snapshotHasRingPolicies(snapshot Snapshot) bool {
+	for _, ring := range snapshot.Rings {
+		if ring.Policy != nil {
 			return true
 		}
 	}
