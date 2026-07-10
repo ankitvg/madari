@@ -165,8 +165,9 @@ func (s *Store) ValidateRingMembers(ring Ring) error {
 
 // ValidateRingPolicy checks the registry-level prerequisites for a
 // policy-required ring. Target-specific eligibility and compiler support are
-// operation-level checks; the store only requires every referenced server to
-// carry an explicit non-empty exact allowlist.
+// operation-level checks. The store requires every referenced server to carry
+// an explicit non-empty exact allowlist when the ring selects access-policy
+// enforcement; execution-only required rings do not invent that requirement.
 func (s *Store) ValidateRingPolicy(ring Ring) error {
 	if !ring.RequiresPolicyEnforcement() {
 		return nil
@@ -201,7 +202,7 @@ func validateRequiredRingAccessAgainst(ring Ring, manifests map[string]Manifest)
 		return nil
 	}
 	var missing []string
-	var unbounded []string
+	selected := make([]Manifest, 0, len(ring.Members))
 	for _, member := range ring.Members {
 		name := strings.TrimSpace(member)
 		manifest, exists := manifests[name]
@@ -209,18 +210,24 @@ func validateRequiredRingAccessAgainst(ring Ring, manifests map[string]Manifest)
 			missing = append(missing, name)
 			continue
 		}
-		if !manifest.HasExplicitToolAllowlist() {
-			unbounded = append(unbounded, name)
-		}
+		selected = append(selected, manifest)
 	}
 	sort.Strings(missing)
-	sort.Strings(unbounded)
 	var errs []string
 	if len(missing) > 0 {
 		errs = append(errs, fmt.Sprintf("unknown servers: %s", strings.Join(missing, ", ")))
 	}
-	if len(unbounded) > 0 {
-		errs = append(errs, fmt.Sprintf("servers without an explicit non-empty allowed_tools allowlist: %s", strings.Join(unbounded, ", ")))
+	if ring.RequiresAccessPolicyEnforcement(selected) {
+		var unbounded []string
+		for _, manifest := range selected {
+			if !manifest.HasExplicitToolAllowlist() {
+				unbounded = append(unbounded, manifest.Name)
+			}
+		}
+		sort.Strings(unbounded)
+		if len(unbounded) > 0 {
+			errs = append(errs, fmt.Sprintf("servers without an explicit non-empty allowed_tools allowlist: %s", strings.Join(unbounded, ", ")))
+		}
 	}
 	if len(errs) == 0 {
 		return nil

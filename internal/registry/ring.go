@@ -100,6 +100,32 @@ func (r Ring) RequiresPolicyEnforcement() bool {
 	return r.Policy.Required()
 }
 
+// RequiresAccessPolicyEnforcement reports whether required enforcement applies
+// to server access profiles. Required rings without an execution policy retain
+// the original bounded-access contract. An execution-policy ring selects that
+// contract only when at least one member declares an access profile; in that
+// case every member must remain bounded.
+func (r Ring) RequiresAccessPolicyEnforcement(manifests []Manifest) bool {
+	if !r.RequiresPolicyEnforcement() {
+		return false
+	}
+	if r.Policy.Execution == nil {
+		return true
+	}
+
+	byName := make(map[string]Manifest, len(manifests))
+	for _, manifest := range manifests {
+		byName[manifest.Name] = manifest
+	}
+	for _, member := range r.Members {
+		manifest, exists := byName[strings.TrimSpace(member)]
+		if !exists || manifest.Access != nil {
+			return true
+		}
+	}
+	return false
+}
+
 // RingContract is advisory metadata that helps an orchestrating agent decide
 // when to use a ring, what context to provide, and what response shape to
 // expect. It does not affect sync, attach, render, or ownership behavior.

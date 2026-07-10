@@ -87,6 +87,32 @@ func TestRunRequiredExecutionSandboxBlocksLocalStdioBeforeExecution(t *testing.T
 	}
 }
 
+func TestRunRequiredExecutionOnlyRemoteServerDoesNotRequireAccessAllowlist(t *testing.T) {
+	store := newTestStore(t)
+	installFakeCodex(t, 0)
+	if err := store.Save(registry.Manifest{
+		Name: "docs", Transport: registry.TransportHTTP, URL: "https://example.com/mcp",
+		Enabled: true, Clients: []string{"codex"},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+	if err := store.SaveRing(registry.Ring{
+		Name: "required", Members: []string{"docs"},
+		Policy: &registry.RingPolicy{Enforcement: registry.PolicyEnforcementRequired, Execution: testExecutionPolicy("10m")},
+	}); err != nil {
+		t.Fatalf("save execution-only ring: %v", err)
+	}
+
+	result := runCmd(store, "run", "codex", "--ring", "required", "--dry-run", "--json", "--", "inspect")
+	if result.code != 0 {
+		t.Fatalf("required execution-only remote ring should be ready: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	if !plan.Ready || !plan.Execution.Required {
+		t.Fatalf("execution guarantee was not preserved: %#v", plan)
+	}
+}
+
 func TestRunAdvisoryExecutionReportsStdioConfinementUnverified(t *testing.T) {
 	store := newTestStore(t)
 	installFakeCodex(t, 0)
