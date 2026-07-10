@@ -10,11 +10,12 @@
 
 Madari keeps four concepts separate:
 
-- Server: an executable MCP capability with command, args, env, and target
-  client metadata.
-- Ring: a named capability grouping with optional advisory contract metadata.
-  Persisted rings can contain server members and skill members by name; the
-  referenced server manifests and skill packages remain the source of truth.
+- Server: an executable MCP capability with command, args, env, target client
+  metadata, and one optional portable access profile.
+- Ring: a named capability grouping with optional required-enforcement policy
+  and optional advisory contract metadata. Persisted rings contain server and
+  skill members by name; referenced server manifests and skill packages remain
+  the source of truth.
 - Skill: procedural or domain instructions for how an agent should use
   capabilities. Skills are official Agent Skill package directories with
   `SKILL.md` metadata, bundled files, and a render surface.
@@ -33,6 +34,12 @@ config/state. Plain `skill render` emits managed `SKILL.md` only, and `skill
 attach` materializes client-native skill packages without changing MCP client
 configs.
 
+Access policy follows the same boundary: the server owns `allowed_tools`,
+`denied_tools`, `oauth_scopes`, `default_approval`, and per-tool approvals. A
+ring only selects whether exact enforcement is required; it does not duplicate
+member profiles. `[contract]` and skill content remain advisory, while
+`[policy.execution]` is reserved and rejected in V1.
+
 ## Components
 
 1. Registry
@@ -45,15 +52,21 @@ configs.
   JSON; export refuses rings that would not round-trip, import validates
   everything before writing anything and never attaches or syncs. Snapshot
   version 4 added ring skill membership, version 5 added ring contract metadata,
-  and version 6 stores full skill package files.
+  version 6 stores full skill package files, and V10 adds server access profiles
+  plus ring policy. V1 through V9 remain importable; older versions carrying V10
+  fields are rejected so policy data cannot be discarded silently.
 
 2. Client Targets and Adapters
 - The command layer keeps a single client target registry for target-level
-  capabilities: sync adapter, ring config renderer, skill roots, and scope
-  support.
+  capabilities: sync adapter, ring config renderer, skill roots, scope support,
+  and separate policy support declarations for persistent sync/attach, render,
+  and run.
 - Translate registry entries into client-specific config.
 - Current adapters: Claude Desktop, Claude Code, Gemini, Codex, and Vibe.
 - Adapters own read/merge/write behavior for their client format.
+- An unspecified policy compiler is unsupported. In the policy schema stage all
+  target/surface policy declarations are unsupported, so required operations
+  fail closed until a compiler explicitly opts in.
 
 3. Sync Engine
 - Reads registry + client config.
@@ -84,12 +97,13 @@ configs.
 5. Rings
 - Named capability sets (`rings/<name>.toml`). Server members are references by
   name only — the server manifest stays the single source of truth for command,
-  args, and env. Skill members are references by name only — managed skill
-  metadata and Markdown stay the source of truth. Optional `[contract]`
-  metadata describes when the ring is useful, what context a delegating agent
-  should provide, and what outputs to expect. Contracts are advisory only:
-  attach, detach, sync, render, status, ownership, and skill materialization do
-  not change when a contract changes.
+  args, env, and access profile. Skill members are references by name only —
+  managed skill metadata and Markdown stay the source of truth. Optional
+  `[contract]` metadata describes when the ring is useful, what context a
+  delegating agent should provide, and what outputs to expect. Contracts are
+  advisory only: attach, detach, sync, render, status, ownership, and skill
+  materialization do not change when a contract changes. Optional `[policy]`
+  metadata can set `enforcement = "required"` without embedding member policy.
 - Attachment is derived state: ring `R` is attached to a target+scope iff
   `ring:R` appears among server ownership sources or skill attachment sources
   there. Attach records the source on every server and skill member,
@@ -115,7 +129,28 @@ configs.
 - `ring delete` refuses while any target/scope still records the ring as an
   ownership source, and never edits client configs or managed state.
 
-6. Skills
+6. Capability Policy
+- `[access]` is optional. No section means a legacy server makes no Madari
+  access declaration.
+- The portable approval vocabulary is `inherit`, `automatic`, `always-prompt`,
+  and `always-allow`. Raw client-native values are not registry values.
+- Field presence is semantic. Absent fields preserve native values during
+  persistent sync, while explicit empty arrays/tables and `inherit` clear the
+  corresponding override. Required rings reject absent or empty allowlists as
+  unbounded.
+- A required operation succeeds only if every member exists, is enabled, targets
+  the selected client, has a non-empty exact allowlist, and compiles every field
+  without approximation. Unknown behavior-affecting native fields also prevent
+  an exact fidelity claim.
+- Required sync/attach fails before config, managed state, or skills change;
+  render fails before partial output; run fails before skill materialization or
+  execution. Detach remains available.
+- OAuth scopes are requested and client-configured, not proof of a provider
+  grant. Approval behavior is a client prompt control, not authorization.
+- Environment sanitization, TTLs, receipts, credential brokers, audit, and
+  `[policy.execution]` are outside V1.
+
+7. Skills
 - Standalone Agent Skill packages stored at `skills/<name>/` with `SKILL.md`
   frontmatter plus optional bundled files such as `references/`, `scripts/`,
   and `assets/`.
@@ -134,7 +169,7 @@ configs.
   ring skills by temporarily materializing them as project skills under the
   isolated run root; other run targets are dry-run only today.
 
-7. Doctor Engine
+8. Doctor Engine
 - Verifies command/binary resolution.
 - Validates required env values are present.
 - Validates client config parseability.
@@ -176,6 +211,10 @@ configs.
   and sync scope is declared explicitly, never inferred from paths.
 - Always backup before write.
 - Fail closed on parse errors.
+- Never claim required policy fidelity when any declared restriction is
+  unsupported, omitted, or approximated.
+- Keep client-enforced tool filtering, requested OAuth scopes, client approval
+  prompts, and advisory contract/skill instructions distinct in reporting.
 
 Materialized sync is the only mode: client configs always contain real
 commands and survive madari's removal. A launcher shim was considered and

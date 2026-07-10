@@ -69,6 +69,8 @@ Raw Codex values are not valid Madari values. In particular, V1 does not expose
 Codex's version-dependent `writes` value as a portable behavior. A later schema
 revision can add a portable write-classification behavior after its semantics
 and target support are stable enough to compile without version guessing.
+The native field names and values are tracked against the current
+[Codex configuration reference](https://developers.openai.com/codex/config-reference).
 
 Approval behavior is a client-side control, not an authorization boundary. A
 server and its OAuth provider remain responsible for authorization.
