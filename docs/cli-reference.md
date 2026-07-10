@@ -81,16 +81,17 @@ unsupported, and unrepresentable members are errors; Madari never substitutes
 an advisory prompt or a weaker native control.
 
 Policy support is declared independently for persistent sync/attach, render,
-and run. In the schema-and-compatibility stage every target/surface compiler is
-unsupported. Required sync or attach therefore fails before config, managed
-state, or skill mutation; required render fails before partial output; and
-required run fails before skill materialization or client execution. Detach
-remains available for cleanup. Manifests without `[access]` and rings without
-`[policy]` preserve existing behavior.
+and run. Codex persistent sync/attach and render compile all five V1 fields.
+Codex run and every policy surface for other targets remain unsupported.
+Required sync or attach fails before config, managed state, or skill mutation;
+required render fails before partial output; and required run fails before skill
+materialization or client execution. Detach remains available for cleanup.
+Manifests without `[access]` and rings without `[policy]` preserve existing
+behavior.
 
-Access profiles outside required rings are still stored, validated, exported,
-imported, and reported, but the schema stage makes no exact-enforcement claim
-for them and has no target compiler that materializes them.
+Access profiles outside required rings are stored, validated, exported,
+imported, reported, and compiled when the selected target surface supports
+them. They do not turn an advisory ring into a mandatory enforcement claim.
 
 `oauth_scopes` is requested and client-configured; it does not prove that an
 OAuth provider granted the scopes or that a token contains them.
@@ -152,6 +153,17 @@ as Codex `http_headers`. `sse` manifests stay pending (Codex's documented
 remote support is Streamable HTTP), and `timeout_ms` has no Codex equivalent
 and is not emitted.
 
+Codex compiles `allowed_tools`, `denied_tools`, `oauth_scopes`,
+`default_approval`, and per-tool approvals into `enabled_tools`,
+`disabled_tools`, `scopes`, `default_tools_approval_mode`, and
+`tools.<tool>.approval_mode`. Routine sync preserves undeclared native policy
+fields, including on core command or URL updates. Explicit empty declarations
+and portable `inherit` remove the corresponding native override. A required
+ring refuses unknown behavior-affecting native fields or native approval values
+that Madari cannot prove equivalent instead of rewriting them. Policy-only
+differences are reported separately by doctor/status while remaining a subset
+of ordinary stale entries.
+
 `vibe` sync targets Vibe's user config (`$VIBE_HOME/config.toml`, or
 `~/.vibe/config.toml` when `VIBE_HOME` is unset). Static `[env]` values are
 written into `[[mcp_servers]]` stdio entries. Existing unmanaged HTTP,
@@ -200,9 +212,9 @@ behavior, or render output.
 
 Ring policy is distinct from the advisory contract. A ring file may set
 `[policy] enforcement = "required"`, but each referenced server remains the
-source of truth for its own `[access]` profile. The initial policy-contract
-release stores and reports this declaration but has no enabled target compiler,
-so required attach, render, and run operations fail during preflight.
+source of truth for its own `[access]` profile. Codex required attach and render
+are supported when every member compiles exactly. Required Codex run and all
+other unsupported target surfaces fail during preflight.
 
 ```toml
 summary = "Collect source context and prepare a research brief."
@@ -254,8 +266,9 @@ Ring skill members are not embedded in MCP render output; use `ring attach`
 for native skill materialization.
 Policy-required render does not use the legacy omit-and-warn behavior: if any
 restriction cannot be represented exactly, it fails before writing partial
-stdout. In the schema-and-compatibility stage every required render is blocked
-because no render policy compiler is enabled.
+stdout. Codex render emits the five native policy fields, with dotted server and
+tool names quoted as literal TOML keys. Other render targets remain unsupported
+for required policy.
 Ephemeral-session recipe:
 
 ```bash
@@ -311,9 +324,8 @@ present, because Madari cannot guarantee ring-only skill isolation in that
 case.
 Policy-required run adds a stricter preflight boundary: every declared member
 restriction must compile exactly before any temporary skill package is
-materialized or the client starts. No run policy compiler is enabled in the
-schema-and-compatibility stage, so required runs are currently blocked while
-legacy runs remain unchanged.
+materialized or the client starts. No run policy compiler is enabled yet, so
+required runs are currently blocked while legacy runs remain unchanged.
 
 ## Skills
 
@@ -560,6 +572,7 @@ warning-level and never changes the exit code by itself.
   "dry_run": true,
   "added": ["stewreads"],
   "updated": [],
+  "policy_updated": [],
   "removed": [],
   "unchanged": [],
   "skipped": [],
@@ -571,6 +584,10 @@ warning-level and never changes the exit code by itself.
   "skills_unchanged": []
 }
 ```
+
+For Codex, `policy_updated` is the sorted subset of `updated` whose declared
+access fields differ from the native configuration. Undeclared preserved fields
+do not appear as policy drift.
 
 `madari run <client> --ring <ring> --dry-run --json`:
 

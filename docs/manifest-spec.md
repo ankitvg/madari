@@ -253,11 +253,12 @@ wrong-target, unbounded, unsupported, or unrepresentable members block the
 operation.
 
 Policy capability support is declared separately for persistent sync/attach,
-render, and run. The schema-and-compatibility stage declares every target and
-surface unsupported, so a required operation currently fails during preflight:
-sync and attach before config, state, or skills change; render before partial
-output; and run before skill materialization or client execution. Detach remains
-available for cleanup. Rings without `[policy]` preserve legacy behavior.
+render, and run. Codex persistent sync/attach and render compile every V1 access
+field. Codex run and all other target policy surfaces remain unsupported. Any
+required operation that cannot compile exactly fails during preflight: sync and
+attach before config, state, or skills change; render before partial output; and
+run before skill materialization or client execution. Detach remains available
+for cleanup. Rings without `[policy]` preserve legacy behavior.
 
 `[policy.execution]` is reserved for a later runtime-policy contract and is
 rejected in V1.

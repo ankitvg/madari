@@ -133,8 +133,10 @@ stale attachment can always be cleaned up.
 
 Target support is declared centrally and separately for persistent sync/attach,
 render, and run. A compiler must opt into a surface; an unspecified compiler is
-unsupported. The policy-schema PR intentionally leaves every compiler disabled,
-so required operations fail closed until the corresponding compiler lands.
+unsupported. The policy-schema PR initially left every compiler disabled. The
+Codex compiler now opts into persistent sync/attach and render for all five V1
+access fields; Codex run and other target surfaces remain disabled until their
+corresponding lossless compilers land.
 
 For persistent sync, undeclared native policy fields are preserved. Declared
 fields are compiled exactly. A required operation blocks on unknown

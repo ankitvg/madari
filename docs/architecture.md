@@ -64,9 +64,9 @@ member profiles. `[contract]` and skill content remain advisory, while
 - Translate registry entries into client-specific config.
 - Current adapters: Claude Desktop, Claude Code, Gemini, Codex, and Vibe.
 - Adapters own read/merge/write behavior for their client format.
-- An unspecified policy compiler is unsupported. In the policy schema stage all
-  target/surface policy declarations are unsupported, so required operations
-  fail closed until a compiler explicitly opts in.
+- An unspecified policy compiler is unsupported. Codex persistent sync/attach
+  and render opt into all five V1 access features; Codex run and every other
+  target policy surface remain fail-closed.
 
 3. Sync Engine
 - Reads registry + client config.
@@ -145,6 +145,10 @@ member profiles. `[contract]` and skill content remain advisory, while
 - Required sync/attach fails before config, managed state, or skills change;
   render fails before partial output; run fails before skill materialization or
   execution. Detach remains available.
+- Codex sync patches cloned native server tables instead of serializing a narrow
+  replacement. Undeclared native policy fields survive legacy updates; declared
+  fields compile exactly, explicit clears remove only their native overrides,
+  and required operations reject unknown behavior-affecting fields.
 - OAuth scopes are requested and client-configured, not proof of a provider
   grant. Approval behavior is a client prompt control, not authorization.
 - Environment sanitization, TTLs, receipts, credential brokers, audit, and

@@ -156,11 +156,10 @@ secret declarations for those isolated env keys are blocked. Other clients
 remain dry-run only for now.
 
 Capability Policy Contract V1 preserves existing behavior for manifests without
-`[access]` and rings without `[policy]`. In the schema-and-compatibility stage,
-policy capability declarations for sync/attach, render, and run are all
-unsupported. A policy-required operation therefore fails during preflight,
-before client config, managed state, skill files, render output, or execution can
-change. Target compilers opt into those surfaces in later implementation stages.
+`[access]` and rings without `[policy]`. Codex persistent sync/attach and render
+compile all five V1 access fields. Required operations fail during preflight if
+a member or native field cannot be represented exactly; Codex run and all other
+target policy surfaces remain unsupported until their own compilers land.
 
 ## Safety Model
 
@@ -201,10 +200,10 @@ remote manifests and report them as pending. Remote entries that require
 `codex`.
 
 Transport, auth, and skill support are separate from capability-policy support.
-The initial policy-contract release declares policy compilation unsupported for
-every client on persistent sync/attach, render, and run surfaces. Legacy
+Codex supports exact policy compilation on persistent sync/attach and render.
+Codex run and every policy surface for other clients remain unsupported. Legacy
 operations remain available; rings with `[policy] enforcement = "required"`
-block until a target compiler explicitly supports the selected surface.
+block whenever the selected target surface lacks an exact compiler.
 
 Madari can materialize skills for:
 
