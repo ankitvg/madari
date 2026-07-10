@@ -12,6 +12,7 @@ import (
 	"github.com/ankitvg/madari/internal/clients"
 	"github.com/ankitvg/madari/internal/clients/codex"
 	"github.com/ankitvg/madari/internal/clients/syncshared"
+	"github.com/ankitvg/madari/internal/policy"
 	"github.com/ankitvg/madari/internal/registry"
 	"github.com/pelletier/go-toml/v2"
 )
@@ -283,6 +284,18 @@ func checkDrift(manifests []registry.Manifest, targets []DriftTarget, rings []re
 			continue
 		}
 		if len(state) == 0 {
+			continue
+		}
+		if err := policy.ValidateAttachedRequiredRings(
+			rings,
+			syncshared.AttachedRings(state),
+			manifests,
+			target.Adapter.Target(),
+			policy.SurfacePersistent,
+		); err != nil {
+			dr.Status = StatusError
+			dr.Issue = fmt.Sprintf("policy preflight: %v", err)
+			reports = append(reports, dr)
 			continue
 		}
 
