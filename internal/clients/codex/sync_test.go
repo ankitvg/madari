@@ -211,7 +211,7 @@ STEWREADS_CONFIG_PATH = "~/.config/stewreads/config.toml"
 	}
 }
 
-func TestSyncConflictsOnDisabledUnmanagedEntry(t *testing.T) {
+func TestSyncPreservesDisabledUnmanagedEntry(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "config.toml")
 	statePath := filepath.Join(tmp, "state", "codex-managed.json")
@@ -226,17 +226,20 @@ STEWREADS_CONFIG_PATH = "~/.config/stewreads/config.toml"
 		t.Fatalf("write config fixture: %v", err)
 	}
 
-	_, err := Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
+	result, err := Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
 		ConfigPath: configPath,
 		StatePath:  statePath,
 		DryRun:     true,
 	})
-	if !errors.Is(err, clients.ErrConflict) {
-		t.Fatalf("expected disabled unmanaged entry to conflict, got: %v", err)
+	if err != nil {
+		t.Fatalf("sync disabled unmanaged entry: %v", err)
+	}
+	if !reflect.DeepEqual(result.Unchanged, []string{"stewreads"}) {
+		t.Fatalf("expected native enabled restriction to be preserved, got: %#v", result)
 	}
 }
 
-func TestSyncUpdatesOwnedDisabledEntry(t *testing.T) {
+func TestSyncPreservesOwnedDisabledEntry(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "config.toml")
 	statePath := filepath.Join(tmp, "state", "codex-managed.json")
@@ -259,13 +262,15 @@ STEWREADS_CONFIG_PATH = "~/.config/stewreads/config.toml"
 	result, err := Sync([]registry.Manifest{newStewreadsManifest()}, SyncOptions{
 		ConfigPath: configPath,
 		StatePath:  statePath,
-		DryRun:     true,
 	})
 	if err != nil {
 		t.Fatalf("sync dry-run failed: %v", err)
 	}
-	if !reflect.DeepEqual(result.Updated, []string{"stewreads"}) {
-		t.Fatalf("expected owned disabled entry to be reported updated, got: %+v", result)
+	if !reflect.DeepEqual(result.Unchanged, []string{"stewreads"}) {
+		t.Fatalf("expected owned native enabled restriction to be preserved, got: %+v", result)
+	}
+	if enabled := readServers(t, configPath)["stewreads"].Enabled; enabled == nil || *enabled {
+		t.Fatalf("routine sync silently re-enabled native entry: %#v", enabled)
 	}
 }
 

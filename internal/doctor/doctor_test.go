@@ -3,13 +3,16 @@ package doctor
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/ankitvg/madari/internal/clients"
 	"github.com/ankitvg/madari/internal/clients/claudecode"
+	"github.com/ankitvg/madari/internal/clients/codex"
 	"github.com/ankitvg/madari/internal/clients/gemini"
+	"github.com/ankitvg/madari/internal/clients/syncshared"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -771,6 +774,42 @@ func TestRunDriftReportsPolicyStaleAsSubset(t *testing.T) {
 	}
 	if report.Summary.Warning != 1 {
 		t.Fatalf("expected one drift warning without double counting policy subset, got: %#v", report.Summary)
+	}
+}
+
+func TestRunDriftUsesCodexDeclaredPolicyComparator(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix fixture mode bits are used in this test")
+	}
+	tmp := t.TempDir()
+	store := registry.NewStore(filepath.Join(tmp, "servers"))
+	commandPath := writeTestExecutable(t, tmp, "policy-mcp")
+	allowed := []string{"read"}
+	if err := store.Save(registry.Manifest{
+		Name: "docs", Command: commandPath, Enabled: true, Clients: []string{"codex"},
+		Access: &registry.AccessProfile{AllowedTools: &allowed},
+	}); err != nil {
+		t.Fatalf("save policy manifest: %v", err)
+	}
+	configPath := filepath.Join(tmp, "config.toml")
+	config := "[mcp_servers.docs]\ncommand = \"" + commandPath + "\"\nenabled_tools = [\"write\"]\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatalf("write Codex config: %v", err)
+	}
+	statePath := filepath.Join(tmp, "state", "codex-managed.json")
+	if err := syncshared.SaveManagedState(statePath, map[string][]string{"docs": {syncshared.SourceStandalone}}); err != nil {
+		t.Fatalf("write managed state: %v", err)
+	}
+
+	adapter := codex.Adapter{}
+	report, err := Run(store, Options{DriftTargets: []DriftTarget{{
+		Adapter: adapter, StatePath: statePath, ConfigPath: configPath,
+	}}})
+	if err != nil {
+		t.Fatalf("doctor run: %v", err)
+	}
+	if len(report.Drift) != 1 || !reflect.DeepEqual(report.Drift[0].Stale, []string{"docs"}) || !reflect.DeepEqual(report.Drift[0].PolicyStale, []string{"docs"}) {
+		t.Fatalf("Codex policy drift was not propagated: %#v", report.Drift)
 	}
 }
 

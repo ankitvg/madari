@@ -31,6 +31,9 @@ type SyncResult = clients.SyncResult
 // config file. Codex's native `codex mcp add` command writes global MCP
 // servers to $CODEX_HOME/config.toml, defaulting to ~/.codex/config.toml.
 func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
+	if err := validateInputManifests(manifests); err != nil {
+		return SyncResult{}, err
+	}
 	if err := validateScope(opts.Scope); err != nil {
 		return SyncResult{}, err
 	}
@@ -51,11 +54,15 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 	if err != nil {
 		return SyncResult{}, err
 	}
+	if err := preflightAttachedPolicyRings(opts.Rings, manifests, managedState, existingServers); err != nil {
+		return SyncResult{}, err
+	}
 
 	result, nextState, writeSet, err := syncshared.PlanSync(existingServers, managedState, entriesForTarget(manifests), opts.Rings, equalServer, ErrConflict)
 	if err != nil {
 		return SyncResult{}, err
 	}
+	result.PolicyUpdated = policyUpdatedNames(result.Updated, existingServers, writeSet)
 	result.ConfigPath = configPath
 	result.DryRun = opts.DryRun
 
@@ -73,6 +80,9 @@ func Sync(manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
 // eligible ones into Codex config. Attaching onto any pre-existing unmanaged
 // entry, equal values included, refuses with ErrConflict.
 func AttachRing(ring registry.Ring, manifests []registry.Manifest, opts SyncOptions) (SyncResult, error) {
+	if err := validateInputManifests(manifests); err != nil {
+		return SyncResult{}, err
+	}
 	if err := validateScope(opts.Scope); err != nil {
 		return SyncResult{}, err
 	}
@@ -93,11 +103,15 @@ func AttachRing(ring registry.Ring, manifests []registry.Manifest, opts SyncOpti
 	if err != nil {
 		return SyncResult{}, err
 	}
+	if err := preflightPolicyRing(ring, manifests, managedState, existingServers); err != nil {
+		return SyncResult{}, err
+	}
 
 	result, nextState, writeSet, err := syncshared.PlanAttach(existingServers, managedState, ring.Name, ring.Members, entriesForTarget(manifests), opts.Rings, equalServer, ErrConflict)
 	if err != nil {
 		return SyncResult{}, err
 	}
+	result.PolicyUpdated = policyUpdatedNames(result.Updated, existingServers, writeSet)
 	result.ConfigPath = configPath
 	result.DryRun = opts.DryRun
 
@@ -165,7 +179,11 @@ func applyPlan(
 		delete(mutated, name)
 	}
 	for name, server := range writeSet {
-		mutated[name] = server
+		merged, err := mergeServerTable(rawServers[name], server)
+		if err != nil {
+			return fmt.Errorf("merge Codex server %q: %w", name, err)
+		}
+		mutated[name] = merged
 	}
 
 	updatedRoot := make(map[string]any, len(root)+1)
@@ -234,6 +252,18 @@ func validateScope(scope string) error {
 	}
 }
 
+func validateInputManifests(manifests []registry.Manifest) error {
+	for _, manifest := range manifests {
+		if !manifest.HasClient(Target) {
+			continue
+		}
+		if err := manifest.Validate(); err != nil {
+			return fmt.Errorf("validate manifest %q before Codex policy compilation: %w", manifest.Name, err)
+		}
+	}
+	return nil
+}
+
 func entriesForTarget(manifests []registry.Manifest) map[string]syncshared.Entry[serverConfig] {
 	entries := map[string]syncshared.Entry[serverConfig]{}
 	for _, manifest := range manifests {
@@ -268,6 +298,7 @@ func materializeServer(manifest registry.Manifest) serverConfig {
 			URL:               manifest.URL,
 			OAuthResource:     manifest.OAuthResource,
 			BearerTokenEnvVar: manifest.BearerTokenEnvVar,
+			Access:            CompileAccess(manifest.Access),
 		}
 		if len(manifest.Headers) > 0 {
 			entry.HTTPHeaders = make(map[string]string, len(manifest.Headers))
@@ -280,6 +311,7 @@ func materializeServer(manifest registry.Manifest) serverConfig {
 
 	entry := serverConfig{
 		Command: manifest.Command,
+		Access:  CompileAccess(manifest.Access),
 		EnvVars: runtimeEnvKeys(
 			manifest.RequiredEnv.Keys,
 			manifest.SecretEnv.Keys,
@@ -345,9 +377,6 @@ func equalServer(a, b serverConfig) bool {
 			return false
 		}
 	}
-	if effectiveEnabled(a) != effectiveEnabled(b) {
-		return false
-	}
 	if !equalStringSlices(a.Args, b.Args) {
 		return false
 	}
@@ -359,11 +388,10 @@ func equalServer(a, b serverConfig) bool {
 			return false
 		}
 	}
-	return equalStringSlices(a.EnvVars, b.EnvVars)
-}
-
-func effectiveEnabled(server serverConfig) bool {
-	return server.Enabled == nil || *server.Enabled
+	if !equalStringSlices(a.EnvVars, b.EnvVars) {
+		return false
+	}
+	return equalDeclaredAccess(a.Access, b.Access)
 }
 
 func equalStringSlices(a, b []string) bool {
@@ -487,6 +515,12 @@ func parseServer(name string, raw any) (serverConfig, error) {
 	} else if ok {
 		entry.EnvVars = envVars
 	}
+	access, fidelityIssues, err := parseNativeAccess(name, table)
+	if err != nil {
+		return serverConfig{}, err
+	}
+	entry.Access = access
+	entry.FidelityIssues = fidelityIssues
 	return entry, nil
 }
 
@@ -553,13 +587,15 @@ func optionalStringMap(table map[string]any, key string) (map[string]string, boo
 }
 
 type serverConfig struct {
-	Command           string            `toml:"command,omitempty"`
-	URL               string            `toml:"url,omitempty"`
-	OAuthResource     string            `toml:"oauth_resource,omitempty"`
-	BearerTokenEnvVar string            `toml:"bearer_token_env_var,omitempty"`
-	Enabled           *bool             `toml:"enabled,omitempty"`
-	Args              []string          `toml:"args,omitempty"`
-	EnvVars           []string          `toml:"env_vars,omitempty"`
-	Env               map[string]string `toml:"env,omitempty"`
-	HTTPHeaders       map[string]string `toml:"http_headers,omitempty"`
+	Command           string                `toml:"command,omitempty"`
+	URL               string                `toml:"url,omitempty"`
+	OAuthResource     string                `toml:"oauth_resource,omitempty"`
+	BearerTokenEnvVar string                `toml:"bearer_token_env_var,omitempty"`
+	Enabled           *bool                 `toml:"enabled,omitempty"`
+	Args              []string              `toml:"args,omitempty"`
+	EnvVars           []string              `toml:"env_vars,omitempty"`
+	Env               map[string]string     `toml:"env,omitempty"`
+	HTTPHeaders       map[string]string     `toml:"http_headers,omitempty"`
+	Access            CompiledAccess        `toml:"-"`
+	FidelityIssues    []nativeFidelityIssue `toml:"-"`
 }
