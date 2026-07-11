@@ -111,6 +111,9 @@ Or run Codex with one or more rings without mutating Codex config:
 ```bash
 madari run codex --ring thinking --max-duration 5m -- \
   "Use this ring to inspect the target context."
+
+madari run codex --ring thinking --receipt ./run-receipt.json -- \
+  "Run with a private redacted evidence receipt."
 ```
 
 Use `madari help <command>` or `docs/cli-reference.md` for complete command
@@ -192,6 +195,16 @@ preflight if a member or native field cannot represent the contract exactly.
 Bounded run defaults apply independently to every Codex run. Other target policy
 surfaces remain unsupported until their own compilers land.
 
+`--receipt <path>` opts a Codex run invocation into a strict, independently
+versioned JSON receipt. Receipts cover blocked planning, success, failure,
+timeout, and handled cancellation; they contain receipt-safe hashes, authority,
+declared environment key names, client version, timeout, and exit evidence.
+They exclude prompts, arguments, environment/header values, auth state, skill
+bodies, output, and raw errors. Successfully finalized receipt files are
+atomically written owner-only and explicitly identify themselves as
+self-reported evidence, not cryptographic attestation. `--receipt` cannot be
+combined with `--dry-run`.
+
 ## Safety Model
 
 - Local-first registry and human-readable config files
@@ -214,6 +227,8 @@ surfaces remain unsupported until their own compilers land.
   an access restriction
 - Required execution policy blocks local stdio members because their filesystem
   and network confinement cannot be verified
+- Opt-in execution receipts are strict, redacted, atomically replaced, and
+  owner-only; they are self-reported observations rather than attestation
 - OAuth scopes are requested and client-configured; Madari cannot prove that an
   OAuth provider granted them
 - Tool approval behavior controls client prompts and is not an authorization
@@ -256,6 +271,7 @@ Madari can materialize skills for:
 - `docs/manifest-spec.md`
 - `docs/adr/003-capability-policy-contract-v1.md`
 - `docs/adr/004-bounded-execution-boundary.md`
+- `docs/adr/005-execution-receipt-v1.md`
 - `docs/troubleshooting.md`
 
 ## Development

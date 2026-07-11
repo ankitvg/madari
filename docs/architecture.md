@@ -214,10 +214,27 @@ environment, sandbox, lifetime, and credential-exposure contract for runs.
   stdio MCP server that Codex spawns separately. Stdio filesystem and network
   confinement are therefore unverified. A required execution policy blocks
   stdio members; advisory policy proceeds with degraded/unverified reporting.
-- Versioned opt-in execution receipts are planned separately and are not part of
-  the current CLI surface.
 
-9. Skills
+9. Execution Receipts
+- `madari run codex --receipt <path>` opts into one independently versioned V1
+  receipt. Receipt JSON does not share the additive command JSON schema.
+- The receipt finalizer accepts only sanitized names, bounded enums, timestamps,
+  counters, and receipt-safe hashes. It has no API for prompt text, arguments,
+  environment values, auth state, raw errors, stdout, or stderr.
+- The receipt records requested/effective authority, manifest-declared
+  environment key names configured for each recipient, client and timeout/exit
+  observations, and whether tree termination completed for the observed
+  containment set. Recipient entries do not claim the recipient started.
+- Blocked planning, success, failure, timeout, and handled cancellation finalize
+  a receipt when the destination is writable. Receipt-write failure is returned
+  without masking an execution failure.
+- Files are replaced atomically with owner-only `0600` protection (including a
+  protected current-user DACL on Windows).
+- Receipts explicitly identify themselves as self-reported evidence with no
+  cryptographic attestation. Madari does not provide a verifier that merely
+  reparses or checksums its own output.
+
+10. Skills
 - Standalone Agent Skill packages stored at `skills/<name>/` with `SKILL.md`
   frontmatter plus optional bundled files such as `references/`, `scripts/`,
   and `assets/`.
@@ -236,7 +253,7 @@ environment, sandbox, lifetime, and credential-exposure contract for runs.
   ring skills by temporarily materializing them as project skills under the
   isolated run root; other run targets are dry-run only today.
 
-10. Doctor Engine
+11. Doctor Engine
 - Verifies command/binary resolution.
 - Validates required env values are present.
 - Validates client config parseability.

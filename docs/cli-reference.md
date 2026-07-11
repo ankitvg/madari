@@ -340,8 +340,8 @@ server member = warning).
 ## Run
 
 ```bash
-madari run <client> --ring <ring> [--ring <ring> ...] [--max-duration <duration>] [--dry-run] -- <prompt>
-madari run codex --ring cloudsql-readonly --max-duration 5m -- "Who are the top 5 ebook creators?"
+madari run <client> --ring <ring> [--ring <ring> ...] [--max-duration <duration>] [--receipt <path>] [--dry-run] -- <prompt>
+madari run codex --ring cloudsql-readonly --max-duration 5m --receipt ./run-receipt.json -- "Who are the top 5 ebook creators?"
 madari run codex --ring cloudsql-readonly --ring research --max-duration 10m --dry-run --json -- "Inspect the combined plan"
 ```
 
@@ -430,8 +430,34 @@ For non-Codex dry-runs, `execution.supported` is `false`; requested execution
 policy remains visible, but effective controls are reported as
 none/unverified/degraded (or blocked when required), never as Codex-enforced.
 
-Versioned opt-in execution receipts are planned separately. There is no receipt
-flag or receipt file in the current run surface.
+### Execution receipts
+
+`--receipt <path>` opts a Codex run invocation into one redacted receipt. `~` is
+expanded and relative paths are made absolute before entering the isolated run
+directory. The flag is rejected with `--dry-run` and for non-Codex targets. No
+receipt status line is printed, so Codex stdout/stderr passthrough is unchanged.
+
+When requested, a receipt is finalized for blocked planning, success,
+preparation/start/nonzero-exit or containment-cleanup failure, timeout, or
+handled cancellation. A receipt-write error fails the command; if execution
+also failed, both errors are returned. An uncatchable kill or host crash can
+prevent finalization.
+
+Receipt schema V1 is strict and independent from the command JSON envelope
+version. It records a UUID v4 run ID, UTC timestamps, total duration, bounded
+outcome/reason codes, receipt-safe artifact/policy/component hashes, client
+version, requested/effective authority, manifest-declared environment key names,
+the exact effective timeout in nanoseconds, exit evidence, and observed
+tree-termination status. Environment entries describe configured forwarding;
+they do not prove that a recipient process started or received a value.
+
+Receipts never contain prompt text or a prompt hash, command/argument values,
+URLs or headers, environment values, auth paths/content, skill bodies,
+stdout/stderr, temporary paths/PIDs, or raw error messages. Files are atomically
+replaced with owner-only `0600` protection. The evidence object always says
+`kind = "self-reported"` and `cryptographic_attestation = false`; hashes support
+configuration correlation and are not signatures or provider verification.
+See `docs/adr/005-execution-receipt-v1.md` for the exact evidence boundary.
 
 ## Skills
 
@@ -522,6 +548,9 @@ containing object is emitted. Optional objects such as server `access`, ring
 `contract`, and ring `policy` are omitted when absent. Inside `access`, absent
 fields are omitted while explicitly cleared arrays or the per-tool table are
 emitted as `[]` or `{}` so presence semantics survive the JSON round trip.
+
+Execution receipt JSON is a separate strict V1 contract: it does not use this
+command envelope version or its additive-field compatibility rule.
 
 ```bash
 madari list --json
