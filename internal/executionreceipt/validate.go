@@ -188,9 +188,6 @@ func (r Receipt) validateExecutionOutcome() error {
 		if !r.ProcessStarted {
 			return fmt.Errorf("timeout outcome requires process_started true")
 		}
-		if err := validateNonSuccessExit(r.Exit); err != nil {
-			return err
-		}
 	case OutcomeCancelled:
 		if r.ReasonCode != ReasonCancelled {
 			return fmt.Errorf("cancelled outcome requires reason_code %q", ReasonCancelled)
@@ -201,9 +198,6 @@ func (r Receipt) validateExecutionOutcome() error {
 			}
 		} else if r.Termination != nil {
 			return fmt.Errorf("cancelled outcome before process start requires termination null")
-		}
-		if err := validateNonSuccessExit(r.Exit); err != nil {
-			return err
 		}
 	default:
 		return fmt.Errorf("unsupported execution outcome %q", r.Outcome)

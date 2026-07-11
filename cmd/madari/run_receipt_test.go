@@ -306,6 +306,26 @@ func TestRunReceiptTypedLifecycleMapping(t *testing.T) {
 	}
 }
 
+func TestReceiptForwardingExcludesGeneratedCodexProcessKeys(t *testing.T) {
+	forwarded := receiptForwardingFromPlan([]runPlanEnv{
+		{Key: "HOME", Present: true, Servers: []string{"local"}},
+		{Key: "DECLARED_TOKEN", Present: true, Servers: []string{"local"}},
+	}, []registry.Manifest{{
+		Name: "local", Command: mustCurrentExecutable(t), Enabled: true, Clients: []string{"codex"},
+		RequiredEnv: registry.RequiredEnv{Keys: []string{"HOME", "DECLARED_TOKEN"}},
+	}})
+
+	if len(forwarded) != 2 {
+		t.Fatalf("unexpected forwarding recipients: %#v", forwarded)
+	}
+	if got := forwarded[0]; got.Recipient.Kind != executionreceipt.RecipientCodexProcess || !reflect.DeepEqual(got.Keys, []string{"DECLARED_TOKEN"}) {
+		t.Fatalf("Codex process evidence included generated isolation keys: %#v", got)
+	}
+	if got := forwarded[1]; got.Recipient.Kind != executionreceipt.RecipientStdioServer || !reflect.DeepEqual(got.Keys, []string{"DECLARED_TOKEN", "HOME"}) {
+		t.Fatalf("stdio forwarding evidence did not reflect configured keys: %#v", got)
+	}
+}
+
 func TestRunReceiptRecordsHandledCancellation(t *testing.T) {
 	store := setupSuccessfulReceiptRun(t)
 	withCodexRunExecutor(t, func(context.Context, cliApp, runLaunchPlan) (proctree.Result, error) {
@@ -328,6 +348,40 @@ func TestRunReceiptRecordsHandledCancellation(t *testing.T) {
 	}
 	if bytes.Contains(raw, []byte(context.Canceled.Error())) {
 		t.Fatalf("raw cancellation error leaked into receipt: %s", raw)
+	}
+}
+
+func TestRunReceiptRecordsGracefulTerminationExitZero(t *testing.T) {
+	tests := []struct {
+		name        string
+		outcome     proctree.Outcome
+		termination proctree.TerminationReason
+		wantOutcome executionreceipt.Outcome
+		runErr      error
+	}{
+		{name: "timeout", outcome: proctree.OutcomeTimeout, termination: proctree.TerminationReasonTimeout, wantOutcome: executionreceipt.OutcomeTimeout, runErr: context.DeadlineExceeded},
+		{name: "cancelled", outcome: proctree.OutcomeCancelled, termination: proctree.TerminationReasonCancelled, wantOutcome: executionreceipt.OutcomeCancelled, runErr: context.Canceled},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := setupSuccessfulReceiptRun(t)
+			withCodexRunExecutor(t, func(context.Context, cliApp, runLaunchPlan) (proctree.Result, error) {
+				return proctree.Result{
+					Outcome: test.outcome, ProcessStarted: true,
+					Termination: &proctree.Termination{Reason: test.termination, TreeTermination: proctree.TreeTerminationCompleted},
+					Exit:        &proctree.Exit{Code: 0},
+				}, test.runErr
+			})
+			path := filepath.Join(t.TempDir(), test.name+"-exit-zero.json")
+			result := runCmd(store, "run", "codex", "--ring", "docs", "--receipt", path, "--", "inspect")
+			if result.code == 0 {
+				t.Fatalf("terminated run unexpectedly succeeded: stdout=%s stderr=%s", result.stdout, result.stderr)
+			}
+			receipt, _ := readRunReceipt(t, path)
+			if receipt.Outcome != test.wantOutcome || receipt.Exit == nil || receipt.Exit.Code == nil || *receipt.Exit.Code != 0 {
+				t.Fatalf("graceful termination receipt mismatch: %#v", receipt)
+			}
+		})
 	}
 }
 

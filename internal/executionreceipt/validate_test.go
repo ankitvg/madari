@@ -20,7 +20,9 @@ func TestValidateAcceptsEveryCoherentOutcome(t *testing.T) {
 		{name: "signal exit", receipt: receiptForFailure(ReasonProcessFailed, true, &Exit{Signal: pointer("SIGTERM")})},
 		{name: "containment failure after success", receipt: receiptForFailure(ReasonContainmentFailed, true, &Exit{Code: pointer(0)})},
 		{name: "timeout", receipt: receiptForTermination(OutcomeTimeout, ReasonTimeout, TerminationTimeout, true)},
+		{name: "timeout after graceful exit", receipt: receiptForGracefulTermination(OutcomeTimeout, ReasonTimeout, TerminationTimeout)},
 		{name: "cancelled after start", receipt: receiptForTermination(OutcomeCancelled, ReasonCancelled, TerminationCancelled, true)},
+		{name: "cancelled after graceful exit", receipt: receiptForGracefulTermination(OutcomeCancelled, ReasonCancelled, TerminationCancelled)},
 		{name: "cancelled before start", receipt: receiptForTermination(OutcomeCancelled, ReasonCancelled, TerminationCancelled, false)},
 		{name: "one nanosecond timeout", receipt: receiptWithTimeout(1)},
 	}
@@ -240,6 +242,12 @@ func receiptForTermination(outcome Outcome, reason ReasonCode, terminationReason
 		receipt.Termination = nil
 		receipt.Exit = nil
 	}
+	return receipt
+}
+
+func receiptForGracefulTermination(outcome Outcome, reason ReasonCode, terminationReason TerminationReason) Receipt {
+	receipt := receiptForTermination(outcome, reason, terminationReason, true)
+	receipt.Exit = &Exit{Code: pointer(0)}
 	return receipt
 }
 

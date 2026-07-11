@@ -189,7 +189,27 @@ func processExists(pid string) bool {
 	if pid == "" {
 		return false
 	}
-	return exec.Command("/bin/kill", "-0", pid).Run() == nil
+	output, err := exec.Command("ps", "-o", "stat=", "-p", pid).Output()
+	if err != nil {
+		return false
+	}
+	return processStateIsRunning(output)
+}
+
+func processStateIsRunning(output []byte) bool {
+	state := strings.TrimSpace(string(output))
+	return state != "" && !strings.HasPrefix(state, "Z")
+}
+
+func TestProcessStateTreatsZombieAsTerminated(t *testing.T) {
+	for _, state := range []string{"Z", "Z+", " Zs \n"} {
+		if processStateIsRunning([]byte(state)) {
+			t.Fatalf("zombie state %q was treated as running", state)
+		}
+	}
+	if !processStateIsRunning([]byte("S+\n")) {
+		t.Fatal("sleeping process was treated as terminated")
+	}
 }
 
 func testExecutionPolicy(duration string) *registry.ExecutionPolicy {

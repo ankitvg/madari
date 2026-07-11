@@ -254,7 +254,7 @@ func receiptManifestSnapshot(plan runLaunchPlan) []registry.Manifest {
 func receiptForwardingFromPlan(env []runPlanEnv, servers []registry.Manifest) []executionreceipt.EnvironmentForwarding {
 	processKeys := make([]string, 0, len(env))
 	for _, requirement := range env {
-		if key := strings.TrimSpace(requirement.Key); key != "" {
+		if key := strings.TrimSpace(requirement.Key); key != "" && !codexGeneratedEnvKey(key) {
 			processKeys = append(processKeys, key)
 		}
 	}
