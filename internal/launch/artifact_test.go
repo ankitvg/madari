@@ -17,7 +17,8 @@ func TestCompileFreezesEveryRegistryInput(t *testing.T) {
 	manifest := registry.Manifest{
 		Name: "docs", Command: command, Args: []string{"--mode", "before"},
 		Enabled: true, Clients: []string{"codex"}, Env: map[string]string{"MODE": "before"},
-		Access: &registry.AccessProfile{AllowedTools: &allowed},
+		RequiredEnv: registry.RequiredEnv{Keys: []string{"DOCS_TOKEN"}},
+		Access:      &registry.AccessProfile{AllowedTools: &allowed},
 	}
 	contract := &registry.RingContract{Summary: "before contract"}
 	ring := registry.Ring{
@@ -29,7 +30,7 @@ func TestCompileFreezesEveryRegistryInput(t *testing.T) {
 	artifact, err := Compile(Input{
 		Target: "codex", WorkingDirectory: t.TempDir(), Prompt: "before prompt",
 		Rings: []registry.Ring{ring}, Servers: []registry.Manifest{manifest}, Skills: []registry.SkillPackage{skill},
-		CallerIsolatedEnv: map[string]string{"HOME": "/before/home"},
+		Environment: EnvironmentInput{Declared: map[string]string{"DOCS_TOKEN": "before-token"}},
 	})
 	if err != nil {
 		t.Fatalf("compile launch: %v", err)
@@ -84,8 +85,9 @@ func TestLaunchDigestExcludesPromptRuntimeValuesContractsAndArguments(t *testing
 		Rings: []registry.Ring{{Name: "research", Members: []string{"docs"}, Contract: &registry.RingContract{Summary: "secret contract one"}}},
 		Servers: []registry.Manifest{{
 			Name: "docs", Command: command, Args: []string{"--token=secret-one"}, Enabled: true, Clients: []string{"codex"},
+			RequiredEnv: registry.RequiredEnv{Keys: []string{"DOCS_TOKEN"}},
 		}},
-		CallerIsolatedEnv: map[string]string{"HOME": "/secret/home/one"},
+		Environment: EnvironmentInput{Declared: map[string]string{"DOCS_TOKEN": "secret-token-one"}},
 	}
 	first, err := Compile(input)
 	if err != nil {
@@ -94,7 +96,7 @@ func TestLaunchDigestExcludesPromptRuntimeValuesContractsAndArguments(t *testing
 	input.Prompt = "secret prompt two"
 	input.Rings[0].Contract.Summary = "secret contract two"
 	input.Servers[0].Args[0] = "--token=secret-two"
-	input.CallerIsolatedEnv["HOME"] = "/secret/home/two"
+	input.Environment.Declared["DOCS_TOKEN"] = "secret-token-two"
 	second, err := Compile(input)
 	if err != nil {
 		t.Fatalf("compile second launch: %v", err)
@@ -139,20 +141,65 @@ func TestCompileReportsRequestedAndEffectiveAuthority(t *testing.T) {
 		t.Fatalf("compile launch: %v", err)
 	}
 	want := map[string]AuthorityControl{
-		"instructions":       {Control: "instructions", EnforcedBy: EnforcedByAdvisory, Verification: VerificationConfigured},
-		"mcp-tool-filtering": {Control: "mcp-tool-filtering", EnforcedBy: EnforcedByClient, Verification: VerificationConfigured},
-		"oauth-scopes":       {Control: "oauth-scopes", EnforcedBy: EnforcedByProvider, Verification: VerificationUnverified},
-		"tool-approvals":     {Control: "tool-approvals", EnforcedBy: EnforcedByClient, Verification: VerificationConfigured},
+		"instructions":       {Control: "instructions", EnforcedBy: EnforcedByAdvisory, Verification: VerificationConfigured, Classification: ClassificationAdvisory},
+		"mcp-tool-filtering": {Control: "mcp-tool-filtering", EnforcedBy: EnforcedByClient, Verification: VerificationConfigured, Classification: ClassificationAdvisory},
+		"oauth-scopes":       {Control: "oauth-scopes", EnforcedBy: EnforcedByProvider, Verification: VerificationUnverified, Classification: ClassificationAdvisory},
+		"tool-approvals":     {Control: "tool-approvals", EnforcedBy: EnforcedByClient, Verification: VerificationConfigured, Classification: ClassificationAdvisory},
 	}
 	authority := artifact.Authority()
-	if len(authority.Requested) != len(want) || len(authority.Effective) != len(want) {
+	if len(authority.Requested) != len(want) || len(authority.Effective) != len(want)+4 {
 		t.Fatalf("unexpected authority: %#v", authority)
 	}
 	for _, control := range authority.Effective {
-		if control != want[control.Control] {
+		expected, ok := want[control.Control]
+		if ok && control != expected {
 			t.Fatalf("unexpected authority control: %#v", control)
 		}
 	}
+}
+
+func TestCompileAuthorityDoesNotUpgradeUnrelatedAdvisoryServer(t *testing.T) {
+	allowedRequired := []string{"required.read"}
+	allowedAdvisory := []string{"advisory.read"}
+	servers := []registry.Manifest{
+		{Name: "required", Transport: registry.TransportHTTP, URL: "https://required.example/mcp", Enabled: true, Clients: []string{"codex"}, Access: &registry.AccessProfile{AllowedTools: &allowedRequired}},
+		{Name: "advisory", Transport: registry.TransportHTTP, URL: "https://advisory.example/mcp", Enabled: true, Clients: []string{"codex"}, Access: &registry.AccessProfile{AllowedTools: &allowedAdvisory}},
+	}
+	requiredRing := registry.Ring{
+		Name: "required-ring", Members: []string{"required"},
+		Policy: &registry.RingPolicy{Enforcement: registry.PolicyEnforcementRequired},
+	}
+
+	requiredOnly, err := Compile(Input{
+		Target: "codex", WorkingDirectory: t.TempDir(), Prompt: "inspect",
+		Rings: []registry.Ring{requiredRing}, Servers: servers[:1],
+	})
+	if err != nil {
+		t.Fatalf("compile required launch: %v", err)
+	}
+	if got := authorityClassification(requiredOnly.Authority(), "mcp-tool-filtering"); got != ClassificationExact {
+		t.Fatalf("required-only authority should be exact, got %s", got)
+	}
+
+	mixed, err := Compile(Input{
+		Target: "codex", WorkingDirectory: t.TempDir(), Prompt: "inspect",
+		Rings: []registry.Ring{requiredRing, {Name: "advisory-ring", Members: []string{"advisory"}}}, Servers: servers,
+	})
+	if err != nil {
+		t.Fatalf("compile mixed launch: %v", err)
+	}
+	if got := authorityClassification(mixed.Authority(), "mcp-tool-filtering"); got != ClassificationAdvisory {
+		t.Fatalf("unrelated advisory server was globally upgraded: got %s", got)
+	}
+}
+
+func authorityClassification(authority Authority, control string) Classification {
+	for _, candidate := range authority.Effective {
+		if candidate.Control == control {
+			return candidate.Classification
+		}
+	}
+	return ""
 }
 
 func TestCompileReportsUnfilteredAccessInMixedSelection(t *testing.T) {
@@ -176,10 +223,10 @@ func TestCompileReportsUnfilteredAccessInMixedSelection(t *testing.T) {
 	for _, control := range artifact.Authority().Effective {
 		controls[control.Control] = control
 	}
-	if got := controls["mcp-tool-filtering"]; got.EnforcedBy != EnforcedByClient || got.Verification != VerificationConfigured {
+	if got := controls["mcp-tool-filtering"]; got.EnforcedBy != EnforcedByClient || got.Verification != VerificationConfigured || got.Classification != ClassificationAdvisory {
 		t.Fatalf("filtered member authority missing: %#v", artifact.Authority())
 	}
-	if got := controls["mcp-access"]; got.EnforcedBy != EnforcedByNone || got.Verification != VerificationUnverified {
+	if got := controls["mcp-access"]; got.EnforcedBy != EnforcedByNone || got.Verification != VerificationUnverified || got.Classification != ClassificationNone {
 		t.Fatalf("unfiltered member authority missing: %#v", artifact.Authority())
 	}
 }
@@ -235,6 +282,9 @@ func TestCompileCodexSkillOnlyLaunchStillClearsMCPServers(t *testing.T) {
 	}
 	if got := artifact.CodexOverrides(); len(got) != 1 || got[0] != "mcp_servers={  }" {
 		t.Fatalf("skill-only launch must explicitly clear MCP servers: %#v", got)
+	}
+	if !artifact.StrictConfig() {
+		t.Fatal("every Codex artifact must require strict parsing for the shell environment policy")
 	}
 	authority := artifact.Authority()
 	foundNone := false

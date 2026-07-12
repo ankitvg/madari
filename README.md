@@ -88,7 +88,11 @@ madari ring create thinking \
 madari ring create research \
   --member sequential-thinking \
   --skill release \
-  --description "Research and release helpers"
+  --description "Research and release helpers" \
+  --ambient-env deny \
+  --sandbox read-only \
+  --max-duration 15m \
+  --credential-exposure run-process
 
 madari ring attach research codex
 madari ring status
@@ -105,8 +109,11 @@ claude --mcp-config <(madari ring render research --client claude-code)
 Or run Codex with one or more rings without mutating Codex config:
 
 ```bash
-madari run codex --ring thinking -- \
+madari run codex --ring thinking --max-duration 5m -- \
   "Use this ring to inspect the target context."
+
+madari run codex --ring thinking --receipt ./run-receipt.json -- \
+  "Run with a private redacted evidence receipt."
 ```
 
 Use `madari help <command>` or `docs/cli-reference.md` for complete command
@@ -127,12 +134,13 @@ rings, where Madari materializes the full package for the target.
 
 **Rings** are named capability sets. A ring can contain server members and skill
 members, then attach to a client as one unit. A ring `[policy]` can require exact
-compilation of every server member's access profile for the selected target.
-Rings can also carry an advisory contract for delegation: when to use the ring,
-what context to provide, and what outputs to expect. Contracts never authorize
-tool access. They can be managed from standalone TOML files with `madari ring
-contract`. Ring ownership is reference counted, so overlapping rings and
-standalone entries detach cleanly in any order.
+enforcement, and an optional complete `[policy.execution]` section can declare
+the supported ambient-environment, sandbox, lifetime, and credential-exposure
+contract. Rings can also carry an advisory contract for delegation: when to use
+the ring, what context to provide, and what outputs to expect. Contracts never
+authorize tool access. They can be managed from standalone TOML files with
+`madari ring contract`. Ring ownership is reference counted, so overlapping
+rings and standalone entries detach cleanly in any order.
 
 **Sync** writes managed server entries into client config files. Madari backs up
 before writing, skips ineligible entries instead of aborting the whole sync, and
@@ -144,33 +152,58 @@ is useful for temporary sessions and experiments.
 **Run** starts or plans an ephemeral client launch from one or more rings.
 Codex execution injects selected server members into `codex exec`, temporarily
 materializes selected skill members as Codex project skills, and writes no
-client config or managed state. Codex run clears inherited MCP config, marks
-the selected servers required, and runs from an isolated working root so
-project-scoped Codex config cannot add unselected capabilities. It also starts
-Codex with a temporary `HOME` so personal Codex skills do not leak into the
-ring run, and with a temporary `CODEX_HOME` that copies only `auth.json` from
-the caller's Codex home so Codex-home skills do not leak into the run. Stdio
-MCP servers still receive the caller's non-secret `HOME`, `USERPROFILE`, and
-`CODEX_HOME` values when present so home-based server credentials keep working;
-secret declarations for those isolated env keys are blocked. Other clients
-remain dry-run only for now.
+client config or managed state. Every Codex run uses a validated stable 0.139.x
+CLI, `--strict-config`, a read-only Codex sandbox, and an isolated working root.
+Inherited MCP config is cleared and selected servers are marked required.
+
+The Codex process receives a documented platform baseline, isolated
+`HOME`/`USERPROFILE`, `CODEX_HOME`, and temporary paths, plus only environment
+keys explicitly declared by selected server manifests. Madari freezes declared
+runtime values and the caller's Codex `auth.json` in the launch artifact before
+execution. Codex's `shell_environment_policy` uses `inherit = "none"`, so those
+MCP credential values are not automatically inherited by shell subprocesses.
+The values are still visible to the Codex run process and to the declared MCP
+recipient; Madari does not claim a credential broker, per-use lease, or token
+TTL. Other clients remain dry-run only for now.
 Before Codex starts, Madari freezes the normalized rings, server manifests,
 skill packages, compiled prompt, and Codex overrides into one immutable launch
 artifact. Execution consumes only that artifact and never rereads registry
 files, so a registry edit between planning and process start cannot broaden the
 run. Dry-run output includes deterministic launch, policy, and component hashes
 plus requested/effective authority classifications.
-Every access-bearing Codex run requires a stable Codex CLI 0.139.x release and
-passes the complete profile through one strict ephemeral config override. A
-required ring upgrades that supported profile from advisory to exact
-enforcement and blocks before temporary skill materialization on any downgrade.
+The optional `[policy.execution]` section is all-or-nothing and currently accepts
+only `ambient_env = "deny"`, `sandbox = "read-only"`, a positive Go
+`max_duration`, and `credential_exposure = "run-process"`. The same safe
+defaults apply when the section is absent, including a 15-minute maximum. With
+multiple rings Madari selects the shortest maximum; `--max-duration` may shorten
+but never extend it. Timeout or cancellation terminates the contained process
+tree on supported Unix and Windows platforms. This is a bounded local execution
+boundary, not adversarial containment.
 
-Capability Policy Contract V1 preserves existing behavior for manifests without
-`[access]` and rings without `[policy]`. Codex compiles all five V1 access fields
-for persistent sync/attach, render, and ephemeral run. Required operations fail
-during preflight if a member, native field, or installed Codex version cannot
-represent the contract exactly. Other target policy surfaces remain unsupported
-until their own compilers land.
+A required execution policy containing a local stdio MCP server blocks because
+Codex's sandbox does not confine that separately spawned server's filesystem or
+network access. The same stdio limitation remains allowed but is reported as
+degraded and unverified for advisory execution policy. A required access policy
+upgrades supported access controls from advisory to exact enforcement and blocks
+before temporary skill materialization on any downgrade.
+
+Within Capability Policy Contract V1, manifests without `[access]` make no
+portable access declaration and rings without required enforcement make no
+mandatory access claim. Codex compiles all five V1 access fields for persistent
+sync/attach, render, and ephemeral run. Required operations fail during
+preflight if a member or native field cannot represent the contract exactly.
+Bounded run defaults apply independently to every Codex run. Other target policy
+surfaces remain unsupported until their own compilers land.
+
+`--receipt <path>` opts a Codex run invocation into a strict, independently
+versioned JSON receipt. Receipts cover blocked planning, success, failure,
+timeout, and handled cancellation; they contain receipt-safe hashes, authority,
+declared environment key names, client version, timeout, and exit evidence.
+They exclude prompts, arguments, environment/header values, auth state, skill
+bodies, output, and raw errors. Successfully finalized receipt files are
+atomically written owner-only and explicitly identify themselves as
+self-reported evidence, not cryptographic attestation. `--receipt` cannot be
+combined with `--dry-run`.
 
 ## Safety Model
 
@@ -182,12 +215,20 @@ until their own compilers land.
 - Remote header values for credential headers (`Authorization`, api-key and
   token variants) and `--secret-header` names follow the same policy, and
   `ring render`/`madari run codex` never emit them
-- Bearer token env references store only the env var name; the token value
-  stays in the runtime environment
-- `madari run` checks runtime env keys by name without printing their values;
-  Codex execution passes bearer-token env var names, not token values
+- Bearer token env references store only the env var name; `madari run` freezes
+  the value in memory and forwards it only through the bounded run environment
+- Codex runs deny ambient environment inheritance, isolate home and temporary
+  paths, and expose only platform-baseline and explicitly declared keys
+- Declared credentials remain visible to the Codex run process; shell
+  subprocess inheritance is separately set to `inherit = "none"`
+- Codex runs have a finite maximum duration and terminate their contained
+  process tree on timeout or cancellation
 - Policy-required operations fail closed instead of approximating or dropping
   an access restriction
+- Required execution policy blocks local stdio members because their filesystem
+  and network confinement cannot be verified
+- Opt-in execution receipts are strict, redacted, atomically replaced, and
+  owner-only; they are self-reported observations rather than attestation
 - OAuth scopes are requested and client-configured; Madari cannot prove that an
   OAuth provider granted them
 - Tool approval behavior controls client prompts and is not an authorization
@@ -229,6 +270,8 @@ Madari can materialize skills for:
 - `docs/architecture.md`
 - `docs/manifest-spec.md`
 - `docs/adr/003-capability-policy-contract-v1.md`
+- `docs/adr/004-bounded-execution-boundary.md`
+- `docs/adr/005-execution-receipt-v1.md`
 - `docs/troubleshooting.md`
 
 ## Development

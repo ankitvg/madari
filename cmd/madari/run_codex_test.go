@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -43,6 +44,16 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 	t.Setenv("CLOUDSQL_MCP_TOKEN", "test-token")
 	t.Setenv("LOCAL_TOKEN", "local-token")
 	t.Setenv("LOCAL_SECRET", "local-secret")
+	ambientSentinels := map[string]string{
+		"AWS_SECRET_ACCESS_KEY":          "ambient-aws-secret",
+		"GOOGLE_APPLICATION_CREDENTIALS": "ambient-gcp-secret",
+		"GITHUB_TOKEN":                   "ambient-github-secret",
+		"SSH_AUTH_SOCK":                  "ambient-ssh-secret",
+		"MADARI_UNDECLARED_SENTINEL":     "ambient-arbitrary-secret",
+	}
+	for key, value := range ambientSentinels {
+		t.Setenv(key, value)
+	}
 	originalHome := t.TempDir()
 	globalSkillDir := filepath.Join(originalHome, ".agents", "skills", "global")
 	if err := os.MkdirAll(globalSkillDir, 0o755); err != nil {
@@ -120,7 +131,7 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 	}
 
 	args := readNULArgs(t, logPath)
-	wantPrefix := []string{"exec", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--cd"}
+	wantPrefix := []string{"exec", "--strict-config", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--cd"}
 	if len(args) < len(wantPrefix) || !slices.Equal(args[:len(wantPrefix)], wantPrefix) {
 		t.Fatalf("unexpected codex args prefix:\n%#v", args)
 	}
@@ -217,12 +228,57 @@ func TestRunWithStoreCodexRunExecutesWithRingServersAndPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get cwd: %v", err)
 	}
-	wantOverride := `mcp_servers={ cloud-sql = { url = "https://sqladmin.googleapis.com/mcp", required = true, oauth_resource = "https://sqladmin.googleapis.com/", bearer_token_env_var = "CLOUDSQL_MCP_TOKEN", http_headers = { x-goog-user-project = "stewreads" } }, "github.com" = { command = ` + tomlString(commandPath) + `, required = true, cwd = ` + tomlString(workingDir) + `, args = ["--stdio"], env_vars = ["LOCAL_SECRET", "LOCAL_TOKEN"], env = { CODEX_HOME = ` + tomlString(codexHome) + `, HOME = ` + tomlString(originalHome) + `, LOCAL_MODE = "test" } } }`
+	wantOverride := `mcp_servers={ cloud-sql = { url = "https://sqladmin.googleapis.com/mcp", required = true, oauth_resource = "https://sqladmin.googleapis.com/", bearer_token_env_var = "CLOUDSQL_MCP_TOKEN", http_headers = { x-goog-user-project = "stewreads" } }, "github.com" = { command = ` + tomlString(commandPath) + `, required = true, cwd = ` + tomlString(workingDir) + `, args = ["--stdio"], env_vars = ["CODEX_HOME", "HOME", "LOCAL_SECRET", "LOCAL_TOKEN"], env = { LOCAL_MODE = "test" } } }`
 	if overrides[0] != wantOverride {
 		t.Fatalf("unexpected mcp_servers override:\nwant %s\ngot  %s", wantOverride, overrides[0])
 	}
+	if strings.Contains(overrides[0], originalHome) || strings.Contains(overrides[0], codexHome) {
+		t.Fatalf("caller home directory leaked into stdio configuration: %s", overrides[0])
+	}
 	if strings.Contains(strings.Join(overrides, "\n"), "inline-secret") {
 		t.Fatalf("static secret env value leaked into codex args: %#v", overrides)
+	}
+	execEnv, err := os.ReadFile(logPath + ".env")
+	if err != nil {
+		t.Fatalf("read fake Codex environment: %v", err)
+	}
+	versionEnv, err := os.ReadFile(logPath + ".versionenv")
+	if err != nil {
+		t.Fatalf("read fake Codex version environment: %v", err)
+	}
+	for key, value := range ambientSentinels {
+		for label, payload := range map[string][]byte{"version": versionEnv, "execution": execEnv} {
+			if strings.Contains(string(payload), key+"=") || strings.Contains(string(payload), value) {
+				t.Fatalf("undeclared %s credential reached Codex %s environment", key, label)
+			}
+		}
+	}
+	for key, value := range map[string]string{
+		"CLOUDSQL_MCP_TOKEN": "test-token",
+		"LOCAL_TOKEN":        "local-token",
+		"LOCAL_SECRET":       "local-secret",
+	} {
+		if !strings.Contains(string(execEnv), key+"="+value) {
+			t.Fatalf("declared credential %s did not reach the Codex run process", key)
+		}
+		if strings.Contains(string(versionEnv), key+"=") || strings.Contains(string(versionEnv), value) {
+			t.Fatalf("declared credential %s leaked into the Codex version probe", key)
+		}
+	}
+	allOverrides := collectAllConfigOverrides(args)
+	shellPolicy := ""
+	for _, override := range allOverrides {
+		if strings.HasPrefix(override, "shell_environment_policy=") {
+			shellPolicy = override
+		}
+	}
+	if shellPolicy == "" || !strings.Contains(shellPolicy, `inherit = "none"`) || !strings.Contains(shellPolicy, "include_only") {
+		t.Fatalf("missing deny-by-default Codex shell environment policy: %#v", allOverrides)
+	}
+	for _, key := range []string{"CLOUDSQL_MCP_TOKEN", "LOCAL_TOKEN", "LOCAL_SECRET"} {
+		if strings.Contains(shellPolicy, key) {
+			t.Fatalf("MCP credential key %s leaked into shell environment policy: %s", key, shellPolicy)
+		}
 	}
 
 	if len(args) < 2 || args[len(args)-2] != "--" {
@@ -289,7 +345,7 @@ func TestRunWithStoreCodexRunPropagatesCodexFailure(t *testing.T) {
 		t.Fatalf("expected forwarded output and wrapped error, stdout=%s stderr=%s", result.stdout, result.stderr)
 	}
 	args := readNULArgs(t, logPath)
-	wantPrefix := []string{"exec", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--cd"}
+	wantPrefix := []string{"exec", "--strict-config", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--cd"}
 	if len(args) <= len(wantPrefix) || !slices.Equal(args[:len(wantPrefix)], wantPrefix) {
 		t.Fatalf("unexpected codex args prefix:\n%#v", args)
 	}
@@ -312,10 +368,11 @@ func TestRunCodexArtifactIgnoresRegistryMutationAfterPlanning(t *testing.T) {
 	}
 	store := newTestStore(t)
 	logPath := installFakeCodex(t, 0)
+	t.Setenv("DOCS_TOKEN", "frozen-before")
 	allowed := []string{"read"}
 	manifest := registry.Manifest{
 		Name: "docs", Command: mustCurrentExecutable(t), Args: []string{"--before"}, Enabled: true, Clients: []string{"codex"},
-		Access: &registry.AccessProfile{AllowedTools: &allowed},
+		RequiredEnv: registry.RequiredEnv{Keys: []string{"DOCS_TOKEN"}}, Access: &registry.AccessProfile{AllowedTools: &allowed},
 	}
 	if err := store.Save(manifest); err != nil {
 		t.Fatalf("save manifest: %v", err)
@@ -336,6 +393,7 @@ func TestRunCodexArtifactIgnoresRegistryMutationAfterPlanning(t *testing.T) {
 	changed := []string{"write"}
 	manifest.Args = []string{"--after"}
 	manifest.Access.AllowedTools = &changed
+	t.Setenv("DOCS_TOKEN", "mutated-after")
 	if err := store.Save(manifest); err != nil {
 		t.Fatalf("mutate manifest: %v", err)
 	}
@@ -348,7 +406,7 @@ func TestRunCodexArtifactIgnoresRegistryMutationAfterPlanning(t *testing.T) {
 		t.Fatalf("mutate ring: %v", err)
 	}
 
-	if err := runCodex(cliApp{store: store}, plan); err != nil {
+	if _, err := runCodex(context.Background(), cliApp{store: store}, plan); err != nil {
 		t.Fatalf("execute compiled artifact: %v", err)
 	}
 	args := readNULArgs(t, logPath)
@@ -368,6 +426,46 @@ func TestRunCodexArtifactIgnoresRegistryMutationAfterPlanning(t *testing.T) {
 	}
 	if !strings.Contains(string(skill), "Original workflow") || strings.Contains(string(skill), "Mutated workflow") {
 		t.Fatalf("execution did not materialize the compiled skill snapshot:\n%s", skill)
+	}
+	execEnv, err := os.ReadFile(logPath + ".env")
+	if err != nil {
+		t.Fatalf("read fake Codex environment: %v", err)
+	}
+	if !strings.Contains(string(execEnv), "DOCS_TOKEN=frozen-before") || strings.Contains(string(execEnv), "mutated-after") {
+		t.Fatalf("execution did not use the compiled environment snapshot:\n%s", execEnv)
+	}
+}
+
+func TestRunCodexBlocksAdminSkillAddedAfterPlanning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake Codex shell fixture is Unix-specific")
+	}
+	adminRoot := t.TempDir()
+	withCodexAdminSkillRoots(t, []string{adminRoot})
+	store := newTestStore(t)
+	logPath := installFakeCodex(t, 0)
+	if err := store.Save(registry.Manifest{
+		Name: "docs", Transport: registry.TransportHTTP, URL: "https://example.com/mcp",
+		Enabled: true, Clients: []string{"codex"},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+	if err := store.SaveRing(registry.Ring{Name: "research", Members: []string{"docs"}}); err != nil {
+		t.Fatalf("save ring: %v", err)
+	}
+	plan, err := (cliApp{store: store}).buildRunPlan("codex", []string{"research"}, "inspect")
+	if err != nil || !plan.Ready || plan.Artifact == nil {
+		t.Fatalf("build launch: ready=%t artifact=%v err=%v errors=%v", plan.Ready, plan.Artifact != nil, err, plan.Errors)
+	}
+	if err := os.Mkdir(filepath.Join(adminRoot, "late-skill"), 0o755); err != nil {
+		t.Fatalf("add admin skill after planning: %v", err)
+	}
+
+	if _, err := runCodex(context.Background(), cliApp{store: store}, plan); err == nil || !strings.Contains(err.Error(), "cannot guarantee ring-only skill isolation") {
+		t.Fatalf("late admin skill did not block execution: %v", err)
+	}
+	if _, err := os.Stat(logPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Codex started despite late admin skill: %v", err)
 	}
 }
 
@@ -403,9 +501,34 @@ func TestCodexRunEnvBlocksAdminSkillRoot(t *testing.T) {
 	}
 	withCodexAdminSkillRoots(t, []string{adminRoot})
 
-	_, err := codexRunEnv(t.TempDir())
+	err := validateCodexRunPlan()
 	if err == nil || !strings.Contains(err.Error(), "cannot guarantee ring-only skill isolation") {
 		t.Fatalf("expected admin skill isolation error, got: %v", err)
+	}
+}
+
+func TestCodexRunEnvAllowsPackagedSystemSkills(t *testing.T) {
+	adminRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(adminRoot, ".system"), 0o755); err != nil {
+		t.Fatalf("mkdir packaged system skills: %v", err)
+	}
+	withCodexAdminSkillRoots(t, []string{adminRoot})
+
+	if err := validateCodexRunPlan(); err != nil {
+		t.Fatalf("packaged .system skills should not block execution: %v", err)
+	}
+}
+
+func TestCodexRunEnvBlocksNonDirectorySystemEntry(t *testing.T) {
+	adminRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(adminRoot, ".system"), []byte("not a packaged namespace\n"), 0o644); err != nil {
+		t.Fatalf("write non-directory system entry: %v", err)
+	}
+	withCodexAdminSkillRoots(t, []string{adminRoot})
+
+	err := validateCodexRunPlan()
+	if err == nil || !strings.Contains(err.Error(), "cannot guarantee ring-only skill isolation") {
+		t.Fatalf("expected non-directory .system entry to fail closed, got: %v", err)
 	}
 }
 
@@ -430,10 +553,19 @@ func TestCodexRunEnvUsesExplicitCodexHomeWithoutHome(t *testing.T) {
 	t.Setenv("HOME", "")
 	t.Setenv("USERPROFILE", "")
 
-	env, err := codexRunEnv(runRoot)
+	auth, err := readCodexRunAuthSnapshot()
 	if err != nil {
-		t.Fatalf("codexRunEnv failed: %v", err)
+		t.Fatalf("snapshot auth: %v", err)
 	}
+	artifact, err := launch.Compile(launch.Input{Target: "codex", WorkingDirectory: t.TempDir(), Prompt: "inspect", Client: launch.ClientInput{Auth: auth}})
+	if err != nil {
+		t.Fatalf("compile launch: %v", err)
+	}
+	prepared, err := artifact.Prepare(runRoot)
+	if err != nil {
+		t.Fatalf("prepare launch: %v", err)
+	}
+	env := prepared.Env()
 	isolatedCodexHome := filepath.Join(runRoot, "codex-home")
 	if got := testEnvValue(env, "CODEX_HOME"); !samePath(t, got, isolatedCodexHome) {
 		t.Fatalf("expected isolated CODEX_HOME %q, got %q", isolatedCodexHome, got)
@@ -444,6 +576,13 @@ func TestCodexRunEnvUsesExplicitCodexHomeWithoutHome(t *testing.T) {
 	}
 	if string(authPayload) != "explicit-auth\n" {
 		t.Fatalf("expected copied auth payload, got %q", string(authPayload))
+	}
+	authInfo, err := os.Stat(filepath.Join(isolatedCodexHome, "auth.json"))
+	if err != nil {
+		t.Fatalf("stat isolated auth: %v", err)
+	}
+	if authInfo.Mode().Perm() != 0o600 {
+		t.Fatalf("expected owner-only isolated auth, mode=%v", authInfo.Mode().Perm())
 	}
 	if got, want := testEnvValue(env, "HOME"), filepath.Join(runRoot, "home"); !samePath(t, got, want) {
 		t.Fatalf("expected isolated HOME %q, got %q", want, got)
@@ -462,10 +601,19 @@ func TestCodexRunEnvExpandsCodexHomeBeforeCopyingAuth(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("CODEX_HOME", "~/codex-auth")
 
-	env, err := codexRunEnv(runRoot)
+	auth, err := readCodexRunAuthSnapshot()
 	if err != nil {
-		t.Fatalf("codexRunEnv failed: %v", err)
+		t.Fatalf("snapshot auth: %v", err)
 	}
+	artifact, err := launch.Compile(launch.Input{Target: "codex", WorkingDirectory: t.TempDir(), Prompt: "inspect", Client: launch.ClientInput{Auth: auth}})
+	if err != nil {
+		t.Fatalf("compile launch: %v", err)
+	}
+	prepared, err := artifact.Prepare(runRoot)
+	if err != nil {
+		t.Fatalf("prepare launch: %v", err)
+	}
+	env := prepared.Env()
 	isolatedCodexHome := testEnvValue(env, "CODEX_HOME")
 	authPayload, err := os.ReadFile(filepath.Join(isolatedCodexHome, "auth.json"))
 	if err != nil {
@@ -489,10 +637,19 @@ func TestCodexRunServerConfigValueBlocksSecretIsolatedEnvKeys(t *testing.T) {
 			Enabled:   true,
 			Clients:   []string{"codex"},
 		}},
-		CallerIsolatedEnv: map[string]string{"HOME": "/secret/home"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "secret env HOME cannot be forwarded by codex run") {
 		t.Fatalf("expected blocked secret HOME, got: %v", err)
+	}
+	_, err = launch.Compile(launch.Input{
+		Target: "codex", WorkingDirectory: t.TempDir(), Prompt: "inspect",
+		Servers: []registry.Manifest{{
+			Name: "static-home", Command: commandPath, Env: map[string]string{"HOME": "/caller/home"},
+			Enabled: true, Clients: []string{"codex"},
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "static env HOME cannot override") {
+		t.Fatalf("expected blocked static HOME override, got: %v", err)
 	}
 }
 
@@ -583,7 +740,8 @@ func installFakeCodex(t *testing.T, exitCode int) string {
 	logPath := filepath.Join(t.TempDir(), "codex-args.bin")
 	name := "codex"
 	script := []byte("#!/bin/sh\n" +
-		"if [ \"$1\" = \"--version\" ]; then printf 'codex-cli 0.139.0\\n'; exit 0; fi\n" +
+		"if [ \"$1\" = \"--version\" ]; then /usr/bin/env | sort > '" + logPath + ".versionenv'; printf 'codex-cli 0.139.0\\n'; exit 0; fi\n" +
+		"/usr/bin/env | sort > '" + logPath + ".env'\n" +
 		"printf '%s' \"$PWD\" > '" + logPath + ".pwd'\n" +
 		"printf '%s' \"$HOME\" > '" + logPath + ".home'\n" +
 		"printf '%s' \"$CODEX_HOME\" > '" + logPath + ".codexhome'\n" +
@@ -608,6 +766,28 @@ func installFakeCodex(t *testing.T, exitCode int) string {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	return logPath
+}
+
+func installHangingFakeCodex(t *testing.T) string {
+	t.Helper()
+	binDir := t.TempDir()
+	childPIDPath := filepath.Join(t.TempDir(), "child.pid")
+	name := "codex"
+	script := []byte("#!/bin/sh\n" +
+		"if [ \"$1\" = \"--version\" ]; then printf 'codex-cli 0.139.0\\n'; exit 0; fi\n" +
+		"( trap '' TERM INT; while :; do :; done ) &\n" +
+		"printf '%s' \"$!\" > '" + childPIDPath + "'\n" +
+		"trap '' TERM INT\n" +
+		"while :; do :; done\n")
+	if runtime.GOOS == "windows" {
+		name = "codex.bat"
+		script = []byte("@echo off\r\nif \"%1\"==\"--version\" (\r\n  echo codex-cli 0.139.0\r\n  exit /b 0\r\n)\r\n:loop\r\ngoto loop\r\n")
+	}
+	if err := os.WriteFile(filepath.Join(binDir, name), script, 0o755); err != nil {
+		t.Fatalf("write hanging fake codex: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return childPIDPath
 }
 
 func saveTestSkillPackage(t *testing.T, store *registry.Store, name, description string) {
@@ -644,6 +824,17 @@ func readNULArgs(t *testing.T, path string) []string {
 }
 
 func collectConfigOverrides(args []string) []string {
+	var overrides []string
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-c" && strings.HasPrefix(args[i+1], "mcp_servers=") {
+			overrides = append(overrides, args[i+1])
+			i++
+		}
+	}
+	return overrides
+}
+
+func collectAllConfigOverrides(args []string) []string {
 	var overrides []string
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == "-c" {

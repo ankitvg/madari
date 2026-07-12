@@ -1051,7 +1051,7 @@ func printRingSkillSummary(out io.Writer, result skillAttachResult) {
 
 func (a cliApp) cmdRingCreate(args []string) error {
 	if len(args) == 0 {
-		return commandUsageError("ring create", "madari ring create <name> [--member <server> ...] [--skill <skill> ...] [--description <text>] [--enforcement required]")
+		return commandUsageError("ring create", "madari ring create <name> [--member <server> ...] [--skill <skill> ...] [--description <text>] [--enforcement required] [--ambient-env deny --sandbox read-only --max-duration <duration> --credential-exposure run-process]")
 	}
 	if isHelpToken(args[0]) {
 		printRingCreateHelp(a.stdout)
@@ -1065,10 +1065,18 @@ func (a cliApp) cmdRingCreate(args []string) error {
 	var skills stringList
 	var description string
 	var enforcement string
+	var ambientEnv string
+	var sandbox string
+	var maxDuration string
+	var credentialExposure string
 	fs.Var(&members, "member", "Ring member server name (repeatable)")
 	fs.Var(&skills, "skill", "Ring member skill name (repeatable)")
 	fs.StringVar(&description, "description", "", "Ring description")
 	fs.StringVar(&enforcement, "enforcement", "", "Policy enforcement (required)")
+	fs.StringVar(&ambientEnv, "ambient-env", "", "Ambient environment policy (deny)")
+	fs.StringVar(&sandbox, "sandbox", "", "Execution sandbox policy (read-only)")
+	fs.StringVar(&maxDuration, "max-duration", "", "Positive Go execution duration (for example, 15m)")
+	fs.StringVar(&credentialExposure, "credential-exposure", "", "Credential exposure policy (run-process)")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printRingCreateHelp(a.stdout)
@@ -1080,9 +1088,13 @@ func (a cliApp) cmdRingCreate(args []string) error {
 		return commandUnexpectedArgsError("ring create", fs.Args())
 	}
 	enforcementSet := false
+	executionSet := false
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "enforcement" {
+		switch f.Name {
+		case "enforcement":
 			enforcementSet = true
+		case "ambient-env", "sandbox", "max-duration", "credential-exposure":
+			executionSet = true
 		}
 	})
 	if enforcementSet && strings.TrimSpace(enforcement) == "" {
@@ -1095,8 +1107,19 @@ func (a cliApp) cmdRingCreate(args []string) error {
 		Skills:      append([]string(nil), skills...),
 		Description: description,
 	}
-	if enforcement = strings.TrimSpace(enforcement); enforcementSet {
-		ring.Policy = &registry.RingPolicy{Enforcement: enforcement}
+	if enforcementSet || executionSet {
+		ring.Policy = &registry.RingPolicy{}
+		if enforcement = strings.TrimSpace(enforcement); enforcementSet {
+			ring.Policy.Enforcement = enforcement
+		}
+		if executionSet {
+			ring.Policy.Execution = &registry.ExecutionPolicy{
+				AmbientEnv:         ambientEnv,
+				Sandbox:            sandbox,
+				MaxDuration:        maxDuration,
+				CredentialExposure: credentialExposure,
+			}
+		}
 	}
 	if err := a.store.AddRing(ring); err != nil {
 		return err
@@ -1226,7 +1249,16 @@ func printRingPolicy(out io.Writer, policy *registry.RingPolicy) {
 		return
 	}
 	fmt.Fprintln(out, "policy:")
-	fmt.Fprintf(out, "  enforcement: %s\n", policy.Enforcement)
+	if policy.Enforcement != "" {
+		fmt.Fprintf(out, "  enforcement: %s\n", policy.Enforcement)
+	}
+	if policy.Execution != nil {
+		fmt.Fprintln(out, "  execution:")
+		fmt.Fprintf(out, "    ambient_env: %s\n", policy.Execution.AmbientEnv)
+		fmt.Fprintf(out, "    sandbox: %s\n", policy.Execution.Sandbox)
+		fmt.Fprintf(out, "    max_duration: %s\n", policy.Execution.MaxDuration)
+		fmt.Fprintf(out, "    credential_exposure: %s\n", policy.Execution.CredentialExposure)
+	}
 }
 
 func printRingContract(out io.Writer, contract *registry.RingContract) {
@@ -1442,16 +1474,23 @@ func printRingHelp(out io.Writer) {
 func printRingCreateHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
 	fmt.Fprintln(out, "  madari ring create <name> [--member <server> ...] [--skill <skill> ...] [--description <text>] [--enforcement required]")
+	fmt.Fprintln(out, "    [--ambient-env deny --sandbox read-only --max-duration <duration> --credential-exposure run-process]")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
 	fmt.Fprintln(out, "  --member <server>          Ring member server name (repeatable)")
 	fmt.Fprintln(out, "  --skill <skill>            Ring member skill name (repeatable)")
 	fmt.Fprintln(out, "  --description <text>       Ring description")
-	fmt.Fprintln(out, "  --enforcement required    Require exact access-policy compilation")
+	fmt.Fprintln(out, "  --enforcement required     Require exact compilation of declared policy")
+	fmt.Fprintln(out, "  --ambient-env deny         Deny ambient caller environment inheritance")
+	fmt.Fprintln(out, "  --sandbox read-only        Require a read-only execution sandbox")
+	fmt.Fprintln(out, "  --max-duration <duration>  Set a positive Go execution duration (for example, 15m)")
+	fmt.Fprintln(out, "  --credential-exposure run-process")
+	fmt.Fprintln(out, "                             Declare credentials visible to the run process")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Create a ring referencing existing registry servers and skills by name.")
 	fmt.Fprintln(out, "  At least one server member or skill member is required.")
+	fmt.Fprintln(out, "  An execution policy must set all four execution options together.")
 	fmt.Fprintln(out, "  Required enforcement needs a non-empty allowed_tools list on every server")
 	fmt.Fprintln(out, "  and fails until the selected target surface has a lossless compiler.")
 	fmt.Fprintln(out)
@@ -1509,7 +1548,7 @@ func printRingListHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --json                     Emit JSON instead of text")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  List configured rings with server members, skill members, description, and policy in JSON output.")
+	fmt.Fprintln(out, "  List configured rings with server members, skill members, description, and access/execution policy in JSON output.")
 }
 
 func printRingShowHelp(out io.Writer) {
@@ -1520,7 +1559,7 @@ func printRingShowHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --json                     Emit JSON instead of text")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
-	fmt.Fprintln(out, "  Show one ring's server members, skill members, description, and required policy.")
+	fmt.Fprintln(out, "  Show one ring's server members, skill members, description, and access/execution policy.")
 }
 
 func printRingContractHelp(out io.Writer) {

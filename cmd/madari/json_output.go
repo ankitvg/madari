@@ -196,7 +196,15 @@ type ringJSON struct {
 }
 
 type ringPolicyJSON struct {
-	Enforcement string `json:"enforcement"`
+	Enforcement string                   `json:"enforcement,omitempty"`
+	Execution   *ringExecutionPolicyJSON `json:"execution,omitempty"`
+}
+
+type ringExecutionPolicyJSON struct {
+	AmbientEnv         string `json:"ambient_env"`
+	Sandbox            string `json:"sandbox"`
+	MaxDuration        string `json:"max_duration"`
+	CredentialExposure string `json:"credential_exposure"`
 }
 
 type ringContractJSON struct {
@@ -231,6 +239,14 @@ func ringToJSON(ring registry.Ring) ringJSON {
 	}
 	if ring.Policy != nil {
 		out.Policy = &ringPolicyJSON{Enforcement: ring.Policy.Enforcement}
+		if ring.Policy.Execution != nil {
+			out.Policy.Execution = &ringExecutionPolicyJSON{
+				AmbientEnv:         ring.Policy.Execution.AmbientEnv,
+				Sandbox:            ring.Policy.Execution.Sandbox,
+				MaxDuration:        ring.Policy.Execution.MaxDuration,
+				CredentialExposure: ring.Policy.Execution.CredentialExposure,
+			}
+		}
 	}
 	return out
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ankitvg/madari/internal/launch"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -162,7 +164,7 @@ func TestRunAdvisoryPolicyReportsUnsupportedOldCodexTruthfully(t *testing.T) {
 	}
 }
 
-func TestRunLegacyNoAccessRemainsCompatibleWithOlderCodex(t *testing.T) {
+func TestRunLegacyNoAccessRequiresValidatedCodexForShellPolicy(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture is Unix-specific")
 	}
@@ -178,11 +180,11 @@ func TestRunLegacyNoAccessRemainsCompatibleWithOlderCodex(t *testing.T) {
 		t.Fatalf("save legacy ring: %v", err)
 	}
 	result := runCmd(store, "run", "codex", "--ring", "legacy", "--", "inspect")
-	if result.code != 0 {
-		t.Fatalf("legacy run was broken by policy compatibility checks: stdout=%s stderr=%s", result.stdout, result.stderr)
+	if result.code == 0 || !strings.Contains(result.stdout, "outside the validated bounded-run range") {
+		t.Fatalf("legacy run did not fail closed on unvalidated shell policy support: stdout=%s stderr=%s", result.stdout, result.stderr)
 	}
-	if _, err := os.Stat(marker); err != nil {
-		t.Fatalf("legacy Codex did not execute: %v", err)
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy Codex executed despite unvalidated shell policy: %v", err)
 	}
 }
 
@@ -264,6 +266,14 @@ func TestRunRequiredPolicyBlocksOldCodexBeforeExecution(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(plan.Errors, "\n"), "stable Codex CLI 0.139.x") {
 		t.Fatalf("old Codex error is not actionable: %#v", plan.Errors)
+	}
+	for _, control := range plan.Authority.Effective {
+		switch control.Control {
+		case "mcp-tool-filtering", "ambient-environment", "client-sandbox", "max-duration", "credential-exposure":
+			if control.EnforcedBy != launch.EnforcedByNone || control.Verification != launch.VerificationUnverified || control.Classification != launch.ClassificationBlocked {
+				t.Fatalf("failed Codex compatibility preflight overstated authority: %#v", control)
+			}
+		}
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("old Codex was executed: %v", err)
@@ -441,8 +451,8 @@ func TestRunCodexRechecksPolicyCompatibilityBeforeSkillMaterialization(t *testin
 	if err := store.RemoveSkill("release"); err != nil {
 		t.Fatalf("remove planned skill to detect materialization: %v", err)
 	}
-	err = runCodex(cliApp{store: store}, plan)
-	if err == nil || !strings.Contains(err.Error(), "stable Codex CLI 0.139.x") {
+	_, err = runCodex(context.Background(), cliApp{store: store}, plan)
+	if err == nil || !strings.Contains(err.Error(), "changed after launch compilation") {
 		t.Fatalf("executor did not recheck compatibility first: %v", err)
 	}
 	if strings.Contains(err.Error(), "skill") {

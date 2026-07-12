@@ -2,6 +2,7 @@ package launch
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -9,10 +10,10 @@ import (
 	"github.com/ankitvg/madari/internal/registry"
 )
 
-func compileCodexOverrides(manifests []registry.Manifest, workingDirectory string, callerEnv map[string]string) ([]string, error) {
+func compileCodexOverrides(manifests []registry.Manifest, workingDirectory string) ([]string, error) {
 	servers := make([]string, 0, len(manifests))
 	for _, manifest := range manifests {
-		value, err := compileCodexServer(manifest, workingDirectory, callerEnv)
+		value, err := compileCodexServer(manifest, workingDirectory)
 		if err != nil {
 			return nil, fmt.Errorf("server %s: %w", manifest.Name, err)
 		}
@@ -21,8 +22,11 @@ func compileCodexOverrides(manifests []registry.Manifest, workingDirectory strin
 	return []string{"mcp_servers={ " + strings.Join(servers, ", ") + " }"}, nil
 }
 
-func compileCodexServer(manifest registry.Manifest, workingDirectory string, callerEnv map[string]string) (string, error) {
+func compileCodexServer(manifest registry.Manifest, workingDirectory string) (string, error) {
 	if manifest.IsRemote() {
+		if manifest.RequiresBearerTokenEnv() && isolatedRunEnvKeys()[canonicalEnvironmentKey(manifest.BearerTokenEnvVar)] {
+			return "", fmt.Errorf("bearer token env %s is reserved for an isolated Codex run path", manifest.BearerTokenEnvVar)
+		}
 		if secretNames := manifest.SecretHeaderNames(); len(secretNames) > 0 {
 			return "", fmt.Errorf("static secret header values cannot be passed to codex run: %s", strings.Join(secretNames, ", "))
 		}
@@ -40,8 +44,15 @@ func compileCodexServer(manifest registry.Manifest, workingDirectory string, cal
 		return "{ " + strings.Join(fields, ", ") + " }", nil
 	}
 
-	if keys := intersectingKeys(manifest.SecretEnv.Keys, map[string]bool{"CODEX_HOME": true, "HOME": true, "USERPROFILE": true}); len(keys) > 0 {
+	if keys := intersectingKeys(manifest.SecretEnv.Keys, isolatedRunEnvKeys()); len(keys) > 0 {
 		return "", fmt.Errorf("secret env %s cannot be forwarded by codex run because Codex isolates %s; move it to required_env or remove it from this server", strings.Join(keys, ", "), strings.Join(keys, ", "))
+	}
+	staticKeys := make([]string, 0, len(manifest.Env))
+	for key := range manifest.Env {
+		staticKeys = append(staticKeys, key)
+	}
+	if keys := intersectingKeys(staticKeys, isolatedRunEnvKeys()); len(keys) > 0 {
+		return "", fmt.Errorf("static env %s cannot override Codex run isolated home paths", strings.Join(keys, ", "))
 	}
 	fields := []string{
 		fmt.Sprintf("command = %s", tomlString(manifest.Command)),
@@ -51,14 +62,23 @@ func compileCodexServer(manifest registry.Manifest, workingDirectory string, cal
 	if len(manifest.Args) > 0 {
 		fields = append(fields, fmt.Sprintf("args = %s", tomlStringArray(manifest.Args)))
 	}
-	if keys := codexRuntimeEnvVars(manifest, callerEnv); len(keys) > 0 {
+	if keys := codexRuntimeEnvVars(manifest); len(keys) > 0 {
 		fields = append(fields, fmt.Sprintf("env_vars = %s", tomlStringArray(keys)))
 	}
-	if env := codexStaticEnv(manifest, callerEnv); len(env) > 0 {
+	if env := codexStaticEnv(manifest); len(env) > 0 {
 		fields = append(fields, fmt.Sprintf("env = %s", tomlInlineStringMap(env)))
 	}
 	fields = append(fields, codexAccessFields(manifest.Access)...)
 	return "{ " + strings.Join(fields, ", ") + " }", nil
+}
+
+func isolatedRunEnvKeys() map[string]bool {
+	keys := map[string]bool{"CODEX_HOME": true, "HOME": true, "USERPROFILE": true, "TMPDIR": true, "TEMP": true, "TMP": true}
+	if os.PathSeparator == '\\' {
+		keys["APPDATA"] = true
+		keys["LOCALAPPDATA"] = true
+	}
+	return keys
 }
 
 func codexAccessFields(access *registry.AccessProfile) []string {
@@ -91,29 +111,16 @@ func codexAccessFields(access *registry.AccessProfile) []string {
 	return fields
 }
 
-func codexRuntimeEnvVars(manifest registry.Manifest, callerEnv map[string]string) []string {
+func codexRuntimeEnvVars(manifest registry.Manifest) []string {
 	keys := runtimeEnvKeys(manifest.RequiredEnv.Keys, manifest.SecretEnv.Keys)
-	secret := envKeySet(manifest.SecretEnv.Keys)
-	out := make([]string, 0, len(keys))
-	for _, key := range keys {
-		if _, suppliedStatically := callerEnv[key]; suppliedStatically && !secret[key] {
-			continue
-		}
-		out = append(out, key)
-	}
-	return out
+	return keys
 }
 
-func codexStaticEnv(manifest registry.Manifest, callerEnv map[string]string) map[string]string {
+func codexStaticEnv(manifest registry.Manifest) map[string]string {
 	secret := envKeySet(manifest.SecretEnv.Keys)
 	env := map[string]string{}
 	for key, value := range manifest.Env {
-		if !secret[key] {
-			env[key] = value
-		}
-	}
-	for key, value := range callerEnv {
-		if _, exists := env[key]; !exists && !secret[key] {
+		if !secret[canonicalEnvironmentKey(key)] {
 			env[key] = value
 		}
 	}
@@ -144,7 +151,7 @@ func runtimeEnvKeys(groups ...[]string) []string {
 func envKeySet(keys []string) map[string]bool {
 	out := make(map[string]bool, len(keys))
 	for _, key := range keys {
-		out[strings.TrimSpace(key)] = true
+		out[canonicalEnvironmentKey(key)] = true
 	}
 	return out
 }
@@ -153,7 +160,7 @@ func intersectingKeys(keys []string, allowed map[string]bool) []string {
 	seen := map[string]struct{}{}
 	for _, key := range keys {
 		key = strings.TrimSpace(key)
-		if key != "" && allowed[key] {
+		if key != "" && allowed[canonicalEnvironmentKey(key)] {
 			seen[key] = struct{}{}
 		}
 	}
