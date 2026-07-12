@@ -30,7 +30,10 @@ skill package directories for supported targets, `ring render` emits MCP config
 only, `madari run codex` clears inherited MCP config and injects selected
 required server members into `codex exec`, while temporarily materializing
 selected ring skill members under an isolated working root without writing
-config/state. Plain `skill render` emits managed `SKILL.md` only, and `skill
+config/state. Planning first freezes all registry inputs, the compiled prompt,
+Codex overrides, content hashes, and authority explanations into one immutable
+launch artifact; execution never consults the mutable registry. Plain `skill
+render` emits managed `SKILL.md` only, and `skill
 attach` materializes client-native skill packages without changing MCP client
 configs.
 
@@ -38,7 +41,8 @@ Access policy follows the same boundary: the server owns `allowed_tools`,
 `denied_tools`, `oauth_scopes`, `default_approval`, and per-tool approvals. A
 ring only selects whether exact enforcement is required; it does not duplicate
 member profiles. `[contract]` and skill content remain advisory, while
-`[policy.execution]` is reserved and rejected in V1.
+an optional `[policy.execution]` section declares the complete supported
+environment, sandbox, lifetime, and credential-exposure contract for runs.
 
 ## Components
 
@@ -52,9 +56,10 @@ member profiles. `[contract]` and skill content remain advisory, while
   JSON; export refuses rings that would not round-trip, import validates
   everything before writing anything and never attaches or syncs. Snapshot
   version 4 added ring skill membership, version 5 added ring contract metadata,
-  version 6 stores full skill package files, and V10 adds server access profiles
-  plus ring policy. V1 through V9 remain importable; older versions carrying V10
-  fields are rejected so policy data cannot be discarded silently.
+  version 6 stores full skill package files, V10 adds server access profiles and
+  ring policy, and V11 adds ring execution policy. V1 through V10 remain
+  importable; an older version carrying a field introduced by a newer version is
+  rejected so policy data cannot be discarded silently.
 
 2. Client Targets and Adapters
 - The command layer keeps a single client target registry for target-level
@@ -66,16 +71,35 @@ member profiles. `[contract]` and skill content remain advisory, while
 - Adapters own read/merge/write behavior for their client format.
 - An unspecified policy compiler is unsupported. Codex persistent sync/attach,
   render, and run opt into all five V1 access features; every other target
-  policy surface remains fail-closed. Access-bearing Codex runs additionally
-  require a validated stable CLI 0.139.x release.
+  policy surface remains fail-closed. Every Codex run uses the validated stable
+  CLI 0.139.x range and strict configuration parsing.
 
-3. Sync Engine
+3. Launch Compiler
+- `internal/launch` is the planning/execution boundary for ephemeral runs.
+- It normalizes and defensively clones selected rings, server manifests, and
+  complete skill packages, freezes declared runtime environment values and
+  Codex authentication, records the validated client binary, then compiles the
+  prompt and target-native overrides once. Artifact fields are private and
+  accessors return defensive copies. Execution does not reread the registry or
+  mutable auth/environment sources.
+- Deterministic component and policy hashes support drift-resistant evidence.
+  The public launch digest deliberately excludes prompt content, runtime
+  environment values, URLs, header values, and command arguments.
+- Requested and effective controls identify their enforcement owner as
+  provider, client, process, advisory, or none, and distinguish configured,
+  observed, and unverified evidence.
+- Preparation materializes isolated home, Codex-home, and temporary paths. The
+  run process environment is built from a small platform baseline plus declared
+  keys only; Codex shell inheritance is separately disabled with
+  `shell_environment_policy.inherit = "none"`.
+
+4. Sync Engine
 - Reads registry + client config.
 - Generates a deterministic mutation plan.
 - Supports `--dry-run` to preview changes.
 - Performs backup + atomic write when applying changes.
 
-4. Managed Sync State (ownership)
+5. Managed Sync State (ownership)
 - Path: `<config-root>/state/<target>-managed.json`, one file per sync
   target and scope (project/user-scoped clients have separate state files).
 - Versioned JSON (current: version 2) mapping each managed server name to
@@ -95,7 +119,7 @@ member profiles. `[contract]` and skill content remain advisory, while
   missing, disabled, or no longer targets the client; ring sources are
   released only by detach or membership reconciliation.
 
-5. Rings
+6. Rings
 - Named capability sets (`rings/<name>.toml`). Server members are references by
   name only — the server manifest stays the single source of truth for command,
   args, env, and access profile. Skill members are references by name only —
@@ -104,7 +128,9 @@ member profiles. `[contract]` and skill content remain advisory, while
   delegating agent should provide, and what outputs to expect. Contracts are
   advisory only: attach, detach, sync, render, status, ownership, and skill
   materialization do not change when a contract changes. Optional `[policy]`
-  metadata can set `enforcement = "required"` without embedding member policy.
+  metadata can set `enforcement = "required"` without embedding member policy,
+  and optional `[policy.execution]` metadata carries the complete supported run
+  boundary. Enforcement and execution declarations are independently optional.
 - Attachment is derived state: ring `R` is attached to a target+scope iff
   `ring:R` appears among server ownership sources or skill attachment sources
   there. Attach records the source on every server and skill member,
@@ -130,7 +156,7 @@ member profiles. `[contract]` and skill content remain advisory, while
 - `ring delete` refuses while any target/scope still records the ring as an
   ownership source, and never edits client configs or managed state.
 
-6. Capability Policy
+7. Capability Policy
 - `[access]` is optional. No section means a legacy server makes no Madari
   access declaration.
 - The portable approval vocabulary is `inherit`, `automatic`, `always-prompt`,
@@ -152,11 +178,63 @@ member profiles. `[contract]` and skill content remain advisory, while
   and required operations reject unknown behavior-affecting fields.
 - OAuth scopes are requested and client-configured, not proof of a provider
   grant. Approval behavior is a client prompt control, not authorization.
-- Environment sanitization, TTLs, receipts, credential brokers, audit,
-  OpenCode support, production examples, and `[policy.execution]` are outside
-  V1.
+- Capability Policy V1 does not claim provider-side grants or authorization.
+  Runtime environment, lifetime, and process-boundary guarantees are handled by
+  the bounded execution policy below. Credential brokers, credential TTLs,
+  audit, OpenCode support, and production examples remain outside this surface.
 
-7. Skills
+8. Bounded Execution Policy
+- `[policy.execution]` is optional, but when present all four fields are
+  required: `ambient_env = "deny"`, `sandbox = "read-only"`, a positive Go
+  `max_duration`, and `credential_exposure = "run-process"`. Those are the only
+  supported values. A ring may declare execution policy without declaring
+  `enforcement`; adding `enforcement = "required"` turns an unenforceable
+  execution guarantee into a preflight block.
+- Safe effective defaults apply even when no selected ring declares execution
+  policy: denied ambient environment, read-only Codex sandbox, 15-minute maximum,
+  and run-process credential exposure. Multiple rings compose by taking the
+  shortest duration. The CLI `--max-duration` may shorten that result but cannot
+  extend it.
+- The Codex process receives only the platform baseline, isolated
+  `HOME`/`USERPROFILE`/`CODEX_HOME` and temporary paths, and values explicitly
+  named by selected server manifests. Declared values and `auth.json` are frozen
+  during launch compilation. Static, required-runtime, secret-runtime, and
+  bearer-token values are visible to the run process and their declared MCP
+  recipient. There is no broker or per-use credential lease.
+- Codex is always launched with `--strict-config`, the validated stable 0.139.x
+  client, and shell environment inheritance set to `none`. The client binary is
+  hashed at planning and checked before execution.
+- Timeout and cancellation terminate the contained process tree using an
+  isolated session plus same-session and PPID-ancestry observation on Unix and
+  a kill-on-close Job Object on Windows. The boundary reaches observed
+  descendants that create another session, but a fully escaped, never-observed
+  double-fork remains outside the portable Unix guarantee. This is not a claim
+  of adversarial kernel, container, filesystem, or network isolation.
+- Codex's read-only sandbox applies to Codex-managed shell commands, not a local
+  stdio MCP server that Codex spawns separately. Stdio filesystem and network
+  confinement are therefore unverified. A required execution policy blocks
+  stdio members; advisory policy proceeds with degraded/unverified reporting.
+
+9. Execution Receipts
+- `madari run codex --receipt <path>` opts into one independently versioned V1
+  receipt. Receipt JSON does not share the additive command JSON schema.
+- The receipt finalizer accepts only sanitized names, bounded enums, timestamps,
+  counters, and receipt-safe hashes. It has no API for prompt text, arguments,
+  environment values, auth state, raw errors, stdout, or stderr.
+- The receipt records requested/effective authority, manifest-declared
+  environment key names configured for each recipient, client and timeout/exit
+  observations, and whether tree termination completed for the observed
+  containment set. Recipient entries do not claim the recipient started.
+- Blocked planning, success, failure, timeout, and handled cancellation finalize
+  a receipt when the destination is writable. Receipt-write failure is returned
+  without masking an execution failure.
+- Files are replaced atomically with owner-only `0600` protection (including a
+  protected current-user DACL on Windows).
+- Receipts explicitly identify themselves as self-reported evidence with no
+  cryptographic attestation. Madari does not provide a verifier that merely
+  reparses or checksums its own output.
+
+10. Skills
 - Standalone Agent Skill packages stored at `skills/<name>/` with `SKILL.md`
   frontmatter plus optional bundled files such as `references/`, `scripts/`,
   and `assets/`.
@@ -175,7 +253,7 @@ member profiles. `[contract]` and skill content remain advisory, while
   ring skills by temporarily materializing them as project skills under the
   isolated run root; other run targets are dry-run only today.
 
-8. Doctor Engine
+11. Doctor Engine
 - Verifies command/binary resolution.
 - Validates required env values are present.
 - Validates client config parseability.
@@ -221,6 +299,12 @@ member profiles. `[contract]` and skill content remain advisory, while
   unsupported, omitted, or approximated.
 - Keep client-enforced tool filtering, requested OAuth scopes, client approval
   prompts, and advisory contract/skill instructions distinct in reporting.
+- Build Codex run environments from declared authority rather than inheriting
+  the caller environment, and isolate all home and temporary paths.
+- Bound every Codex run lifetime and terminate the contained process tree on
+  timeout or cancellation.
+- Report local stdio filesystem and network confinement as unverified; never
+  present the Codex read-only sandbox as containment for a separate MCP process.
 
 Materialized sync is the only mode: client configs always contain real
 commands and survive madari's removal. A launcher shim was considered and

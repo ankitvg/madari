@@ -3,10 +3,8 @@ package main
 import (
 	"fmt"
 	"path/filepath"
-	"sort"
-	"strings"
 
-	"github.com/ankitvg/madari/internal/registry"
+	"github.com/ankitvg/madari/internal/launch"
 )
 
 type runSkillMaterialization struct {
@@ -15,8 +13,16 @@ type runSkillMaterialization struct {
 	Skills    []string
 }
 
-func materializeRunSkills(store *registry.Store, target string, skills []runPlanSkill, runRoot string) (runSkillMaterialization, error) {
-	names := runSkillNames(skills)
+func materializeRunSkills(artifact *launch.Artifact, runRoot string) (runSkillMaterialization, error) {
+	if artifact == nil {
+		return runSkillMaterialization{}, fmt.Errorf("immutable launch artifact is required")
+	}
+	packages := artifact.Skills()
+	names := make([]string, 0, len(packages))
+	for _, pkg := range packages {
+		names = append(names, pkg.Skill.Name)
+	}
+	target := artifact.Target()
 	result := runSkillMaterialization{
 		Target: target,
 		Skills: nonNilStrings(names),
@@ -38,69 +44,10 @@ func materializeRunSkills(store *registry.Store, target string, skills []runPlan
 	}
 	result.SkillsDir = skillsRoot
 
-	for _, name := range names {
-		pkg, err := store.GetSkillPackage(name)
-		if err != nil {
-			return result, fmt.Errorf("skill %s: %w", name, err)
-		}
-		if err := writeMaterializedSkillPackage(filepath.Join(skillsRoot, name), pkg.Files); err != nil {
-			return result, fmt.Errorf("materialize skill %s: %w", name, err)
+	for _, pkg := range packages {
+		if err := writeMaterializedSkillPackage(filepath.Join(skillsRoot, pkg.Skill.Name), pkg.Files); err != nil {
+			return result, fmt.Errorf("materialize skill %s: %w", pkg.Skill.Name, err)
 		}
 	}
 	return result, nil
-}
-
-func runSkillNames(skills []runPlanSkill) []string {
-	seen := map[string]struct{}{}
-	for _, skill := range skills {
-		name := strings.TrimSpace(skill.Name)
-		if name != "" {
-			seen[name] = struct{}{}
-		}
-	}
-	names := make([]string, 0, len(seen))
-	for name := range seen {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
-
-func appendRunSkillPrompt(b *strings.Builder, store *registry.Store, ringNames []string) error {
-	skillNames := map[string]struct{}{}
-	for _, name := range ringNames {
-		ring, err := store.GetRing(name)
-		if err != nil {
-			return err
-		}
-		for _, skill := range ring.Skills {
-			skill = strings.TrimSpace(skill)
-			if skill != "" {
-				skillNames[skill] = struct{}{}
-			}
-		}
-	}
-	if len(skillNames) == 0 {
-		return nil
-	}
-	names := make([]string, 0, len(skillNames))
-	for name := range skillNames {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	fmt.Fprintln(b)
-	fmt.Fprintln(b, "Selected skills:")
-	for _, name := range names {
-		skill, err := store.GetSkill(name)
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(b, "- %s", skill.Name)
-		if strings.TrimSpace(skill.Description) != "" {
-			fmt.Fprintf(b, ": %s", strings.TrimSpace(skill.Description))
-		}
-		fmt.Fprintln(b)
-	}
-	fmt.Fprintln(b, "Selected ring skills are materialized as project skills for this session.")
-	return nil
 }

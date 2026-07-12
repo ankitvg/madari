@@ -6,6 +6,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/ankitvg/madari/internal/launch"
+	"github.com/ankitvg/madari/internal/registry"
 )
 
 func TestMaterializeRunSkillsUsesTargetRunSkillRoot(t *testing.T) {
@@ -13,7 +16,8 @@ func TestMaterializeRunSkillsUsesTargetRunSkillRoot(t *testing.T) {
 	saveTestSkillPackage(t, store, "release", "Release workflow")
 	runRoot := t.TempDir()
 
-	result, err := materializeRunSkills(store, "codex", []runPlanSkill{{Name: "release"}}, runRoot)
+	artifact := testRunSkillArtifact(t, store, "codex", "release")
+	result, err := materializeRunSkills(artifact, runRoot)
 	if err != nil {
 		t.Fatalf("materialize run skills: %v", err)
 	}
@@ -39,7 +43,8 @@ func TestMaterializeRunSkillsUsesNonCodexTargetRoot(t *testing.T) {
 	saveTestSkillPackage(t, store, "release", "Release workflow")
 	runRoot := t.TempDir()
 
-	result, err := materializeRunSkills(store, "gemini", []runPlanSkill{{Name: "release"}}, runRoot)
+	artifact := testRunSkillArtifact(t, store, "gemini", "release")
+	result, err := materializeRunSkills(artifact, runRoot)
 	if err != nil {
 		t.Fatalf("materialize run skills: %v", err)
 	}
@@ -55,8 +60,31 @@ func TestMaterializeRunSkillsRejectsUnsupportedTarget(t *testing.T) {
 	store := newTestStore(t)
 	saveTestSkillPackage(t, store, "release", "Release workflow")
 
-	_, err := materializeRunSkills(store, "claude-desktop", []runPlanSkill{{Name: "release"}}, t.TempDir())
+	artifact := testRunSkillArtifact(t, store, "claude-desktop", "release")
+	_, err := materializeRunSkills(artifact, t.TempDir())
 	if err == nil || !strings.Contains(err.Error(), "claude-desktop run does not support run skill materialization") {
 		t.Fatalf("expected unsupported run skill target error, got: %v", err)
 	}
+}
+
+func testRunSkillArtifact(t *testing.T, store *registry.Store, target string, names ...string) *launch.Artifact {
+	t.Helper()
+	packages := make([]registry.SkillPackage, 0, len(names))
+	for _, name := range names {
+		pkg, err := store.GetSkillPackage(name)
+		if err != nil {
+			t.Fatalf("load skill package %s: %v", name, err)
+		}
+		packages = append(packages, pkg)
+	}
+	artifact, err := launch.Compile(launch.Input{
+		Target:           target,
+		WorkingDirectory: t.TempDir(),
+		Prompt:           "test prompt",
+		Skills:           packages,
+	})
+	if err != nil {
+		t.Fatalf("compile launch artifact: %v", err)
+	}
+	return artifact
 }

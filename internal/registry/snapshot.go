@@ -32,7 +32,11 @@ const (
 	// SnapshotVersion 10 adds server access profiles and required ring policy;
 	// older importers reject v10 rather than silently widening access by
 	// dropping policy declarations.
-	SnapshotVersion = 10
+	snapshotVersionV10 = 10
+	// SnapshotVersion 11 adds bounded ring execution policy; older importers
+	// reject v11 rather than silently dropping environment, sandbox, lifetime,
+	// or credential-exposure declarations.
+	SnapshotVersion = 11
 )
 
 type Snapshot struct {
@@ -180,7 +184,7 @@ func ParseSnapshotJSON(payload []byte) (Snapshot, error) {
 	return snapshot, nil
 }
 
-// validateSnapshotPolicyPresence rejects explicit JSON null values on V10
+// validateSnapshotPolicyPresence rejects explicit JSON null values on V10/V11
 // fields whose presence has policy meaning. The ordinary encoding/json pointer
 // decoder maps both an omitted field and an explicit null to nil; accepting
 // null would therefore turn an explicit declaration into legacy absence.
@@ -220,8 +224,22 @@ func validateSnapshotPolicyPresence(payload []byte) error {
 		if err != nil {
 			return fmt.Errorf("rings[%d]: %w", i, err)
 		}
-		if policyRaw, exists := ring["policy"]; exists && rawJSONNull(policyRaw) {
+		policyRaw, exists := ring["policy"]
+		if !exists {
+			continue
+		}
+		if rawJSONNull(policyRaw) {
 			return fmt.Errorf("rings[%d].policy must not be null; omit it for advisory behavior", i)
+		}
+		policy, err := rawJSONObject(policyRaw)
+		if err != nil {
+			return fmt.Errorf("rings[%d].policy: %w", i, err)
+		}
+		if enforcementRaw, exists := policy["enforcement"]; exists && rawJSONNull(enforcementRaw) {
+			return fmt.Errorf("rings[%d].policy.enforcement must not be null; omit it for advisory behavior", i)
+		}
+		if executionRaw, exists := policy["execution"]; exists && rawJSONNull(executionRaw) {
+			return fmt.Errorf("rings[%d].policy.execution must not be null; omit it for absence", i)
 		}
 	}
 	return nil
@@ -434,7 +452,7 @@ func ImportSnapshot(store *Store, snapshot Snapshot, apply bool) (ImportResult, 
 }
 
 func (s Snapshot) Validate() error {
-	if s.Version != snapshotVersionV1 && s.Version != snapshotVersionV2 && s.Version != snapshotVersionV3 && s.Version != snapshotVersionV4 && s.Version != snapshotVersionV5 && s.Version != snapshotVersionV6 && s.Version != snapshotVersionV7 && s.Version != snapshotVersionV8 && s.Version != snapshotVersionV9 && s.Version != SnapshotVersion {
+	if s.Version != snapshotVersionV1 && s.Version != snapshotVersionV2 && s.Version != snapshotVersionV3 && s.Version != snapshotVersionV4 && s.Version != snapshotVersionV5 && s.Version != snapshotVersionV6 && s.Version != snapshotVersionV7 && s.Version != snapshotVersionV8 && s.Version != snapshotVersionV9 && s.Version != snapshotVersionV10 && s.Version != SnapshotVersion {
 		return fmt.Errorf("unsupported snapshot version %d (supported: %d)", s.Version, SnapshotVersion)
 	}
 	if s.Version == snapshotVersionV1 && len(s.Rings) > 0 {
@@ -458,11 +476,14 @@ func (s Snapshot) Validate() error {
 	if s.Version < snapshotVersionV9 && snapshotHasBearerTokenEnv(s) {
 		return fmt.Errorf("snapshot version %d does not support bearer_token_env_var", s.Version)
 	}
-	if s.Version < SnapshotVersion && snapshotHasAccessProfiles(s) {
+	if s.Version < snapshotVersionV10 && snapshotHasAccessProfiles(s) {
 		return fmt.Errorf("snapshot version %d does not support server access profiles", s.Version)
 	}
-	if s.Version < SnapshotVersion && snapshotHasRingPolicies(s) {
+	if s.Version < snapshotVersionV10 && snapshotHasRingPolicies(s) {
 		return fmt.Errorf("snapshot version %d does not support ring policies", s.Version)
+	}
+	if s.Version < SnapshotVersion && snapshotHasExecutionPolicies(s) {
+		return fmt.Errorf("snapshot version %d does not support ring execution policies", s.Version)
 	}
 
 	seen := map[string]struct{}{}
@@ -656,7 +677,13 @@ func ringPoliciesEqual(a, b *RingPolicy) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
 	}
-	return a.Enforcement == b.Enforcement
+	if a.Enforcement != b.Enforcement {
+		return false
+	}
+	if a.Execution == nil || b.Execution == nil {
+		return a.Execution == nil && b.Execution == nil
+	}
+	return *a.Execution == *b.Execution
 }
 
 func ringContractsEqual(a, b *RingContract) bool {
@@ -834,6 +861,15 @@ func snapshotHasAccessProfiles(snapshot Snapshot) bool {
 func snapshotHasRingPolicies(snapshot Snapshot) bool {
 	for _, ring := range snapshot.Rings {
 		if ring.Policy != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func snapshotHasExecutionPolicies(snapshot Snapshot) bool {
+	for _, ring := range snapshot.Rings {
+		if ring.Policy != nil && ring.Policy.Execution != nil {
 			return true
 		}
 	}

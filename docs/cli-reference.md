@@ -86,8 +86,9 @@ surface for other targets remains unsupported.
 Required sync or attach fails before config, managed state, or skill mutation;
 required render fails before partial output; and required run fails before skill
 materialization or client execution. Detach remains available for cleanup.
-Manifests without `[access]` and rings without `[policy]` preserve existing
-behavior.
+Manifests without `[access]` make no portable access declaration and rings
+without required enforcement make no mandatory access claim. Bounded Codex run
+defaults apply independently.
 
 Access profiles outside required rings are stored, validated, exported,
 imported, reported, and compiled when the selected target surface supports
@@ -95,8 +96,56 @@ them. They do not turn an advisory ring into a mandatory enforcement claim.
 
 `oauth_scopes` is requested and client-configured; it does not prove that an
 OAuth provider granted the scopes or that a token contains them.
-`[policy.execution]` is reserved for a later runtime contract and is rejected in
-V1.
+
+## Bounded Execution Policy
+
+Rings may declare an optional complete execution contract:
+
+```toml
+[policy.execution]
+ambient_env = "deny"
+sandbox = "read-only"
+max_duration = "15m"
+credential_exposure = "run-process"
+```
+
+If `[policy.execution]` is present, all four fields are required and those are
+the only supported string values except `max_duration`, which accepts any
+positive Go duration such as `30s`, `15m`, or `1h30m`. Partial sections,
+unknown fields, surrounding duration whitespace, zero/negative durations, and
+other policy values are rejected.
+
+Execution policy and enforcement are independently optional. A ring can carry
+the section above as an advisory boundary, or combine it with:
+
+```toml
+[policy]
+enforcement = "required"
+```
+
+to require every declared execution guarantee. `madari ring create` exposes the
+same shape; all four execution flags must be provided together:
+
+```bash
+madari ring create bounded \
+  --member remote-readonly \
+  --enforcement required \
+  --ambient-env deny \
+  --sandbox read-only \
+  --max-duration 15m \
+  --credential-exposure run-process
+```
+
+Every Codex run applies the safe effective defaults even when no ring declares
+the section: denied ambient environment, read-only Codex sandbox, 15-minute
+maximum, and run-process credential exposure. Multiple selected rings use the
+shortest declared maximum; when none declares one, the maximum is the default
+15 minutes. Run-level `--max-duration` can only shorten that result.
+
+Required execution policy blocks rings with local stdio members because the
+Codex sandbox does not isolate the filesystem or network of a separately spawned
+stdio server. Advisory execution policy can run, but those confinement controls
+are reported as degraded and unverified.
 
 ## Install Workflow
 
@@ -174,6 +223,7 @@ streamable HTTP, or hand-managed stdio entries are preserved and never adopted.
 ```bash
 madari ring create research --member stewreads --member arxiv --skill release --description "Research helpers"
 madari ring create thinking --member stewreads --description "Server-only helper"
+madari ring create bounded --member remote-readonly --ambient-env deny --sandbox read-only --max-duration 15m --credential-exposure run-process
 madari ring list
 madari ring show research
 madari ring contract show research
@@ -195,8 +245,8 @@ madari ring render research --client gemini
 madari ring render research --client codex
 madari ring render research --client vibe
 madari ring status
-madari run codex --ring thinking -- "Use this ring"
-madari run codex --ring research --ring release --dry-run --json -- "Use both rings"
+madari run codex --ring thinking --max-duration 5m -- "Use this ring"
+madari run codex --ring research --ring release --max-duration 10m --dry-run --json -- "Use both rings"
 ```
 
 Rings are named capability sets of servers and skills stored at
@@ -214,7 +264,9 @@ Ring policy is distinct from the advisory contract. A ring file may set
 `[policy] enforcement = "required"`, but each referenced server remains the
 source of truth for its own `[access]` profile. Codex required attach, render,
 and run are supported when every member compiles exactly. Unsupported target
-surfaces fail during preflight.
+surfaces fail during preflight. The optional `[policy.execution]` section is a
+run-only boundary and can be advisory or combined with required enforcement.
+It does not affect attach, detach, sync, or render.
 
 ```toml
 summary = "Collect source context and prepare a research brief."
@@ -288,38 +340,58 @@ server member = warning).
 ## Run
 
 ```bash
-madari run <client> --ring <ring> [--ring <ring> ...] [--dry-run] -- <prompt>
-madari run codex --ring cloudsql-readonly -- "Who are the top 5 ebook creators?"
-madari run codex --ring cloudsql-readonly --ring research --dry-run --json -- "Inspect the combined plan"
+madari run <client> --ring <ring> [--ring <ring> ...] [--max-duration <duration>] [--receipt <path>] [--dry-run] -- <prompt>
+madari run codex --ring cloudsql-readonly --max-duration 5m --receipt ./run-receipt.json -- "Who are the top 5 ebook creators?"
+madari run codex --ring cloudsql-readonly --ring research --max-duration 10m --dry-run --json -- "Inspect the combined plan"
 ```
 
 `madari run` is the launch primitive for using one or more rings with a target
-client. Codex execution starts `codex exec --ephemeral --ignore-user-config
+client. Every Codex execution uses a validated stable 0.139.x CLI and starts
+`codex exec --strict-config --ephemeral --ignore-user-config
 --skip-git-repo-check --sandbox read-only` with selected ring MCP servers
 injected as required config overrides from an isolated working root after
-clearing inherited MCP server config. Selected ring skills are materialized
-under the temporary Codex run root as project skills for that session. Stdio
-servers keep the original working directory through `mcp_servers.<id>.cwd`.
-Codex runs with a temporary `HOME` so personal Codex skills do not leak into
-the selected ring, and with a temporary `CODEX_HOME` that copies only
-`auth.json` from the caller's Codex home so Codex-home skills do not leak into
-the selected ring. Stdio servers also receive the caller's non-secret `HOME`,
-`USERPROFILE`, and `CODEX_HOME` values when present so home-based server
-credentials keep working; secret declarations for those isolated env keys are
-blocked because Codex mutates them for run isolation. Other clients remain
+clearing inherited MCP server config. The version probe itself runs with an
+isolated home and temporary directory plus the platform baseline, not caller
+credentials. The selected executable path, version, and binary hash are frozen
+in the launch artifact and the binary is checked before execution.
+
+Selected ring skills are materialized under the temporary Codex run root as
+project skills for that session. Stdio servers keep the original working
+directory through `mcp_servers.<id>.cwd`. The Codex process receives isolated
+`HOME`/`USERPROFILE`, `CODEX_HOME`, and temporary paths; on Windows its
+application-data paths are isolated as well. The caller's ambient environment is
+not inherited. Madari supplies only a documented platform baseline and values
+explicitly named by selected manifests through static `[env]`, `[required_env]`,
+`[secret_env]`, or `bearer_token_env_var` declarations.
+
+Declared runtime values and the caller's `auth.json` bytes are frozen when the
+immutable artifact is compiled. The frozen auth file is materialized owner-only
+inside the isolated `CODEX_HOME`. Codex is also configured with
+`shell_environment_policy.inherit = "none"` (and login shells disabled), so MCP
+credential values are not automatically exposed to shell subprocesses. Static,
+runtime, secret, and bearer credentials are still visible to the Codex run
+process or the MCP recipient for which they were declared. Madari does not claim
+a credential broker, per-invocation lease, or token TTL. Other clients remain
 dry-run only for now.
 
 The planner resolves every selected ring, deduplicates shared server and skill
 members, validates the selected client can express each required capability,
-checks runtime env keys by name, and reports the launch plan. Run never writes
-client config, creates managed state, or permanently materializes skill
-packages.
+captures declared runtime values, and compiles one immutable launch artifact.
+The artifact owns normalized ring and manifest snapshots, complete skill
+packages, frozen auth and environment inputs, the prompt preamble, Codex
+overrides, deterministic component hashes, and a receipt-safe launch digest.
+Execution consumes only the artifact and does not reread registry, auth, or
+caller-environment state. Run never writes client config, creates managed state,
+or permanently materializes skill packages.
 
-When any selected server declares `[access]`, Codex execution also adds
-`--strict-config` and requires a stable Codex CLI 0.139.x release. This applies
-to advisory profiles as well as policy-required rings so Madari never drops a
-declared restriction. Legacy runs with no access declarations omit the newer
-flag and version gate, preserving their existing compatibility behavior.
+The effective execution policy always denies ambient environment inheritance,
+uses the read-only Codex sandbox, exposes declared credentials at run-process
+scope, and imposes a finite duration. If no selected ring declares
+`[policy.execution]`, the maximum is 15 minutes. Otherwise Madari takes the
+shortest duration across the selected declarations.
+`--max-duration` accepts a positive Go duration and may shorten, but never
+extend, the result. Timeout and cancellation terminate the contained process
+tree on supported Unix and Windows platforms.
 
 Unlike `ring render`, `run` is fail-closed. A disabled member, missing member,
 unsupported remote transport or auth mode, missing runtime env key, or
@@ -331,10 +403,18 @@ case.
 Policy-required run adds a stricter preflight boundary: every declared member
 restriction must compile exactly before any temporary skill package is
 materialized or the client starts. Codex maps every V1 access field into the
-single ephemeral `mcp_servers={...}` override. The plan and executor both check
-the bounded version range Madari has validated for this complete contract.
+single ephemeral `mcp_servers={...}` override.
 `--strict-config` is an additional config-parser safeguard, not proof that
 nested MCP policy fields retain their semantics outside the validated range.
+
+Codex's read-only sandbox governs Codex-managed shell commands. It does not
+sandbox a local stdio MCP server that Codex spawns as a separate process, so
+Madari reports stdio filesystem and network confinement as unverified. A ring
+that combines required enforcement with declared execution policy and a stdio
+member is blocked. The same limitation under advisory execution policy is
+allowed but classified as degraded and unverified. The process-tree boundary is
+designed for ordinary timeout and cancellation cleanup; it is not adversarial
+filesystem, network, container, or kernel containment.
 
 Dry-run text and JSON report each server's portable declared policy, the
 Codex-native effective policy, support state, and enforcement classification.
@@ -343,6 +423,41 @@ If a server is shared, any selected required ring wins and is listed in
 client-enforced; OAuth scopes are requested/client-configured and
 provider-unverified; approval modes are client controls rather than an
 authorization boundary; contracts and skills remain advisory instructions.
+Each authority entry reports `enforced_by` as `provider`, `client`, `process`,
+`advisory`, or `none`, and `verification` as `observed`, `configured`, or
+`unverified`.
+For non-Codex dry-runs, `execution.supported` is `false`; requested execution
+policy remains visible, but effective controls are reported as
+none/unverified/degraded (or blocked when required), never as Codex-enforced.
+
+### Execution receipts
+
+`--receipt <path>` opts a Codex run invocation into one redacted receipt. `~` is
+expanded and relative paths are made absolute before entering the isolated run
+directory. The flag is rejected with `--dry-run` and for non-Codex targets. No
+receipt status line is printed, so Codex stdout/stderr passthrough is unchanged.
+
+When requested, a receipt is finalized for blocked planning, success,
+preparation/start/nonzero-exit or containment-cleanup failure, timeout, or
+handled cancellation. A receipt-write error fails the command; if execution
+also failed, both errors are returned. An uncatchable kill or host crash can
+prevent finalization.
+
+Receipt schema V1 is strict and independent from the command JSON envelope
+version. It records a UUID v4 run ID, UTC timestamps, total duration, bounded
+outcome/reason codes, receipt-safe artifact/policy/component hashes, client
+version, requested/effective authority, manifest-declared environment key names,
+the exact effective timeout in nanoseconds, exit evidence, and observed
+tree-termination status. Environment entries describe configured forwarding;
+they do not prove that a recipient process started or received a value.
+
+Receipts never contain prompt text or a prompt hash, command/argument values,
+URLs or headers, environment values, auth paths/content, skill bodies,
+stdout/stderr, temporary paths/PIDs, or raw error messages. Files are atomically
+replaced with owner-only `0600` protection. The evidence object always says
+`kind = "self-reported"` and `cryptographic_attestation = false`; hashes support
+configuration correlation and are not signatures or provider verification.
+See `docs/adr/005-execution-receipt-v1.md` for the exact evidence boundary.
 
 ## Skills
 
@@ -404,17 +519,19 @@ madari import --file madari-snapshot.json --apply
 ```
 
 Snapshots are versioned JSON documents containing server manifests, ring
-definitions, and skill packages. Export writes V10 with `servers`, `rings`, and
-`skills`; V10 adds server access profiles and ring policy. V1 through V9 remain
-importable. An older snapshot version carrying V10 fields is rejected so access
-or enforcement data cannot be discarded silently. Snapshot version 6 introduced
-deterministic skill package file entries with relative paths, base64 content,
-and file modes; older snapshots with a single skill `content` string remain
-importable and are converted to package-backed `SKILL.md`. Import validates the
-complete resulting server/ring graph before its first write. It is a dry-run by
-default; `--apply` adds or updates listed servers, rings, and skills, never
-deletes entries absent from the snapshot, and never attaches or syncs imported
-rings.
+definitions, and skill packages. Export writes V11 with `servers`, `rings`, and
+`skills`. V10 added server access profiles and ring policy; V11 adds bounded
+ring execution policy. V1 through V10 remain importable. Any snapshot older than
+V11 that carries execution policy is rejected so ambient-environment, sandbox,
+lifetime, or credential-exposure requirements cannot be discarded silently.
+The equivalent older-version checks remain for fields introduced before V11.
+Snapshot version 6 introduced deterministic skill package file entries with
+relative paths, base64 content, and file modes; older snapshots with a single
+skill `content` string remain importable and are converted to package-backed
+`SKILL.md`. Import validates the complete resulting server/ring graph before its
+first write. It is a dry-run by default; `--apply` adds or updates listed
+servers, rings, and skills, never deletes entries absent from the snapshot, and
+never attaches or syncs imported rings.
 Ring membership changes converge through the normal reconciliation pass on
 the next sync, attach, or detach.
 
@@ -432,12 +549,15 @@ containing object is emitted. Optional objects such as server `access`, ring
 fields are omitted while explicitly cleared arrays or the per-tool table are
 emitted as `[]` or `{}` so presence semantics survive the JSON round trip.
 
+Execution receipt JSON is a separate strict V1 contract: it does not use this
+command envelope version or its additive-field compatibility rule.
+
 ```bash
 madari list --json
 madari status --json
 madari doctor --json
 madari sync claude-code --dry-run --json
-madari run codex --ring research --dry-run --json -- "Use this ring"
+madari run codex --ring research --max-duration 5m --dry-run --json -- "Use this ring"
 madari ring list --json
 madari ring show research --json
 madari ring status --json
@@ -606,7 +726,7 @@ For Codex, `policy_updated` is the sorted subset of `updated` whose declared
 access fields differ from the native configuration. Undeclared preserved fields
 do not appear as policy drift.
 
-`madari run <client> --ring <ring> --dry-run --json`:
+`madari run <client> --ring <ring> [--max-duration <duration>] --dry-run --json`:
 
 ```json
 {
@@ -623,6 +743,39 @@ do not appear as policy drift.
     "oauth_scopes": "requested/client-configured/provider-unverified",
     "approvals": "client-control/not-authorization",
     "instructions": "contracts-and-skills-advisory"
+  },
+  "launch_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "policy_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "content_hashes": {
+    "rings": [{"name": "cloudsql-readonly", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}],
+    "servers": [{"name": "cloud-sql", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}],
+    "skills": []
+  },
+  "authority": {
+    "requested": [
+      {"control": "ambient-environment", "enforced_by": "process", "verification": "configured", "classification": "exact"},
+      {"control": "client-sandbox", "enforced_by": "client", "verification": "configured", "classification": "exact"},
+      {"control": "credential-exposure", "enforced_by": "process", "verification": "configured", "classification": "exact"},
+      {"control": "max-duration", "enforced_by": "process", "verification": "configured", "classification": "exact"},
+      {"control": "mcp-tool-filtering", "enforced_by": "client", "verification": "configured", "classification": "exact"}
+    ],
+    "effective": [
+      {"control": "ambient-environment", "enforced_by": "process", "verification": "configured", "classification": "exact"},
+      {"control": "client-sandbox", "enforced_by": "client", "verification": "configured", "classification": "exact"},
+      {"control": "credential-exposure", "enforced_by": "process", "verification": "configured", "classification": "exact"},
+      {"control": "max-duration", "enforced_by": "process", "verification": "configured", "classification": "exact"},
+      {"control": "mcp-tool-filtering", "enforced_by": "client", "verification": "configured", "classification": "exact"}
+    ]
+  },
+  "execution": {
+    "ambient_env": "deny",
+    "sandbox": "read-only",
+    "max_duration": "15m0s",
+    "credential_exposure": "run-process",
+    "supported": true,
+    "declared": true,
+    "required": true,
+    "stdio_confinement": "not-applicable"
   },
   "servers": [
     {
@@ -670,7 +823,15 @@ do not appear as policy drift.
       "members": ["arxiv", "stewreads"],
       "skills": ["release"],
       "description": "Research helpers",
-      "policy": {"enforcement": "required"},
+      "policy": {
+        "enforcement": "required",
+        "execution": {
+          "ambient_env": "deny",
+          "sandbox": "read-only",
+          "max_duration": "15m",
+          "credential_exposure": "run-process"
+        }
+      },
       "contract": {
         "summary": "Collect source context and prepare a research brief.",
         "good_for": ["source collection", "evidence review"],

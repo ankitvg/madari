@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ankitvg/madari/internal/launch"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -126,6 +127,38 @@ func TestRunWithStoreRunPlanRequiresDryRunRingAndPrompt(t *testing.T) {
 	}
 }
 
+func TestRunNonCodexDryRunDoesNotClaimCodexExecutionAuthority(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(registry.Manifest{
+		Name: "helper", Command: mustCurrentExecutable(t), Enabled: true, Clients: []string{"claude-code"},
+	}); err != nil {
+		t.Fatalf("save helper: %v", err)
+	}
+	if err := store.SaveRing(registry.Ring{
+		Name: "bounded", Members: []string{"helper"},
+		Policy: &registry.RingPolicy{Execution: testExecutionPolicy("1m")},
+	}); err != nil {
+		t.Fatalf("save ring: %v", err)
+	}
+
+	result := runCmd(store, "run", "claude-code", "--ring", "bounded", "--dry-run", "--json", "--", "inspect")
+	if result.code != 0 {
+		t.Fatalf("non-Codex dry-run failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	if plan.Execution.Supported || plan.Execution.StdioConfinement != "unsupported" {
+		t.Fatalf("non-Codex execution support was overstated: %#v", plan.Execution)
+	}
+	for _, control := range plan.Authority.Effective {
+		switch control.Control {
+		case "ambient-environment", "client-sandbox", "max-duration", "credential-exposure":
+			if control.EnforcedBy != launch.EnforcedByNone || control.Verification != launch.VerificationUnverified || control.Classification != launch.ClassificationDegraded {
+				t.Fatalf("non-Codex effective authority was overstated: %#v", control)
+			}
+		}
+	}
+}
+
 func TestRunWithStoreRunPlanBlocksMissingCodexBinary(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
@@ -153,6 +186,14 @@ func TestRunWithStoreRunPlanBlocksMissingCodexBinary(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(plan.Errors, "\n"), "codex executable not found in PATH") {
 		t.Fatalf("expected missing codex error, got: %#v", plan.Errors)
+	}
+	for _, control := range plan.Authority.Effective {
+		if control.EnforcedBy != launch.EnforcedByNone || control.Verification != launch.VerificationUnverified {
+			t.Fatalf("blocked Codex preflight overstated effective authority: %#v", control)
+		}
+		if control.Classification == launch.ClassificationExact {
+			t.Fatalf("blocked Codex preflight retained an exact authority claim: %#v", control)
+		}
 	}
 }
 

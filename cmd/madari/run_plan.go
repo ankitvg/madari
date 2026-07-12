@@ -9,30 +9,38 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/ankitvg/madari/internal/clients"
 	codexclient "github.com/ankitvg/madari/internal/clients/codex"
+	"github.com/ankitvg/madari/internal/launch"
 	"github.com/ankitvg/madari/internal/policy"
+	"github.com/ankitvg/madari/internal/proctree"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
 const runDryRunOnlyMessage = "madari run execution is only implemented for codex; pass --dry-run to inspect the launch plan"
 
 type runPlanJSON struct {
-	SchemaVersion   int               `json:"schema_version"`
-	Command         string            `json:"command"`
-	Target          string            `json:"target"`
-	Rings           []string          `json:"rings"`
-	Ready           bool              `json:"ready"`
-	RunnerAvailable bool              `json:"runner_available"`
-	PromptProvided  bool              `json:"prompt_provided"`
-	PolicyRequired  bool              `json:"policy_required"`
-	PolicyControls  runPolicyControls `json:"policy_controls"`
-	Servers         []runPlanServer   `json:"servers"`
-	Skills          []runPlanSkill    `json:"skills"`
-	Env             []runPlanEnv      `json:"env"`
-	Warnings        []string          `json:"warnings"`
-	Errors          []string          `json:"errors"`
+	SchemaVersion   int                  `json:"schema_version"`
+	Command         string               `json:"command"`
+	Target          string               `json:"target"`
+	Rings           []string             `json:"rings"`
+	Ready           bool                 `json:"ready"`
+	RunnerAvailable bool                 `json:"runner_available"`
+	PromptProvided  bool                 `json:"prompt_provided"`
+	PolicyRequired  bool                 `json:"policy_required"`
+	PolicyControls  runPolicyControls    `json:"policy_controls"`
+	LaunchDigest    string               `json:"launch_digest,omitempty"`
+	PolicyDigest    string               `json:"policy_digest,omitempty"`
+	ContentHashes   launch.ContentHashes `json:"content_hashes"`
+	Authority       launch.Authority     `json:"authority"`
+	Execution       runPlanExecution     `json:"execution"`
+	Servers         []runPlanServer      `json:"servers"`
+	Skills          []runPlanSkill       `json:"skills"`
+	Env             []runPlanEnv         `json:"env"`
+	Warnings        []string             `json:"warnings"`
+	Errors          []string             `json:"errors"`
 }
 
 type runLaunchPlan struct {
@@ -43,11 +51,17 @@ type runLaunchPlan struct {
 	PromptProvided  bool
 	PolicyRequired  bool
 	PolicyControls  runPolicyControls
+	LaunchDigest    string
+	PolicyDigest    string
+	ContentHashes   launch.ContentHashes
+	Authority       launch.Authority
+	Execution       runPlanExecution
 	Servers         []runPlanServer
 	Skills          []runPlanSkill
 	Env             []runPlanEnv
 	Warnings        []string
 	Errors          []string
+	Artifact        *launch.Artifact
 }
 
 type runPlanServer struct {
@@ -100,9 +114,24 @@ type runPlanEnv struct {
 	Servers []string `json:"servers"`
 }
 
+type runPlanExecution struct {
+	AmbientEnv         string `json:"ambient_env"`
+	Sandbox            string `json:"sandbox"`
+	MaxDuration        string `json:"max_duration"`
+	CredentialExposure string `json:"credential_exposure"`
+	Supported          bool   `json:"supported"`
+	Declared           bool   `json:"declared"`
+	Required           bool   `json:"required"`
+	StdioConfinement   string `json:"stdio_confinement"`
+}
+
+type runBuildOptions struct {
+	maxDuration *time.Duration
+}
+
 func (a cliApp) cmdRun(args []string) error {
 	if len(args) == 0 {
-		return commandUsageError("run", "madari run <client> --ring <ring> [--ring <ring> ...] --dry-run -- <prompt>")
+		return commandUsageError("run", "madari run <client> --ring <ring> [--ring <ring> ...] [--max-duration <duration>] [--receipt <path>] [--dry-run] -- <prompt>")
 	}
 	if isHelpToken(args[0]) {
 		printRunHelp(a.stdout)
@@ -115,9 +144,13 @@ func (a cliApp) cmdRun(args []string) error {
 	var rings stringList
 	var dryRun bool
 	var jsonOutput bool
+	var maxDurationText string
+	var receiptPathText string
 	fs.Var(&rings, "ring", "Ring to include in the launch plan (repeatable)")
 	fs.BoolVar(&dryRun, "dry-run", false, "Inspect the launch plan without starting the client")
 	fs.BoolVar(&jsonOutput, "json", false, "Emit JSON instead of text")
+	fs.StringVar(&maxDurationText, "max-duration", "", "Shorten the maximum run duration")
+	fs.StringVar(&receiptPathText, "receipt", "", "Write a versioned execution receipt")
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printRunHelp(a.stdout)
@@ -129,8 +162,20 @@ func (a cliApp) cmdRun(args []string) error {
 	if target == "" {
 		return commandInputError("run", "client is required")
 	}
+	receiptRequested := false
+	fs.Visit(func(value *flag.Flag) {
+		if value.Name == "receipt" {
+			receiptRequested = true
+		}
+	})
 	if jsonOutput && !dryRun {
 		return commandInputError("run", "--json is only supported with --dry-run")
+	}
+	if receiptRequested && dryRun {
+		return commandInputError("run", "--receipt cannot be used with --dry-run")
+	}
+	if receiptRequested && target != codexclient.Target {
+		return commandInputError("run", "--receipt is only supported for codex")
 	}
 	normalizedRings := normalizedRingNames(rings)
 	if len(normalizedRings) == 0 {
@@ -141,9 +186,38 @@ func (a cliApp) cmdRun(args []string) error {
 		return commandInputError("run", "prompt is required")
 	}
 
-	plan, err := a.buildRunPlan(target, normalizedRings, prompt)
+	var buildOptions runBuildOptions
+	if maxDurationText != "" {
+		if maxDurationText != strings.TrimSpace(maxDurationText) {
+			return commandInputError("run", "--max-duration must not have leading or trailing whitespace")
+		}
+		duration, err := time.ParseDuration(maxDurationText)
+		if err != nil || duration <= 0 {
+			return commandInputError("run", "--max-duration must be a positive Go duration")
+		}
+		buildOptions.maxDuration = &duration
+	}
+	var receiptPath string
+	var receiptInvocation *runReceiptInvocation
+	if receiptRequested {
+		resolved, err := resolveRunReceiptPath(receiptPathText)
+		if err != nil {
+			return commandInputError("run", fmt.Sprintf("invalid --receipt: %v", err))
+		}
+		receiptPath = resolved
+		receiptInvocation, err = beginRunReceipt(receiptPath, version)
+		if err != nil {
+			return fmt.Errorf("initialize run receipt: %w", err)
+		}
+	}
+
+	plan, err := a.buildRunPlanWithOptions(target, normalizedRings, prompt, buildOptions)
 	if err != nil {
-		return err
+		return receiptInvocation.finish(emptyRunReceiptPlanSummary(target), planningFailureReceiptResult(), err)
+	}
+	var receiptPlan runReceiptPlanSummary
+	if receiptInvocation != nil {
+		receiptPlan = sanitizeRunPlanForReceipt(plan)
 	}
 	if dryRun && jsonOutput {
 		if err := writeJSON(a.stdout, plan.toJSON()); err != nil {
@@ -156,22 +230,31 @@ func (a cliApp) cmdRun(args []string) error {
 		if !dryRun {
 			printRunPlan(a.stdout, plan)
 		}
-		return commandInputError("run", "launch plan is not ready")
+		runErr := commandInputError("run", "launch plan is not ready")
+		return receiptInvocation.finish(receiptPlan, planningBlockedReceiptResult(), runErr)
 	}
 	if dryRun {
 		return nil
 	}
 	executor, ok := runExecutorForTarget(target)
 	if !ok {
-		return commandInputError("run", runDryRunOnlyMessage)
+		runErr := commandInputError("run", runDryRunOnlyMessage)
+		return receiptInvocation.finish(receiptPlan, preparationFailureReceiptResult(), runErr)
 	}
-	if err := executor(a, plan, prompt); err != nil {
-		return err
+	ctx, stop := runExecutionContext()
+	defer stop()
+	result, runErr := executor(ctx, a, plan)
+	if runErr == nil && result.Outcome != proctree.OutcomeSuccess {
+		runErr = fmt.Errorf("run executor returned non-success outcome %q without an error", result.Outcome)
 	}
-	return nil
+	return receiptInvocation.finish(receiptPlan, receiptResultFromProcess(result), runErr)
 }
 
 func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (runLaunchPlan, error) {
+	return a.buildRunPlanWithOptions(target, ringNames, prompt, runBuildOptions{})
+}
+
+func (a cliApp) buildRunPlanWithOptions(target string, ringNames []string, prompt string, options runBuildOptions) (runLaunchPlan, error) {
 	plan := runLaunchPlan{
 		Target:          target,
 		Rings:           nonNilStrings(normalizedRingNames(ringNames)),
@@ -225,6 +308,7 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 
 	serverRings := map[string][]string{}
 	skillRings := map[string][]string{}
+	selectedRings := make([]registry.Ring, 0, len(plan.Rings))
 	requiredByServer := map[string][]string{}
 	policySupportByServer := map[string]string{}
 	for _, name := range plan.Rings {
@@ -236,6 +320,7 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 			}
 			return runLaunchPlan{}, err
 		}
+		selectedRings = append(selectedRings, ring)
 		validation := policy.ValidateRequiredRing(ring, manifests, target, policy.SurfaceRun)
 		if err := validation.Err(); err != nil {
 			addPlanError(err.Error())
@@ -282,13 +367,23 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 			declaredAccessServers[name] = true
 		}
 	}
+	baselineEnv := map[string]string(nil)
+	clientInput := launch.ClientInput{}
+	clientCompatibilityBlocked := false
+	if target == codexclient.Target && plan.RunnerAvailable {
+		baselineEnv = codexPlatformBaseline()
+		clientInput, err = inspectCodexRunClient(baselineEnv)
+		if err != nil {
+			clientCompatibilityBlocked = true
+			addPlanError(err.Error())
+		}
+	}
 	policyRuntimeBlocked := false
 	if target == codexclient.Target && (plan.PolicyRequired || len(declaredAccessServers) > 0) {
 		if !plan.RunnerAvailable {
 			policyRuntimeBlocked = true
-		} else if err := validateCodexPolicyRunCompatibility(); err != nil {
+		} else if clientCompatibilityBlocked {
 			policyRuntimeBlocked = true
-			addPlanError(err.Error())
 		}
 		if policyRuntimeBlocked {
 			for name := range requiredByServer {
@@ -358,7 +453,7 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 
 		for _, key := range server.RuntimeEnv {
 			envRequirements[key] = appendUniqueName(envRequirements[key], name)
-			if !runtimeEnvPresent(key) {
+			if !runtimeEnvPresentForRun(target, key) {
 				server.Issues = append(server.Issues, fmt.Sprintf("runtime env %s is missing", key))
 			}
 		}
@@ -383,6 +478,7 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 		addPlanError(fmt.Sprintf("%s does not support run skill materialization (supported run skill targets: %s)", target, strings.Join(supportedRunSkillTargets(), ", ")))
 	}
 	skillNames := sortedStringSliceMapKeys(skillRings)
+	selectedSkills := make([]registry.SkillPackage, 0, len(skillNames))
 	for _, name := range skillNames {
 		skill := runPlanSkill{
 			Name:   name,
@@ -390,12 +486,15 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 			Rings:  nonNilStrings(append([]string(nil), skillRings[name]...)),
 			Issues: []string{},
 		}
-		if _, err := a.store.GetSkillPackage(name); err != nil {
+		pkg, err := a.store.GetSkillPackage(name)
+		if err != nil {
 			if errors.Is(err, registry.ErrSkillNotFound) {
 				skill.Issues = append(skill.Issues, "skill is missing from the registry")
 			} else {
 				skill.Issues = append(skill.Issues, fmt.Sprintf("skill package cannot be materialized: %v", err))
 			}
+		} else {
+			selectedSkills = append(selectedSkills, pkg)
 		}
 		if !supportsRunSkillMaterialization(target) {
 			skill.Issues = append(skill.Issues, fmt.Sprintf("%s does not support run skill materialization", target))
@@ -413,13 +512,92 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 	for _, key := range envKeys {
 		plan.Env = append(plan.Env, runPlanEnv{
 			Key:     key,
-			Present: runtimeEnvPresent(key),
+			Present: runtimeEnvPresentForRun(target, key),
 			Servers: nonNilStrings(envRequirements[key]),
 		})
 	}
 
+	selectedServers := make([]registry.Manifest, 0, len(plan.Servers))
+	for _, server := range plan.Servers {
+		if server.Manifest.Name != "" {
+			selectedServers = append(selectedServers, server.Manifest)
+		}
+	}
+	execution, executionIssues := compileRunExecution(selectedRings, selectedServers, options)
+	for _, issue := range executionIssues {
+		addPlanError(issue)
+	}
+	if execution.Required {
+		if target != codexclient.Target {
+			addPlanError(fmt.Sprintf("required execution policy is unsupported for %s run; supported target: %s", target, codexclient.Target))
+		} else if execution.HasStdio {
+			addPlanError("required read-only sandbox cannot confine local stdio MCP server filesystem or network access; use remote MCP servers or an OS/container boundary")
+		}
+	}
+	plan.Execution = runPlanExecution{
+		AmbientEnv: execution.AmbientEnv, Sandbox: execution.Sandbox,
+		MaxDuration: execution.MaxDuration.String(), CredentialExposure: execution.CredentialExposure,
+		Supported: target == codexclient.Target, Declared: execution.Declared, Required: execution.Required, StdioConfinement: "not-applicable",
+	}
+	if target != codexclient.Target {
+		plan.Execution.StdioConfinement = "unsupported"
+	} else if execution.HasStdio {
+		plan.Execution.StdioConfinement = "unverified"
+	}
+	plan.Authority = launch.ExplainAuthority(target, selectedRings, selectedServers, selectedSkills, execution)
+
+	if len(plan.Errors) == 0 && target == codexclient.Target {
+		workingDirectory, err := os.Getwd()
+		if err != nil {
+			addPlanError(fmt.Sprintf("resolve current working directory: %v", err))
+		} else {
+			auth, authErr := readCodexRunAuthSnapshot()
+			if authErr != nil {
+				addPlanError(authErr.Error())
+			} else {
+				clientInput.Auth = auth
+				artifact, compileErr := launch.Compile(launch.Input{
+					Target: target, WorkingDirectory: workingDirectory, Prompt: prompt,
+					Rings: selectedRings, Servers: selectedServers, Skills: selectedSkills,
+					Environment: launch.EnvironmentInput{
+						Baseline: baselineEnv, Declared: captureDeclaredRunEnvironment(plan.Env),
+					},
+					Client: clientInput, Execution: execution,
+				})
+				if compileErr != nil {
+					addPlanError(fmt.Sprintf("compile immutable launch artifact: %v", compileErr))
+				} else {
+					plan.Artifact = artifact
+					plan.LaunchDigest = artifact.Digest()
+					plan.PolicyDigest = artifact.PolicyDigest()
+					plan.ContentHashes = artifact.ReceiptContentHashes()
+					plan.Authority = artifact.Authority()
+				}
+			}
+		}
+	}
+	if target == codexclient.Target && plan.Artifact == nil {
+		plan.Authority = blockedRunAuthority(plan.Authority)
+	}
 	plan.finish()
 	return plan, nil
+}
+
+func blockedRunAuthority(authority launch.Authority) launch.Authority {
+	authority.Requested = append([]launch.AuthorityControl(nil), authority.Requested...)
+	authority.Effective = append([]launch.AuthorityControl(nil), authority.Effective...)
+	for i := range authority.Effective {
+		control := &authority.Effective[i]
+		control.EnforcedBy = launch.EnforcedByNone
+		control.Verification = launch.VerificationUnverified
+		switch control.Classification {
+		case launch.ClassificationExact:
+			control.Classification = launch.ClassificationBlocked
+		case launch.ClassificationAdvisory:
+			control.Classification = launch.ClassificationDegraded
+		}
+	}
+	return authority
 }
 
 func (p *runLaunchPlan) finish() {
@@ -439,6 +617,11 @@ func (p runLaunchPlan) toJSON() runPlanJSON {
 		PromptProvided:  p.PromptProvided,
 		PolicyRequired:  p.PolicyRequired,
 		PolicyControls:  p.PolicyControls,
+		LaunchDigest:    p.LaunchDigest,
+		PolicyDigest:    p.PolicyDigest,
+		ContentHashes:   nonNilContentHashes(p.ContentHashes),
+		Authority:       nonNilAuthority(p.Authority),
+		Execution:       p.Execution,
 		Servers:         nonNilRunPlanServers(p.Servers),
 		Skills:          nonNilRunPlanSkills(p.Skills),
 		Env:             nonNilRunPlanEnv(p.Env),
@@ -559,6 +742,47 @@ func normalizedRingNames(names []string) []string {
 	return out
 }
 
+func compileRunExecution(rings []registry.Ring, servers []registry.Manifest, options runBuildOptions) (launch.ExecutionConfig, []string) {
+	config := launch.ExecutionConfig{
+		AmbientEnv: launch.AmbientEnvDeny, Sandbox: launch.SandboxReadOnly,
+		CredentialExposure: launch.CredentialExposureRunProcess,
+	}
+	for _, ring := range rings {
+		if ring.Policy == nil || ring.Policy.Execution == nil {
+			continue
+		}
+		config.Declared = true
+		if ring.RequiresPolicyEnforcement() {
+			config.Required = true
+		}
+		duration, err := time.ParseDuration(ring.Policy.Execution.MaxDuration)
+		if err != nil || duration <= 0 {
+			return config, []string{fmt.Sprintf("ring %s has invalid execution max_duration", ring.Name)}
+		}
+		if config.MaxDuration == 0 || duration < config.MaxDuration {
+			config.MaxDuration = duration
+		}
+	}
+	if config.MaxDuration == 0 {
+		config.MaxDuration = launch.DefaultMaxDuration
+	}
+	for _, server := range servers {
+		if !server.IsRemote() {
+			config.HasStdio = true
+			break
+		}
+	}
+	var issues []string
+	if options.maxDuration != nil {
+		if *options.maxDuration > config.MaxDuration {
+			issues = append(issues, fmt.Sprintf("--max-duration %s exceeds the selected ring maximum %s", options.maxDuration.String(), config.MaxDuration))
+		} else {
+			config.MaxDuration = *options.maxDuration
+		}
+	}
+	return config, issues
+}
+
 func countStrings(names []string) map[string]int {
 	counts := map[string]int{}
 	for _, name := range names {
@@ -598,6 +822,13 @@ func runtimeEnvPresent(key string) bool {
 	return ok && strings.TrimSpace(value) != ""
 }
 
+func runtimeEnvPresentForRun(target, key string) bool {
+	if target == codexclient.Target && codexGeneratedEnvKey(key) {
+		return true
+	}
+	return runtimeEnvPresent(key)
+}
+
 func nonNilRunPlanServers(servers []runPlanServer) []runPlanServer {
 	if servers == nil {
 		return []runPlanServer{}
@@ -619,6 +850,29 @@ func nonNilRunPlanEnv(env []runPlanEnv) []runPlanEnv {
 	return env
 }
 
+func nonNilContentHashes(value launch.ContentHashes) launch.ContentHashes {
+	if value.Rings == nil {
+		value.Rings = []launch.NamedHash{}
+	}
+	if value.Servers == nil {
+		value.Servers = []launch.NamedHash{}
+	}
+	if value.Skills == nil {
+		value.Skills = []launch.NamedHash{}
+	}
+	return value
+}
+
+func nonNilAuthority(value launch.Authority) launch.Authority {
+	if value.Requested == nil {
+		value.Requested = []launch.AuthorityControl{}
+	}
+	if value.Effective == nil {
+		value.Effective = []launch.AuthorityControl{}
+	}
+	return value
+}
+
 func printRunPlan(out io.Writer, plan runLaunchPlan) {
 	status := "ready"
 	if !plan.Ready {
@@ -638,6 +892,14 @@ func printRunPlan(out io.Writer, plan runLaunchPlan) {
 		plan.PolicyControls.Approvals,
 		plan.PolicyControls.Instructions,
 	)
+	if plan.LaunchDigest != "" {
+		fmt.Fprintf(out, "launch digest: %s\n", plan.LaunchDigest)
+		fmt.Fprintf(out, "policy digest: %s\n", plan.PolicyDigest)
+		printRunAuthority(out, plan.Authority)
+	}
+	fmt.Fprintf(out, "execution policy: ambient_env=%s sandbox=%s max_duration=%s credential_exposure=%s supported=%t declared=%t required=%t stdio_confinement=%s\n",
+		plan.Execution.AmbientEnv, plan.Execution.Sandbox, plan.Execution.MaxDuration,
+		plan.Execution.CredentialExposure, plan.Execution.Supported, plan.Execution.Declared, plan.Execution.Required, plan.Execution.StdioConfinement)
 	fmt.Fprintln(out)
 
 	fmt.Fprintln(out, "servers:")
@@ -712,6 +974,21 @@ func printRunPlan(out io.Writer, plan runLaunchPlan) {
 		fmt.Fprintln(out, "errors:")
 		for _, issue := range plan.Errors {
 			fmt.Fprintf(out, "  %s\n", issue)
+		}
+	}
+}
+
+func printRunAuthority(out io.Writer, authority launch.Authority) {
+	for _, group := range []struct {
+		name     string
+		controls []launch.AuthorityControl
+	}{{"requested authority", authority.Requested}, {"effective authority", authority.Effective}} {
+		if len(group.controls) == 0 {
+			continue
+		}
+		fmt.Fprintf(out, "%s:\n", group.name)
+		for _, control := range group.controls {
+			fmt.Fprintf(out, "  %s enforced_by=%s verification=%s classification=%s\n", control.Control, control.EnforcedBy, control.Verification, control.Classification)
 		}
 	}
 }
@@ -802,12 +1079,14 @@ func formatStringMap(values map[string]string) string {
 
 func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  madari run <client> --ring <ring> [--ring <ring> ...] [--dry-run] -- <prompt>")
+	fmt.Fprintln(out, "  madari run <client> --ring <ring> [--ring <ring> ...] [--max-duration <duration>] [--receipt <path>] [--dry-run] -- <prompt>")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
 	fmt.Fprintln(out, "  --ring <ring>             Ring to include in the launch plan (repeatable)")
 	fmt.Fprintln(out, "  --dry-run                 Inspect the launch plan without starting the client")
 	fmt.Fprintln(out, "  --json                    Emit JSON instead of text (requires --dry-run)")
+	fmt.Fprintln(out, "  --max-duration <duration> Shorten (never extend) the selected ring maximum")
+	fmt.Fprintln(out, "  --receipt <path>          Write a versioned execution receipt (Codex execution only)")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Description:")
 	fmt.Fprintln(out, "  Plan or start an ephemeral client launch from one or more rings. Codex")
@@ -815,13 +1094,20 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  --skip-git-repo-check --sandbox read-only`, clears inherited MCP")
 	fmt.Fprintln(out, "  config, and injects selected ring MCP servers as required config")
 	fmt.Fprintln(out, "  overrides from an isolated working root and materializes selected")
-	fmt.Fprintln(out, "  ring skills into that temporary root. Stdio servers keep the original")
-	fmt.Fprintln(out, "  working directory and caller HOME/USERPROFILE; Codex gets temporary")
-	fmt.Fprintln(out, "  HOME/CODEX_HOME roots with auth copied in. Other clients are dry-run only")
-	fmt.Fprintln(out, "  for now.")
-	fmt.Fprintln(out, "  Access-bearing Codex runs add --strict-config; legacy no-access runs omit it.")
-	fmt.Fprintln(out, "  Codex policy runs require a validated stable CLI 0.139.x release; dry-run")
-	fmt.Fprintln(out, "  reports declared/effective policy separately from client enforcement and")
+	fmt.Fprintln(out, "  ring skills into that temporary root. Codex receives only a documented")
+	fmt.Fprintln(out, "  platform baseline, isolated HOME/CODEX_HOME/temp paths, frozen host auth,")
+	fmt.Fprintln(out, "  and explicitly declared server variables. Caller home paths are not")
+	fmt.Fprintln(out, "  forwarded into stdio server configuration. Other clients are dry-run only.")
+	fmt.Fprintln(out, "  Planning freezes normalized rings, servers, skills, the prompt, and Codex")
+	fmt.Fprintln(out, "  overrides into one immutable launch artifact. Execution never rereads the")
+	fmt.Fprintln(out, "  registry. Dry-run reports content digests and requested/effective authority")
+	fmt.Fprintln(out, "  with enforced_by, verification, and enforcement classifications.")
+	fmt.Fprintln(out, "  Every Codex run uses --strict-config, an inherit-none shell environment")
+	fmt.Fprintln(out, "  policy, a validated stable CLI 0.139.x release, and a bounded process tree.")
+	fmt.Fprintln(out, "  The default maximum is 15m; selected rings may lower it and the CLI may")
+	fmt.Fprintln(out, "  shorten, never extend, that maximum. Required execution policy blocks local")
+	fmt.Fprintln(out, "  stdio servers because their filesystem and network confinement is unverified.")
+	fmt.Fprintln(out, "  Dry-run reports declared/effective policy separately from client enforcement and")
 	fmt.Fprintln(out, "  advisory instructions.")
 	fmt.Fprintln(out, "  Run never writes client config, managed state, or permanent skill files.")
 	fmt.Fprintln(out)

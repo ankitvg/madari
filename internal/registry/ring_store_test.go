@@ -154,6 +154,51 @@ func TestAddRequiredRingAcceptsBoundedMembers(t *testing.T) {
 	}
 }
 
+func TestAddRequiredExecutionOnlyRingAcceptsMembersWithoutAccessProfiles(t *testing.T) {
+	store := newRingTestStore(t)
+	ring := Ring{
+		Name:    "execution-only",
+		Members: []string{"stewreads", "arxiv"},
+		Policy: &RingPolicy{
+			Enforcement: PolicyEnforcementRequired,
+			Execution: &ExecutionPolicy{
+				AmbientEnv: ExecutionAmbientEnvDeny, Sandbox: ExecutionSandboxReadOnly,
+				MaxDuration: "10m", CredentialExposure: ExecutionCredentialExposureRunProcess,
+			},
+		},
+	}
+	if err := store.AddRing(ring); err != nil {
+		t.Fatalf("required execution-only ring should not require access allowlists: %v", err)
+	}
+}
+
+func TestAddRequiredExecutionRingKeepsAccessProfilesFailClosed(t *testing.T) {
+	store := newRingTestStore(t)
+	manifest, err := store.Get("stewreads")
+	if err != nil {
+		t.Fatalf("get manifest: %v", err)
+	}
+	manifest.Access = &AccessProfile{AllowedTools: stringListPointer("read")}
+	if err := store.Save(manifest); err != nil {
+		t.Fatalf("save bounded manifest: %v", err)
+	}
+	ring := Ring{
+		Name:    "mixed-policy",
+		Members: []string{"stewreads", "arxiv"},
+		Policy: &RingPolicy{
+			Enforcement: PolicyEnforcementRequired,
+			Execution: &ExecutionPolicy{
+				AmbientEnv: ExecutionAmbientEnvDeny, Sandbox: ExecutionSandboxReadOnly,
+				MaxDuration: "10m", CredentialExposure: ExecutionCredentialExposureRunProcess,
+			},
+		},
+	}
+	err = store.AddRing(ring)
+	if err == nil || !strings.Contains(err.Error(), "servers without an explicit non-empty allowed_tools allowlist: arxiv") {
+		t.Fatalf("selected access policy must keep every member bounded: %v", err)
+	}
+}
+
 func TestAddRequiredRingRejectsExplicitEmptyAllowlist(t *testing.T) {
 	store := newRingTestStore(t)
 	manifest, err := store.Get("stewreads")

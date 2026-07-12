@@ -227,7 +227,7 @@ func ValidateRequiredRing(ring registry.Ring, manifests []registry.Manifest, tar
 		Ring:           ring.Name,
 		Target:         target,
 		Surface:        surface,
-		Required:       ring.RequiresPolicyEnforcement(),
+		Required:       ring.RequiresAccessPolicyEnforcement(manifests),
 		Classification: SupportNotRequired,
 		Issues:         []Issue{},
 	}

@@ -172,6 +172,22 @@ func TestValidateRequiredRingTreatsExplicitEmptyAllowlistAsUnbounded(t *testing.
 	}
 }
 
+func TestValidateRequiredExecutionOnlyRingDoesNotRequireAccessProfile(t *testing.T) {
+	ring := requiredRing("execution-only", "docs")
+	ring.Policy.Execution = &registry.ExecutionPolicy{
+		AmbientEnv: registry.ExecutionAmbientEnvDeny, Sandbox: registry.ExecutionSandboxReadOnly,
+		MaxDuration: "10m", CredentialExposure: registry.ExecutionCredentialExposureRunProcess,
+	}
+	manifest := registry.Manifest{
+		Name: "docs", Transport: registry.TransportHTTP, URL: "https://example.com/mcp",
+		Enabled: true, Clients: []string{"codex"},
+	}
+	result := ValidateRequiredRing(ring, []registry.Manifest{manifest}, "codex", SurfaceRun)
+	if result.Required || result.Classification != SupportNotRequired || !result.Ready() {
+		t.Fatalf("execution-only policy should not select access enforcement: %#v", result)
+	}
+}
+
 func currentExecutable(t *testing.T) string {
 	t.Helper()
 	path, err := os.Executable()
