@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ankitvg/madari/internal/launch"
 	"github.com/ankitvg/madari/internal/registry"
 )
 
@@ -265,6 +266,14 @@ func TestRunRequiredPolicyBlocksOldCodexBeforeExecution(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(plan.Errors, "\n"), "stable Codex CLI 0.139.x") {
 		t.Fatalf("old Codex error is not actionable: %#v", plan.Errors)
+	}
+	for _, control := range plan.Authority.Effective {
+		switch control.Control {
+		case "mcp-tool-filtering", "ambient-environment", "client-sandbox", "max-duration", "credential-exposure":
+			if control.EnforcedBy != launch.EnforcedByNone || control.Verification != launch.VerificationUnverified || control.Classification != launch.ClassificationBlocked {
+				t.Fatalf("failed Codex compatibility preflight overstated authority: %#v", control)
+			}
+		}
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("old Codex was executed: %v", err)

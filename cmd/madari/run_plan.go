@@ -527,6 +527,13 @@ func (a cliApp) buildRunPlanWithOptions(target string, ringNames []string, promp
 	for _, issue := range executionIssues {
 		addPlanError(issue)
 	}
+	if execution.Required {
+		if target != codexclient.Target {
+			addPlanError(fmt.Sprintf("required execution policy is unsupported for %s run; supported target: %s", target, codexclient.Target))
+		} else if execution.HasStdio {
+			addPlanError("required read-only sandbox cannot confine local stdio MCP server filesystem or network access; use remote MCP servers or an OS/container boundary")
+		}
+	}
 	plan.Execution = runPlanExecution{
 		AmbientEnv: execution.AmbientEnv, Sandbox: execution.Sandbox,
 		MaxDuration: execution.MaxDuration.String(), CredentialExposure: execution.CredentialExposure,
@@ -569,8 +576,28 @@ func (a cliApp) buildRunPlanWithOptions(target string, ringNames []string, promp
 			}
 		}
 	}
+	if target == codexclient.Target && plan.Artifact == nil {
+		plan.Authority = blockedRunAuthority(plan.Authority)
+	}
 	plan.finish()
 	return plan, nil
+}
+
+func blockedRunAuthority(authority launch.Authority) launch.Authority {
+	authority.Requested = append([]launch.AuthorityControl(nil), authority.Requested...)
+	authority.Effective = append([]launch.AuthorityControl(nil), authority.Effective...)
+	for i := range authority.Effective {
+		control := &authority.Effective[i]
+		control.EnforcedBy = launch.EnforcedByNone
+		control.Verification = launch.VerificationUnverified
+		switch control.Classification {
+		case launch.ClassificationExact:
+			control.Classification = launch.ClassificationBlocked
+		case launch.ClassificationAdvisory:
+			control.Classification = launch.ClassificationDegraded
+		}
+	}
+	return authority
 }
 
 func (p *runLaunchPlan) finish() {
@@ -752,9 +779,6 @@ func compileRunExecution(rings []registry.Ring, servers []registry.Manifest, opt
 		} else {
 			config.MaxDuration = *options.maxDuration
 		}
-	}
-	if config.Required && config.HasStdio {
-		issues = append(issues, "required read-only sandbox cannot confine local stdio MCP server filesystem or network access; use remote MCP servers or an OS/container boundary")
 	}
 	return config, issues
 }

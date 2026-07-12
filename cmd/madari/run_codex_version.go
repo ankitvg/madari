@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -12,11 +13,14 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ankitvg/madari/internal/launch"
 )
 
 const minimumCodexRunVersion = "0.139.0"
+
+const codexVersionProbeTimeout = 5 * time.Second
 
 var codexSemanticVersionPattern = regexp.MustCompile(`([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?`)
 
@@ -37,6 +41,10 @@ func validateCodexRunVersion() error {
 }
 
 func inspectCodexRunClient(baseline map[string]string) (launch.ClientInput, error) {
+	return inspectCodexRunClientWithTimeout(baseline, codexVersionProbeTimeout)
+}
+
+func inspectCodexRunClientWithTimeout(baseline map[string]string, timeout time.Duration) (launch.ClientInput, error) {
 	path, err := exec.LookPath("codex")
 	if err != nil {
 		return launch.ClientInput{}, fmt.Errorf("codex executable not found in PATH; install a stable Codex CLI 0.139.x release (minimum %s)", minimumCodexRunVersion)
@@ -76,10 +84,16 @@ func inspectCodexRunClient(baseline map[string]string) (launch.ClientInput, erro
 		probeEnv["APPDATA"] = filepath.Join(probeHome, "AppData", "Roaming")
 		probeEnv["LOCALAPPDATA"] = filepath.Join(probeHome, "AppData", "Local")
 	}
-	cmd := exec.Command(path, "--version")
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "--version")
+	cmd.WaitDelay = time.Second
 	cmd.Dir = probeRoot
 	cmd.Env = envMapList(probeEnv)
 	output, err := cmd.CombinedOutput()
+	if ctx.Err() == context.DeadlineExceeded {
+		return launch.ClientInput{}, fmt.Errorf("Codex version probe timed out after %s", timeout)
+	}
 	if err != nil {
 		return launch.ClientInput{}, fmt.Errorf("inspect Codex version for bounded run: %w", err)
 	}

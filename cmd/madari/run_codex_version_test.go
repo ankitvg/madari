@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseCodexSemanticVersion(t *testing.T) {
@@ -80,5 +81,26 @@ func TestValidateCodexRunCompatibilityRejectsUnvalidatedNewerSeries(t *testing.T
 	err := validateCodexRunCompatibility()
 	if err == nil || !strings.Contains(err.Error(), "stable Codex CLI 0.139.x") {
 		t.Fatalf("expected unvalidated version refusal, got: %v", err)
+	}
+}
+
+func TestInspectCodexRunClientBoundsVersionProbe(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-specific")
+	}
+	binDir := t.TempDir()
+	path := filepath.Join(binDir, "codex")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nwhile :; do :; done\n"), 0o755); err != nil {
+		t.Fatalf("write hanging Codex fixture: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+
+	started := time.Now()
+	_, err := inspectCodexRunClientWithTimeout(map[string]string{"PATH": binDir}, 50*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "version probe timed out after 50ms") {
+		t.Fatalf("expected bounded version probe failure, got: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("version probe exceeded its bounded failure window: %s", elapsed)
 	}
 }

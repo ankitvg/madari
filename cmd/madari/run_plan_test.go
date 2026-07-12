@@ -187,6 +187,14 @@ func TestRunWithStoreRunPlanBlocksMissingCodexBinary(t *testing.T) {
 	if !strings.Contains(strings.Join(plan.Errors, "\n"), "codex executable not found in PATH") {
 		t.Fatalf("expected missing codex error, got: %#v", plan.Errors)
 	}
+	for _, control := range plan.Authority.Effective {
+		if control.EnforcedBy != launch.EnforcedByNone || control.Verification != launch.VerificationUnverified {
+			t.Fatalf("blocked Codex preflight overstated effective authority: %#v", control)
+		}
+		if control.Classification == launch.ClassificationExact {
+			t.Fatalf("blocked Codex preflight retained an exact authority claim: %#v", control)
+		}
+	}
 }
 
 func TestRunWithStoreRunPlanBlocksCodexAdminSkillRoot(t *testing.T) {

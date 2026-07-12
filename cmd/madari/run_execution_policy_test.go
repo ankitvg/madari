@@ -113,6 +113,38 @@ func TestRunRequiredExecutionOnlyRemoteServerDoesNotRequireAccessAllowlist(t *te
 	}
 }
 
+func TestRunRequiredExecutionBlocksUnsupportedTarget(t *testing.T) {
+	store := newTestStore(t)
+	if err := store.Save(registry.Manifest{
+		Name: "helper", Command: mustCurrentExecutable(t), Enabled: true, Clients: []string{"claude-code"},
+	}); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+	if err := store.SaveRing(registry.Ring{
+		Name: "required", Members: []string{"helper"},
+		Policy: &registry.RingPolicy{Enforcement: registry.PolicyEnforcementRequired, Execution: testExecutionPolicy("10m")},
+	}); err != nil {
+		t.Fatalf("save required execution ring: %v", err)
+	}
+
+	result := runCmd(store, "run", "claude-code", "--ring", "required", "--dry-run", "--json", "--", "inspect")
+	if result.code == 0 {
+		t.Fatalf("unsupported target reported a ready required execution plan: %s", result.stdout)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	if plan.Ready || !strings.Contains(strings.Join(plan.Errors, "\n"), "required execution policy is unsupported for claude-code run") {
+		t.Fatalf("required execution support failure was not explicit: %#v", plan)
+	}
+	for _, control := range plan.Authority.Effective {
+		switch control.Control {
+		case "ambient-environment", "client-sandbox", "max-duration", "credential-exposure":
+			if control.EnforcedBy != launch.EnforcedByNone || control.Verification != launch.VerificationUnverified || control.Classification != launch.ClassificationBlocked {
+				t.Fatalf("unsupported required execution authority was overstated: %#v", control)
+			}
+		}
+	}
+}
+
 func TestRunAdvisoryExecutionReportsStdioConfinementUnverified(t *testing.T) {
 	store := newTestStore(t)
 	installFakeCodex(t, 0)
