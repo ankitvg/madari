@@ -1,18 +1,48 @@
 # Architecture
 
+## Agent composition
+
+Madari creates configurable agents by assembling capabilities for an existing
+client. An agent is the client executing a task with selected tools and
+instructions. A ring is a reusable configuration, not a running process: it
+references server manifests and skill packages, with optional task-contract and
+capability-policy metadata. One or more rings can configure the same agent run.
+The client supplies the model interaction and reasoning loop.
+
+```mermaid
+flowchart LR
+    Servers["MCP servers: tools and access profiles"] --> Rings["Rings: reusable configurations"]
+    Skills["Skills: procedures and guidance"] --> Rings
+    Contracts["Contracts: task guidance"] --> Rings
+    Rings --> Run["Run: compose and preflight"]
+    Task["Task and selected client"] --> Run
+    Run --> Agent["Client executes the configured agent"]
+```
+
+`madari run codex` launches that agent for a task. `ring attach` instead installs
+supported capabilities into an existing client; it does not launch a separate
+agent, replace the client's other capabilities, or install the contract preamble.
+`ring render` exports only the MCP configuration, not a complete agent package.
+See the [walkthrough](configurable-agents.md) for both workflows and the
+[client support matrix](../README.md#supported-clients) before selecting a target.
+
 ## Goals
 
-- Manage local MCP server registrations through a stable registry.
+- Assemble reusable agent configurations from tools, skills, and task contracts.
+- Launch configured agents through supported client runtimes; Codex is the only
+  execution target today, while other clients support compatible dry-run plans.
+- Manage local capability registrations through a stable registry.
 - Materialize valid client config files without clobbering user-managed entries.
-- Provide deterministic lifecycle operations and diagnostics.
+- Provide deterministic lifecycle operations and readiness diagnostics.
 
 ## Primitive Boundary
 
 Madari keeps four concepts separate:
 
-- Server: an executable MCP capability with command, args, env, target client
-  metadata, and one optional portable access profile.
-- Ring: a named capability grouping with optional required-enforcement policy
+- Server: a provider of MCP tools, configured as a local command with arguments
+  and environment or a remote endpoint, with target client metadata and one
+  optional portable access profile.
+- Ring: a reusable agent capability configuration with optional required-enforcement policy
   and optional advisory contract metadata. Persisted rings contain server and
   skill members by name; referenced server manifests and skill packages remain
   the source of truth.
@@ -222,6 +252,25 @@ member profiles. `[contract]` and skill content remain advisory, while
 - Keep client-enforced tool filtering, requested OAuth scopes, client approval
   prompts, and advisory contract/skill instructions distinct in reporting.
 
-Materialized sync is the only mode: client configs always contain real
-commands and survive madari's removal. A launcher shim was considered and
-rejected (docs/adr/002-launcher-shim-rejected.md).
+Persistent sync materializes native entries directly: client configs contain
+real commands or endpoints and survive Madari's removal. A launcher shim was
+considered and rejected ([ADR 002](adr/002-launcher-shim-rejected.md)). Ephemeral
+runs are a separate path and do not persist these entries.
+
+## Execution and diagnostic boundaries
+
+Rings select MCP capabilities and skills. They do not define a new model or
+restrict every native client tool. The client owns runtime skill loading, tool
+selection, and context management; Madari does not implement dynamic tool
+search, a background daemon, or agent supervision.
+
+Task contracts and skills are advisory instructions. Supported server access
+profiles and required ring policies provide separate client-enforced controls,
+with the limitations described above. A read-only Codex filesystem sandbox does
+not by itself prevent a selected MCP tool from changing an external system.
+
+`run --dry-run` validates the launch configuration without executing the model.
+`doctor`, `status`, and `ring status` inspect readiness and configuration drift.
+None proves remote-service availability, successful task completion, or answer
+quality. Actual runs stream client output; evaluate that output against the task
+and source evidence.

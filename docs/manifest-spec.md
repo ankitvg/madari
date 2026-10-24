@@ -1,6 +1,22 @@
 # Manifest Spec
 
-Each managed server is stored as a TOML document.
+Madari represents configurable agents using existing registry primitives:
+server manifests provide tools and access profiles, skill packages provide
+procedures, and rings compose them with optional task guidance and enforcement
+requirements. Each managed server is stored as a TOML document.
+
+| Agent configuration concern | Stored representation |
+| --- | --- |
+| Tools and connection settings | Server manifest, including optional `[access]` |
+| Procedures and domain guidance | Skill package with `SKILL.md` |
+| Selected capabilities | Ring `members` and `skills` references |
+| Intended tasks, inputs, and outputs | Optional ring `[contract]` (advisory) |
+| Required access-policy compilation | Optional ring `[policy]` |
+| Runtime and current task | Client and prompt supplied to `madari run`; not ring fields |
+
+There is no separate agent manifest. Multiple rings can configure one run, and
+client support determines which capabilities can be materialized. See the
+[walkthrough](configurable-agents.md) for a complete example.
 
 ## File Location
 
@@ -213,8 +229,9 @@ description = "Official Cloud SQL remote MCP server"
 
 ## Ring Files
 
-Rings are named capability sets of servers and skills. Madari stores one TOML
-document per ring at
+Rings are reusable agent capability configurations containing references to
+servers and skills. They can be composed in one run or attached to an existing
+client. Madari stores one TOML document per ring at
 `<config-root>/rings/<name>.toml` (sibling of `servers/`).
 
 - `name` (string, required): stable ring ID; same pattern as server names.
@@ -266,10 +283,12 @@ rejected in V1.
 
 ### `[contract]`
 
-Ring contracts are advisory metadata for main-thread delegation and run prompt
-preambles. Codex run includes contract metadata in the prompt preamble for
-selected rings, but contracts do not affect attach, detach, sync, status, or
-render behavior.
+Ring contracts describe intended tasks, context, and outputs for callers and
+run prompt preambles. They are advisory metadata. Codex run includes contract
+metadata in the prompt preamble for selected rings, but contracts do not affect attach, detach, sync, status, or
+render behavior. Attachment does not install the contract as client
+instructions. `required_context` is not a validated input schema and `not_for`
+is not a tool-access restriction.
 
 - `summary` (string, optional): what this ring is for.
 - `good_for` (array of strings, optional): task types this ring is suited to.
@@ -291,8 +310,8 @@ clear <name>` removes the contract from the ring.
 ```toml
 name = "research"
 members = ["arxiv", "stewreads"]
-skills = ["release"]
-description = "Research helpers"
+skills = ["brief-writer"]
+description = "Prepare evidence-based research briefs"
 
 [contract]
 summary = "Collect source context and prepare a research brief."

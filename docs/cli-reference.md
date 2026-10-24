@@ -1,6 +1,23 @@
 # CLI Reference
 
-Quick command reference for day-to-day Madari usage.
+Use these commands to create configurable agents and manage their reusable
+capabilities. Start with the [walkthrough](configurable-agents.md) for an example
+with all required skill and contract files.
+
+| Task | Commands and reference |
+| --- | --- |
+| Define how the agent works | [`skill add`, `skill update`](#skills) |
+| Choose tools | [`add`](#server-lifecycle), [`install`](#install-workflow) |
+| Assemble or inspect a reusable configuration | [`ring create`, `ring show`, `ring contract`](#rings) |
+| Preview or launch an agent for a task | [`run --dry-run`, `run codex`](#run) |
+| Configure an existing client | [`ring attach`, `ring detach`](#rings), [`sync`](#sync) |
+| Inspect configuration readiness | [`doctor`, `status`, `ring status`](#diagnostics) |
+| Transfer registry definitions | [`export`, `import`](#backup-and-restore) |
+
+A ring is a reusable configuration of capabilities; a run combines one or more
+rings with a client and a task. Attaching a ring installs capabilities without
+launching a separate agent. Command names and JSON field names retain these
+precise meanings.
 
 ## Server Lifecycle
 
@@ -37,6 +54,30 @@ Both `madari add` and `madari install` can create a profile with repeatable
 `--default-tool-approval BEHAVIOR`. Remote-capable `madari add` also accepts
 repeatable `--oauth-scope` values. Direct TOML or snapshot editing remains the
 way to express an explicit empty list or table clear.
+
+### Remote authentication examples
+
+A static bearer header for Claude Code belongs in user-scoped configuration.
+Set `LINEAR_TOKEN` in your shell before using this example:
+
+```bash
+madari add linear --transport http --url https://mcp.linear.app/mcp \
+  --header "Authorization=Bearer $LINEAR_TOKEN" --client claude-code
+madari sync claude-code --scope user
+```
+
+For Codex, a bearer-token reference stores only the environment variable name:
+
+```bash
+madari add cloud-sql --transport http --url https://sqladmin.googleapis.com/mcp \
+  --bearer-token-env-var CLOUDSQL_MCP_TOKEN --client codex
+madari sync codex
+```
+
+Obtain a token authorized for the service and make `CLOUDSQL_MCP_TOKEN` available
+to the client at runtime. Registration and sync do not authenticate to the
+service or prove the token's permissions. See the
+[manifest spec](manifest-spec.md) for supported auth metadata and secret handling.
 
 ## Capability Policy V1
 
@@ -171,8 +212,12 @@ streamable HTTP, or hand-managed stdio entries are preserved and never adopted.
 
 ## Rings
 
+The following reference examples assume `stewreads` and `arxiv` are already
+registered servers and `brief-writer` is a registered skill. For a runnable
+skill-only starting point, use the [briefing example](configurable-agents.md).
+
 ```bash
-madari ring create research --member stewreads --member arxiv --skill release --description "Research helpers"
+madari ring create research --member stewreads --member arxiv --skill brief-writer --description "Prepare evidence-based research briefs"
 madari ring create thinking --member stewreads --description "Server-only helper"
 madari ring list
 madari ring show research
@@ -196,10 +241,10 @@ madari ring render research --client codex
 madari ring render research --client vibe
 madari ring status
 madari run codex --ring thinking -- "Use this ring"
-madari run codex --ring research --ring release --dry-run --json -- "Use both rings"
+madari run codex --ring research --ring thinking --dry-run --json -- "Use both rings"
 ```
 
-Rings are named capability sets of servers and skills stored at
+Rings are reusable agent capability configurations of servers and skills stored at
 `<config-root>/rings/<name>.toml` (see the manifest spec). Server members
 reference server registry entries by name; skill members reference managed
 skill entries by name. Referenced entries must exist when the ring is created.
@@ -293,8 +338,13 @@ madari run codex --ring cloudsql-readonly -- "Who are the top 5 ebook creators?"
 madari run codex --ring cloudsql-readonly --ring research --dry-run --json -- "Inspect the combined plan"
 ```
 
-`madari run` is the launch primitive for using one or more rings with a target
-client. Codex execution starts `codex exec --ephemeral --ignore-user-config
+`madari run` creates a task execution from one or more rings and a target
+client. All selected rings configure the same agent; they do not each start a
+subagent. Codex is the only execution target today. Other clients support only
+`--dry-run`, subject to their tool, skill, and policy capabilities. A dry run
+checks configuration readiness, not model quality or remote-service health.
+
+Codex execution starts `codex exec --ephemeral --ignore-user-config
 --skip-git-repo-check --sandbox read-only` with selected ring MCP servers
 injected as required config overrides from an isolated working root after
 clearing inherited MCP server config. Selected ring skills are materialized
@@ -388,10 +438,15 @@ session without recording attachment state.
 
 ## Diagnostics
 
+These commands inspect configuration readiness and drift, not running-agent
+health or task success. `ring status` reports attachments, so an ephemeral run
+will not appear as a persistent attachment.
+
 ```bash
 madari clients
 madari status
 madari doctor
+madari ring status
 madari doctor --client-config claude-desktop=/path/to/config.json
 ```
 
@@ -668,8 +723,8 @@ do not appear as policy drift.
     {
       "name": "research",
       "members": ["arxiv", "stewreads"],
-      "skills": ["release"],
-      "description": "Research helpers",
+      "skills": ["brief-writer"],
+      "description": "Prepare evidence-based research briefs",
       "policy": {"enforcement": "required"},
       "contract": {
         "summary": "Collect source context and prepare a research brief.",
@@ -693,8 +748,8 @@ do not appear as policy drift.
   "ring": {
     "name": "research",
     "members": ["arxiv", "stewreads"],
-    "skills": ["release"],
-    "description": "Research helpers",
+    "skills": ["brief-writer"],
+    "description": "Prepare evidence-based research briefs",
     "policy": {"enforcement": "required"},
     "contract": {
       "summary": "Collect source context and prepare a research brief.",
@@ -756,9 +811,9 @@ managed package and `SKILL.md` paths:
           "name": "research",
           "exists": true,
           "members": ["arxiv", "stewreads"],
-          "skills": ["release"],
+          "skills": ["brief-writer"],
           "owned": ["arxiv", "stewreads"],
-          "skills_owned": ["release"],
+          "skills_owned": ["brief-writer"],
           "pending": [],
           "skills_pending": [],
           "stale": [],
@@ -772,7 +827,7 @@ managed package and `SKILL.md` paths:
         {"name": "stewreads", "sources": ["ring:research", "standalone"]}
       ],
       "skills": [
-        {"name": "release", "sources": ["ring:research"]}
+        {"name": "brief-writer", "sources": ["ring:research"]}
       ]
     }
   ]
