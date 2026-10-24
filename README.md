@@ -1,13 +1,19 @@
 # madari (muh-DAA-ree)
 
-Madari is a local-first CLI for managing MCP capability setup across AI clients.
-It registers MCP servers and their optional access profiles, stores reusable
-skills, groups them into rings, plans ring-based agent launches, and syncs only
-the entries it owns into client config files.
+**Create configurable agents with the AI clients you already use.**
 
-Madari is intentionally static: no daemon, proxy, or background mux. It helps
-the AI clients and agents you already use get the right capabilities with
-predictable config, ownership, and cleanup.
+Madari is a local-first CLI that combines tools, skills, and task contracts into
+reusable configurations called **rings**. Choose the capabilities your agent
+needs, select a supported client, and give it a task.
+
+Run agents directly with Codex, or attach supported tools and skills to other
+clients. The client supplies the model interaction and execution loop; Madari
+assembles the configuration and manages its lifecycle.
+
+For example, a brief-writing agent can start with a skill for turning supplied
+notes into a concise brief. Add an MCP server when it needs to retrieve source
+material. Reuse the same ring for another task, or compose it with another ring
+for a different workflow.
 
 ## Installation
 
@@ -24,206 +30,149 @@ Go:
 go install github.com/ankitvg/madari/cmd/madari@latest
 ```
 
-## Quickstart
+## Create your first agent
 
-Install an MCP server, register it for a couple of clients, and inspect what
-Madari knows about it:
+This example uses a POSIX shell and source text supplied in the task. Registering
+and inspecting the ring needs only Madari; launching it also needs Codex CLI on
+`PATH` and an authenticated Codex session. The run invokes the model through
+your Codex account.
+
+Create a skill package describing how the agent should work:
 
 ```bash
-madari install @modelcontextprotocol/server-sequential-thinking \
-  --name sequential-thinking \
-  --manager npm \
-  --command mcp-server-sequential-thinking \
-  --client codex \
-  --client claude-code \
-  --no-sync
+mkdir -p brief-writer
+cat > brief-writer/SKILL.md <<'SKILL'
+---
+name: brief-writer
+description: Turn supplied source notes into a concise, evidence-based brief.
+---
+Use the source notes supplied with the task. Summarize the main finding,
+supporting evidence, and open questions. Distinguish facts from inferences.
+Do not invent missing facts or claim to have inspected sources not provided.
+SKILL
 
-madari list
-madari doctor
+madari skill add --dir ./brief-writer
+madari ring create briefing --skill brief-writer \
+  --description "Write a brief from supplied source notes"
+madari ring show briefing
 ```
 
-Dry-run the config change before writing to a client:
+Preview the configuration, then launch the agent with a task:
 
 ```bash
-madari sync codex --dry-run
-madari sync codex
+madari run codex --ring briefing --dry-run -- \
+  "Use brief-writer. Source notes: A pilot served 20 users; 12 returned the following week. Write a brief and identify what is still unknown."
+
+madari run codex --ring briefing -- \
+  "Use brief-writer. Source notes: A pilot served 20 users; 12 returned the following week. Write a brief and identify what is still unknown."
 ```
 
-Remote MCP servers are added with a transport and URL instead of a command.
-Credential headers (like `Authorization`) and names marked `--secret-header`
-never land in repo-scoped configs — they refuse at project scope and sync
-with `--scope user`:
+A dry run checks the launch plan without calling the model. It does not evaluate
+the agent's answer or prove that external services are reachable. A run uses
+temporary skill files and leaves client config and attachment state unchanged.
+
+## How agents are configured
+
+| Concept | Role |
+| --- | --- |
+| Agent | A client running a task with selected capabilities and instructions |
+| Ring | A reusable configuration of servers, skills, and an optional task contract; multiple rings can compose one agent |
+| MCP server | Provides tools the agent can use, through a local process or remote endpoint |
+| Skill | Supplies procedures and domain guidance as an Agent Skill package |
+| Contract | Describes intended tasks, context, and expected outputs; advisory instructions, not access controls |
+| Client | Supplies the model interaction and execution loop |
+| Run | Launches a task using the selected rings |
+
+Rings reference registered servers and skills by name. A ring can contain tools,
+skills, or both. It does not store a model, conversation, or running process.
+Select the client and task when you run it. A ring can be a complete capability
+configuration for a task or one reusable part of a larger configuration.
+
+Skills contain `SKILL.md` and optional supporting files. Contracts add guidance
+about when to use a ring and what to provide or return. Codex runs include ring
+contracts in the task preamble. Attaching a ring does not install that preamble.
+
+Server `[access]` profiles and ring `[policy]` requirements configure supported
+access controls separately from these instructions. See the
+[manifest spec](docs/manifest-spec.md) for the schema and enforcement boundaries.
+
+## Reuse capabilities in an existing client
+
+Attach the briefing skill to Claude Code in the current project:
 
 ```bash
-madari add linear \
-  --transport http \
-  --url https://mcp.linear.app/mcp \
-  --header "Authorization=Bearer $LINEAR_TOKEN" \
-  --client claude-code
-
-madari sync claude-code --scope user
-```
-
-Remote servers that expect a bearer token from the runtime environment can
-store only the env var name. Codex materializes this as
-`bearer_token_env_var`, keeping the token value out of Madari and repo files:
-
-```bash
-madari add cloud-sql \
-  --transport http \
-  --url https://sqladmin.googleapis.com/mcp \
-  --bearer-token-env-var CLOUDSQL_MCP_TOKEN \
-  --client codex
-
-madari sync codex
-```
-
-Create a ring when a few capabilities belong together:
-
-```bash
-madari skill add --dir ./release
-madari ring create thinking \
-  --member sequential-thinking \
-  --description "Sequential thinking helper"
-madari ring create research \
-  --member sequential-thinking \
-  --skill release \
-  --description "Research and release helpers"
-
-madari ring attach research codex
+madari ring attach briefing claude-code --dry-run
+madari ring attach briefing claude-code
 madari ring status
 ```
 
-For one-off or ephemeral usage, render a ring without mutating any client
-config:
+Then open the client and give it a task that uses `brief-writer`. Attachment
+installs supported tools and skills into the existing client; it does not start
+a separate agent, replace other capabilities, or install the ring contract.
+Release the attachment when it is no longer needed:
 
 ```bash
-madari ring render research --client codex
-claude --mcp-config <(madari ring render research --client claude-code)
+madari ring detach briefing claude-code
 ```
 
-Or run Codex with one or more rings without mutating Codex config:
+Madari tracks ownership so overlapping rings and standalone attachments detach
+cleanly. It refuses to adopt or overwrite unmanaged entries.
 
-```bash
-madari run codex --ring thinking -- \
-  "Use this ring to inspect the target context."
-```
+For tools used outside a ring, `madari install`, `madari add`, and `madari sync`
+remain available. `madari ring render` emits only client-native MCP config; it
+does not include skill packages or contracts. See the
+[CLI reference](docs/cli-reference.md) for registration, remote authentication,
+composition, sync, and rendering commands.
 
-Use `madari help <command>` or `docs/cli-reference.md` for complete command
-syntax.
+## Supported clients
 
-## Core Concepts
+| Client ID | MCP config sync | Skill attachment | `madari run` execution |
+| --- | --- | --- | --- |
+| `codex` | Yes | Yes | Yes |
+| `claude-code` | Yes | Yes | Plan only (`--dry-run`) |
+| `gemini` | Yes | Yes | Plan only (`--dry-run`) |
+| `vibe` | Yes | Yes | Plan only (`--dry-run`) |
+| `claude-desktop` | Yes | No | Plan only; rings containing skills are unsupported |
 
-**Servers** are MCP server capabilities. Madari stores stdio commands or remote
-HTTP/SSE URLs, environment or header metadata, supported clients, and ownership
-state. A server may also declare one portable `[access]` profile with an exact
-tool allowlist, an optional deny list, requested OAuth scopes, and default or
-per-tool approval behavior.
+Remote servers materialize for Claude Code and Gemini (`http` and `sse`) and
+Codex (`http`). Remote entries requiring `oauth_resource` or
+`bearer_token_env_var` currently materialize only for Codex. Other combinations
+remain pending or block a run. See [transport support](docs/manifest-spec.md).
 
-**Skills** are official Agent Skill packages: directories with `SKILL.md`
-frontmatter and optional bundled files such as `references/`, `scripts/`, and
-`assets/`. They can be attached directly to supported clients or included in
-rings, where Madari materializes the full package for the target.
+Codex supports exact capability-policy compilation for sync/attach, render, and
+run. Required policies block on other clients. Every access-bearing Codex run
+requires a validated stable Codex CLI **0.139.x** release. Policy-free runs do
+not have that version gate. See the [policy contract](docs/adr/003-capability-policy-contract-v1.md).
 
-**Rings** are named capability sets. A ring can contain server members and skill
-members, then attach to a client as one unit. A ring `[policy]` can require exact
-compilation of every server member's access profile for the selected target.
-Rings can also carry an advisory contract for delegation: when to use the ring,
-what context to provide, and what outputs to expect. Contracts never authorize
-tool access. They can be managed from standalone TOML files with `madari ring
-contract`. Ring ownership is reference counted, so overlapping rings and
-standalone entries detach cleanly in any order.
+## Safety and boundaries
 
-**Sync** writes managed server entries into client config files. Madari backs up
-before writing, skips ineligible entries instead of aborting the whole sync, and
-refuses to adopt or overwrite unmanaged config blocks.
+- Registry files are local and human-readable. Sync uses backups and atomic
+  writes, with explicit ownership of managed entries.
+- Runs preflight selected capabilities and fail closed when required members
+  cannot be used. Codex runs isolate inherited MCP config and personal skills;
+  this does not make a ring a restriction on every native client capability.
+- Skills and contracts guide behavior. Required capability policies fail closed
+  if an access restriction cannot be represented exactly. OAuth scopes are
+  requested and client-configured, not proof of provider-granted permissions;
+  tool approval settings control client prompts, not authorization.
+- Secret-marked values stay out of repo-scoped configs. Remote credential
+  headers are not emitted by ring rendering or Codex runs. Bearer-token env
+  references store variable names, not token values.
+- `doctor`, `status`, and `ring status` inspect configuration readiness and drift.
+  They do not monitor running agents or grade task results.
+- Madari has no background daemon or proxy. The client owns execution, including
+  how skills are loaded and tools are selected during a task.
 
-**Render** prints client-native MCP config to stdout without changing state. It
-is useful for temporary sessions and experiments.
-
-**Run** starts or plans an ephemeral client launch from one or more rings.
-Codex execution injects selected server members into `codex exec`, temporarily
-materializes selected skill members as Codex project skills, and writes no
-client config or managed state. Codex run clears inherited MCP config, marks
-the selected servers required, and runs from an isolated working root so
-project-scoped Codex config cannot add unselected capabilities. It also starts
-Codex with a temporary `HOME` so personal Codex skills do not leak into the
-ring run, and with a temporary `CODEX_HOME` that copies only `auth.json` from
-the caller's Codex home so Codex-home skills do not leak into the run. Stdio
-MCP servers still receive the caller's non-secret `HOME`, `USERPROFILE`, and
-`CODEX_HOME` values when present so home-based server credentials keep working;
-secret declarations for those isolated env keys are blocked. Other clients
-remain dry-run only for now.
-Every access-bearing Codex run requires a stable Codex CLI 0.139.x release and
-passes the complete profile through one strict ephemeral config override. A
-required ring upgrades that supported profile from advisory to exact
-enforcement and blocks before temporary skill materialization on any downgrade.
-
-Capability Policy Contract V1 preserves existing behavior for manifests without
-`[access]` and rings without `[policy]`. Codex compiles all five V1 access fields
-for persistent sync/attach, render, and ephemeral run. Required operations fail
-during preflight if a member, native field, or installed Codex version cannot
-represent the contract exactly. Other target policy surfaces remain unsupported
-until their own compilers land.
-
-## Safety Model
-
-- Local-first registry and human-readable config files
-- Backup plus atomic write on sync
-- Explicit ownership of every managed entry
-- No hidden mutation of unmanaged client config
-- Secret env values are not written into repo-scoped configs
-- Remote header values for credential headers (`Authorization`, api-key and
-  token variants) and `--secret-header` names follow the same policy, and
-  `ring render`/`madari run codex` never emit them
-- Bearer token env references store only the env var name; the token value
-  stays in the runtime environment
-- `madari run` checks runtime env keys by name without printing their values;
-  Codex execution passes bearer-token env var names, not token values
-- Policy-required operations fail closed instead of approximating or dropping
-  an access restriction
-- OAuth scopes are requested and client-configured; Madari cannot prove that an
-  OAuth provider granted them
-- Tool approval behavior controls client prompts and is not an authorization
-  boundary
-- Diagnostics through `madari doctor`, `madari status`, and `madari ring status`
-
-## Supported Clients
-
-Madari can sync MCP servers for:
-
-- `claude-desktop`
-- `claude-code`
-- `gemini`
-- `codex`
-- `vibe`
-
-Remote (`http`/`sse`) servers currently materialize for `claude-code` and
-`gemini` (both transports) and `codex` (`http` only); other targets store
-remote manifests and report them as pending. Remote entries that require
-`oauth_resource` or `bearer_token_env_var` currently materialize only for
-`codex`.
-
-Transport, auth, and skill support are separate from capability-policy support.
-Codex supports exact policy compilation on persistent sync/attach, render, and
-run. Every policy surface for other clients remains unsupported. Legacy
-operations remain available; rings with `[policy] enforcement = "required"`
-block whenever the selected target surface lacks an exact compiler.
-
-Madari can materialize skills for:
-
-- `claude-code`
-- `codex`
-- `gemini`
-- `vibe`
+For exact isolation, environment, ownership, and policy behavior, read the
+[architecture](docs/architecture.md) and [troubleshooting guide](docs/troubleshooting.md).
 
 ## Documentation
 
-- `docs/cli-reference.md`
-- `docs/architecture.md`
-- `docs/manifest-spec.md`
-- `docs/adr/003-capability-policy-contract-v1.md`
-- `docs/troubleshooting.md`
+- [CLI reference](docs/cli-reference.md)
+- [Architecture](docs/architecture.md)
+- [Manifest spec](docs/manifest-spec.md)
+- [Capability Policy Contract V1](docs/adr/003-capability-policy-contract-v1.md)
+- [Troubleshooting](docs/troubleshooting.md)
 
 ## Development
 
