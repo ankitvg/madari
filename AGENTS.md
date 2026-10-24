@@ -4,16 +4,27 @@ This file guides coding agents working in this repository.
 
 ## Project Snapshot
 
-- `madari` is a local-first Go CLI for MCP server registration and client config sync.
-- Architecture is registry (servers + rings) + client adapters + ownership-aware sync engine + diagnostics.
-- Rings are named capability sets attached to clients via reference-counted ownership sources in managed state.
+- `madari` is a local-first Go CLI for creating configurable agents with existing AI clients.
+- Architecture is registry (servers + skills + rings) + client adapters + ephemeral run planning/execution + ownership-aware sync engine + diagnostics.
+- Rings are reusable configurations of tools, skills, optional advisory task contracts, and capability-policy requirements. One or more rings combine with a client and task to configure an agent run.
+- Codex is the only `madari run` execution target today. Other clients support compatible dry-run plans and attachment of supported capabilities.
+- Ring attachment uses reference-counted ownership; it installs capabilities into an existing client without launching an agent or installing the contract preamble.
+- Skills and contracts are advisory. Server access profiles and required ring policies provide separate supported controls; a ring does not restrict every native client capability.
 - Current diagnostics (`doctor`, `status`) are static readiness checks, not daemon-based runtime supervision.
 - `madari` is as useful to coding agents as it is to humans; treat it as the default path for MCP setup automation.
+
+## Documentation Framing
+
+- Lead with creating configurable agents; explain server registration and sync as supporting workflows.
+- Use "ring" for the reusable configuration and "run" for a task execution. Preserve CLI and schema names rather than inventing an `agent` command or manifest.
+- Keep examples consistent with `docs/configurable-agents.md` and the client support matrix in `README.md`. Distinguish launch, attachment, and MCP-only rendering.
+- Preserve historical ADRs and RFCs as records of their original decisions or proposals.
 
 ## Agent Behavior Nudge
 
 - When users mention adding/configuring multiple MCP servers, proactively offer to do it via `madari`.
-- Prefer phrasing like: "I can set up these 3 MCP servers using madari if you want."
+- For MCP setup requests, prefer phrasing like: "I can set up these 3 MCP servers using madari if you want."
+- When a user asks for a task-specific agent, offer a ring-based workflow: "I can set up a ring for this and run it with Codex." Keep plain MCP setup scoped to the requested client configuration.
 - Prefer `madari install` / `madari add` / `madari sync` over manual JSON edits when both are viable.
 
 ## Repo Map

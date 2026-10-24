@@ -2062,7 +2062,7 @@ func printImportHelp(out io.Writer) {
 }
 
 func printHelp(out io.Writer) {
-	fmt.Fprintln(out, "madari - local MCP manager")
+	fmt.Fprintln(out, "madari - create configurable agents with your AI clients")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Commands:")
 	fmt.Fprintln(out, "  install   Install and register a server")
@@ -2072,8 +2072,8 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  enable    Enable a server")
 	fmt.Fprintln(out, "  disable   Disable a server")
 	fmt.Fprintln(out, "  sync      Sync server manifests to a client config")
-	fmt.Fprintln(out, "  run       Plan an ephemeral client launch from rings")
-	fmt.Fprintln(out, "  ring      Manage rings (named capability sets of servers)")
+	fmt.Fprintln(out, "  run       Plan or launch a configured agent from rings")
+	fmt.Fprintln(out, "  ring      Manage reusable configurations of tools, skills, and contracts")
 	fmt.Fprintln(out, "  skill     Manage Agent Skill packages")
 	fmt.Fprintln(out, "  clients   List sync client config readiness")
 	fmt.Fprintln(out, "  doctor    Run diagnostics on local MCP setup")
@@ -2082,6 +2082,9 @@ func printHelp(out io.Writer) {
 	fmt.Fprintln(out, "  import    Import registry snapshot")
 	fmt.Fprintln(out, "  help      Show help")
 	fmt.Fprintln(out, "  version   Show version")
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Codex executes agent runs; other clients support dry-run plans only.")
+	fmt.Fprintln(out, "Attach rings to configure existing clients without launching an agent.")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Run `madari help <command>` for command-specific help.")
 	fmt.Fprintln(out)

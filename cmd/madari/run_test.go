@@ -1306,6 +1306,59 @@ func TestRunHelpSubcommandUnknownCommand(t *testing.T) {
 	}
 }
 
+func TestRunHelpExplainsConfigurableAgents(t *testing.T) {
+	tests := []struct {
+		command string
+		want    []string
+	}{
+		{
+			command: "",
+			want: []string{
+				"create configurable agents with your AI clients",
+				"tools, skills, and contracts",
+				"Codex executes agent runs; other clients support dry-run plans only.",
+				"Attach rings to configure existing clients without launching an agent.",
+			},
+		},
+		{
+			command: "ring",
+			want: []string{
+				"reusable agent configurations of MCP servers and skills",
+				"does not launch an agent or install contracts",
+				"Render emits MCP config only",
+				"contracts and skills are advisory instructions",
+			},
+		},
+		{
+			command: "run",
+			want: []string{
+				"Plan or launch a configured agent from one or more rings",
+				"Other clients are dry-run only",
+				"Multiple rings configure one agent run, not separate subagents.",
+				"Dry-run checks configuration readiness, not answer quality or service health.",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run("help_"+tt.command, func(t *testing.T) {
+			args := []string{"help"}
+			if tt.command != "" {
+				args = append(args, tt.command)
+			}
+			var stdout, stderr bytes.Buffer
+			code := run(args, &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("help failed: code=%d stderr=%s", code, stderr.String())
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(stdout.String(), want) {
+					t.Errorf("help missing %q: %s", want, stdout.String())
+				}
+			}
+		})
+	}
+}
+
 func TestRunTopLevelHelpAndVersionArgumentValidation(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -5017,4 +5070,24 @@ func TestRunWithStoreRingStatusFlagsStaleAndScopedPending(t *testing.T) {
 		return
 	}
 	t.Fatalf("expected claude-code user target in: %s", result.stdout)
+}
+
+func TestRunPlanExecutionAvailabilityText(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		plan runLaunchPlan
+		want string
+	}{
+		{"installed", runLaunchPlan{Target: "codex", RunnerAvailable: true}, "execution: available when --dry-run is omitted"},
+		{"missing executable", runLaunchPlan{Target: "codex"}, "execution: runner unavailable; resolve the launch plan errors"},
+		{"unsupported runner", runLaunchPlan{Target: "claude-code"}, "execution: not implemented for this target; dry-run only"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			printRunPlan(&out, tt.plan)
+			if !strings.Contains(out.String(), tt.want) {
+				t.Fatalf("missing %q in plan: %s", tt.want, out.String())
+			}
+		})
+	}
 }

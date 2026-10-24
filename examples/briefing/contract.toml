@@ -1,0 +1,6 @@
+summary = "Prepare a concise brief grounded in the provided source material."
+good_for = ["summarizing source notes", "identifying evidence gaps"]
+not_for = ["inventing research", "making changes to source systems"]
+required_context = ["source material", "question or intended audience"]
+optional_context = ["desired length", "source labels or URLs"]
+expected_outputs = ["main finding", "supporting evidence", "open questions"]
