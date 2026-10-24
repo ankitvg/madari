@@ -35,7 +35,9 @@ go install github.com/ankitvg/madari/cmd/madari@latest
 This example uses a POSIX shell and source text supplied in the task. Registering
 and inspecting the ring needs only Madari. Previewing or launching it with
 `madari run codex` also needs Codex CLI on `PATH`, and a real run needs an
-authenticated Codex session. The run invokes the model through your Codex account.
+authenticated Codex session. The run invokes the model through your Codex account:
+it uses `--model <id>` when given, otherwise the `model` and
+`model_reasoning_effort` set in your Codex `config.toml`.
 
 Create a skill package describing how the agent should work:
 

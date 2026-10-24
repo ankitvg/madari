@@ -92,6 +92,7 @@ type runTarget struct {
 	executor        runExecutor
 	executable      string
 	planPreflight   func() error
+	planModel       func(flagModel string) (runPlanModel, []string)
 	serverPreflight func(registry.Manifest) []string
 }
 
@@ -101,6 +102,7 @@ var runTargets = []runTarget{
 		executor:        runCodex,
 		executable:      "codex",
 		planPreflight:   validateCodexRunPlan,
+		planModel:       codexRunModel,
 		serverPreflight: codexRunServerPlanIssues,
 	},
 }

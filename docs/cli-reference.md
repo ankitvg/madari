@@ -333,8 +333,9 @@ server member = warning).
 ## Run
 
 ```bash
-madari run <client> --ring <ring> [--ring <ring> ...] [--dry-run] -- <prompt>
+madari run <client> --ring <ring> [--ring <ring> ...] [--model <id>] [--dry-run] -- <prompt>
 madari run codex --ring cloudsql-readonly -- "Who are the top 5 ebook creators?"
+madari run codex --ring cloudsql-readonly --model gpt-6-astra -- "Summarize the schema"
 madari run codex --ring cloudsql-readonly --ring research --dry-run --json -- "Inspect the combined plan"
 ```
 
@@ -358,6 +359,19 @@ the selected ring. Stdio servers also receive the caller's non-secret `HOME`,
 credentials keep working; secret declarations for those isolated env keys are
 blocked because Codex mutates them for run isolation. Other clients remain
 dry-run only for now.
+
+Because `--ignore-user-config` drops the caller's Codex `config.toml`, model
+selection is carried over explicitly. `--model <id>` is passed as
+`codex exec -m <id>`. Without it, the planner reads only the top-level `model`
+key from `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`). The
+top-level `model_reasoning_effort` key is forwarded as
+`-c model_reasoning_effort="<value>"` with either model source, matching how
+`codex -m` keeps the configured effort. A model is not a capability, so this
+does not widen the ring. Every other key, including profiles, providers, and
+MCP servers, stays ignored. With neither source, Codex uses its built-in
+default model, which ChatGPT-account sign-ins may reject with
+`model_not_found`. An unreadable config only adds a plan warning. Other
+targets ignore `--model` with a warning.
 
 The planner resolves every selected ring, deduplicates shared server and skill
 members, validates the selected client can express each required capability,
@@ -385,6 +399,9 @@ single ephemeral `mcp_servers={...}` override. The plan and executor both check
 the bounded version range Madari has validated for this complete contract.
 `--strict-config` is an additional config-parser safeguard, not proof that
 nested MCP policy fields retain their semantics outside the validated range.
+
+Dry-run text and JSON report the selected model and reasoning effort with a
+`source` of `flag`, `codex-config` (with `config_path`), or `target-default`.
 
 Dry-run text and JSON report each server's portable declared policy, the
 Codex-native effective policy, support state, and enforcement classification.
@@ -678,6 +695,13 @@ do not appear as policy drift.
     "oauth_scopes": "requested/client-configured/provider-unverified",
     "approvals": "client-control/not-authorization",
     "instructions": "contracts-and-skills-advisory"
+  },
+  "model": {
+    "id": "gpt-6-astra",
+    "source": "codex-config",
+    "reasoning_effort": "high",
+    "reasoning_effort_source": "codex-config",
+    "config_path": "/Users/me/.codex/config.toml"
   },
   "servers": [
     {

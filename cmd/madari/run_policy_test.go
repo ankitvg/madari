@@ -334,7 +334,7 @@ func TestCodexRunOverridesUsePlannedManifestSnapshot(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save ring: %v", err)
 	}
-	plan, err := (cliApp{store: store}).buildRunPlan("codex", []string{"required"}, "inspect")
+	plan, err := (cliApp{store: store}).buildRunPlan("codex", []string{"required"}, "inspect", "")
 	if err != nil || !plan.Ready {
 		t.Fatalf("build plan: ready=%t err=%v errors=%v", plan.Ready, err, plan.Errors)
 	}
@@ -405,7 +405,7 @@ func TestRunCodexRechecksPolicyCompatibilityBeforeSkillMaterialization(t *testin
 	}); err != nil {
 		t.Fatalf("save ring: %v", err)
 	}
-	plan, err := (cliApp{store: store}).buildRunPlan("codex", []string{"required"}, "inspect")
+	plan, err := (cliApp{store: store}).buildRunPlan("codex", []string{"required"}, "inspect", "")
 	if err != nil || !plan.Ready {
 		t.Fatalf("build exact plan: ready=%t err=%v errors=%v", plan.Ready, err, plan.Errors)
 	}
