@@ -6,9 +6,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	codexclient "github.com/ankitvg/madari/internal/clients/codex"
 )
 
-const minimumCodexPolicyRunVersion = "0.139.0"
+var minimumCodexPolicyRunVersion = codexclient.Compatibility().MinimumVersion
 
 var codexSemanticVersionPattern = regexp.MustCompile(`([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?`)
 

@@ -208,3 +208,6 @@ unusable.
 
 The remaining risk is a field that keeps its name and accepted values but
 changes meaning. Neither a floor nor a bound detects that by itself.
+`internal/clients/codex/compat.toml` lists every Codex flag, config key, and
+value Madari depends on, and a test keeps it in step with Madari's output, so
+each Codex release can be reviewed against that list.

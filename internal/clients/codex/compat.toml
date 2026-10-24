@@ -1,0 +1,56 @@
+# Codex CLI behavior Madari depends on.
+#
+# Madari reads its policy-run version floor from this file, and
+# cmd/madari/codex_compat_test.go fails when Madari passes a flag or writes a
+# config key or value that is not listed here, or stops using one that is.
+# When a Codex release changes any of these, update this file and the code
+# together.
+
+# Oldest stable release whose policy fields Madari has verified. Policy runs
+# reject older releases and prereleases.
+minimum_version = "0.139.0"
+
+# Newest release checked against this file. Informational: newer releases are
+# accepted because access-bearing runs pass --strict-config.
+last_verified_version = "0.164.0"
+
+# `codex --version` output must contain MAJOR.MINOR.PATCH.
+version_flag = "--version"
+
+[exec]
+# `madari run codex` launches `codex <subcommand> [flags] -- <prompt>`.
+subcommand = "exec"
+# Flags without a value. --strict-config is passed whenever a selected server
+# declares [access]; it makes Codex reject unknown config keys and values
+# instead of ignoring them.
+flags = ["--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--strict-config"]
+# Flags followed by a value.
+value_flags = ["--cd", "--sandbox", "-c"]
+sandbox = "read-only"
+# Top-level keys Madari sets with -c.
+config_overrides = ["mcp_servers"]
+
+[mcp_server]
+# Keys Madari writes in an mcp_servers.<name> table for sync/attach, render, or
+# run. The contents of env and http_headers are user data.
+fields = [
+  "args",
+  "bearer_token_env_var",
+  "command",
+  "cwd",
+  "default_tools_approval_mode",
+  "disabled_tools",
+  "enabled_tools",
+  "env",
+  "env_vars",
+  "http_headers",
+  "oauth_resource",
+  "required",
+  "scopes",
+  "tools",
+  "url",
+]
+# Keys Madari writes in an mcp_servers.<name>.tools.<tool> table.
+tool_fields = ["approval_mode"]
+# Values Madari writes for default_tools_approval_mode and approval_mode.
+approval_modes = ["approve", "auto", "prompt"]
