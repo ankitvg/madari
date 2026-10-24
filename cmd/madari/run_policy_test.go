@@ -241,7 +241,7 @@ func TestRunRequiredPolicyBlocksOldCodexBeforeExecution(t *testing.T) {
 	if plan.Ready || server.Status != "blocked" || server.Policy.SupportState != "unsupported" || server.Policy.EnforcementClassification != "blocked" {
 		t.Fatalf("old Codex downgrade was not classified: %#v", plan)
 	}
-	if !strings.Contains(strings.Join(plan.Errors, "\n"), "stable Codex CLI 0.139.x") {
+	if !strings.Contains(strings.Join(plan.Errors, "\n"), "stable Codex CLI 0.139.0 or newer") {
 		t.Fatalf("old Codex error is not actionable: %#v", plan.Errors)
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
@@ -280,7 +280,7 @@ func TestRunSkillOnlyRequiredPolicyStillGatesCodexCompatibility(t *testing.T) {
 		t.Fatalf("skill-only required policy bypassed compatibility gate: %s", result.stdout)
 	}
 	plan := decodeRunPlan(t, result.stdout)
-	if !plan.PolicyRequired || plan.Ready || !strings.Contains(strings.Join(plan.Errors, "\n"), "stable Codex CLI 0.139.x") {
+	if !plan.PolicyRequired || plan.Ready || !strings.Contains(strings.Join(plan.Errors, "\n"), "stable Codex CLI 0.139.0 or newer") {
 		t.Fatalf("skill-only policy gate was not reported: %#v", plan)
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
@@ -424,7 +424,7 @@ func TestRunCodexRechecksPolicyCompatibilityBeforeSkillMaterialization(t *testin
 		t.Fatalf("remove planned skill to detect materialization: %v", err)
 	}
 	err = runCodex(cliApp{store: store}, plan, "inspect")
-	if err == nil || !strings.Contains(err.Error(), "stable Codex CLI 0.139.x") {
+	if err == nil || !strings.Contains(err.Error(), "stable Codex CLI 0.139.0 or newer") {
 		t.Fatalf("executor did not recheck compatibility first: %v", err)
 	}
 	if strings.Contains(err.Error(), "skill") {

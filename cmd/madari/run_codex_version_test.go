@@ -50,35 +50,48 @@ func TestParseCodexSemanticVersion(t *testing.T) {
 	}
 }
 
+func installVersionOnlyCodex(t *testing.T, version string) {
+	t.Helper()
+	binDir := t.TempDir()
+	path := filepath.Join(binDir, "codex")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf 'codex-cli "+version+"\\n'\n"), 0o755); err != nil {
+		t.Fatalf("write fake Codex: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+}
+
 func TestValidateCodexPolicyRunVersionRejectsOlderCLI(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture is Unix-specific")
 	}
-	binDir := t.TempDir()
-	path := filepath.Join(binDir, "codex")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf 'codex-cli 0.138.9\\n'\n"), 0o755); err != nil {
-		t.Fatalf("write fake Codex: %v", err)
-	}
-	t.Setenv("PATH", binDir)
+	installVersionOnlyCodex(t, "0.138.9")
 	err := validateCodexPolicyRunVersion()
-	if err == nil || !strings.Contains(err.Error(), "stable Codex CLI 0.139.x") {
+	if err == nil || !strings.Contains(err.Error(), "stable Codex CLI 0.139.0 or newer") {
 		t.Fatalf("expected old Codex refusal, got: %v", err)
 	}
 }
 
-func TestValidateCodexPolicyRunCompatibilityRejectsUnvalidatedNewerSeries(t *testing.T) {
+func TestValidateCodexPolicyRunCompatibilityAcceptsNewerStableReleases(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fixture is Unix-specific")
 	}
-	binDir := t.TempDir()
-	path := filepath.Join(binDir, "codex")
-	script := "#!/bin/sh\nprintf 'codex-cli 0.140.0\\n'\n"
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake Codex: %v", err)
+	for _, version := range []string{"0.139.0", "0.140.0", "0.164.0", "1.0.0"} {
+		t.Run(version, func(t *testing.T) {
+			installVersionOnlyCodex(t, version)
+			if err := validateCodexPolicyRunCompatibility(); err != nil {
+				t.Fatalf("expected Codex %s to pass the version floor, got: %v", version, err)
+			}
+		})
 	}
-	t.Setenv("PATH", binDir)
+}
+
+func TestValidateCodexPolicyRunCompatibilityRejectsPrereleases(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture is Unix-specific")
+	}
+	installVersionOnlyCodex(t, "0.165.0-alpha.1")
 	err := validateCodexPolicyRunCompatibility()
-	if err == nil || !strings.Contains(err.Error(), "stable Codex CLI 0.139.x") {
-		t.Fatalf("expected unvalidated version refusal, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "stable Codex CLI 0.139.0 or newer") {
+		t.Fatalf("expected prerelease refusal, got: %v", err)
 	}
 }

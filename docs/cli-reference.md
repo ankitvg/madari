@@ -366,7 +366,7 @@ client config, creates managed state, or permanently materializes skill
 packages.
 
 When any selected server declares `[access]`, Codex execution also adds
-`--strict-config` and requires a stable Codex CLI 0.139.x release. This applies
+`--strict-config` and requires a stable Codex CLI 0.139.0 or newer. This applies
 to advisory profiles as well as policy-required rings so Madari never drops a
 declared restriction. Legacy runs with no access declarations omit the newer
 flag and version gate, preserving their existing compatibility behavior.
