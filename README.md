@@ -71,6 +71,9 @@ A dry run checks the launch plan without calling the model. It does not evaluate
 the agent's answer or prove that external services are reachable. A run uses
 temporary skill files and leaves client config and attachment state unchanged.
 
+For task contracts, multiple rings, and adding retrieval tools, follow the
+[complete configurable-agent walkthrough](docs/configurable-agents.md).
+
 ## How agents are configured
 
 | Concept | Role |
@@ -168,6 +171,7 @@ For exact isolation, environment, ownership, and policy behavior, read the
 
 ## Documentation
 
+- [Create your first configurable agent](docs/configurable-agents.md)
 - [CLI reference](docs/cli-reference.md)
 - [Architecture](docs/architecture.md)
 - [Manifest spec](docs/manifest-spec.md)
