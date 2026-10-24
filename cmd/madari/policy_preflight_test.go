@@ -275,7 +275,7 @@ func TestPolicyRequiredRingMakesCodexRunPlanExact(t *testing.T) {
 	savePolicyTestManifest(t, store, "docs", "codex")
 	savePolicyTestRing(t, store, "restricted", []string{"docs"}, nil, true)
 
-	plan, err := (cliApp{store: store}).buildRunPlan("codex", []string{"restricted"}, "inspect the docs")
+	plan, err := (cliApp{store: store}).buildRunPlan("codex", []string{"restricted"}, "inspect the docs", "")
 	if err != nil {
 		t.Fatalf("build run plan: %v", err)
 	}
@@ -360,7 +360,7 @@ func TestPolicyRequiredSkillOnlyRingAttachesAndRunCompilesAfterMemberEdit(t *tes
 		t.Fatalf("failed policy sync created server state: %v", err)
 	}
 
-	plan, err := (cliApp{store: store}).buildRunPlan("codex", []string{"workflow"}, "prepare release")
+	plan, err := (cliApp{store: store}).buildRunPlan("codex", []string{"workflow"}, "prepare release", "")
 	if err != nil {
 		t.Fatalf("build run plan: %v", err)
 	}

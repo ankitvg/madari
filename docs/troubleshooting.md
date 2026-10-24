@@ -41,6 +41,12 @@ For poor answers, inspect the registered skill and contract, supply the expected
 context, and compare the output with source evidence. Refresh an edited skill
 using `madari skill update <name> --dir <package-directory>`.
 
+If Codex fails before any tool call with `model_not_found` (for example
+`The 'gpt-5.5' model is not supported when using Codex with a ChatGPT
+account`), the run fell back to Codex's built-in default model. Check the
+`model:` line of a dry run, then pass `--model <id>` or set `model` in your
+Codex `config.toml`.
+
 Skills and contracts guide behavior; they do not guarantee answer quality.
 A read-only client filesystem sandbox also does not prevent an MCP tool from
 mutating an external service. Use appropriate service permissions and supported

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/ankitvg/madari/internal/clients"
 	codexclient "github.com/ankitvg/madari/internal/clients/codex"
@@ -17,6 +18,11 @@ import (
 )
 
 const runDryRunOnlyMessage = "madari run execution is only implemented for codex; pass --dry-run to inspect the launch plan"
+
+const (
+	runModelSourceFlag          = "flag"
+	runModelSourceTargetDefault = "target-default"
+)
 
 type runPlanJSON struct {
 	SchemaVersion   int               `json:"schema_version"`
@@ -28,6 +34,7 @@ type runPlanJSON struct {
 	PromptProvided  bool              `json:"prompt_provided"`
 	PolicyRequired  bool              `json:"policy_required"`
 	PolicyControls  runPolicyControls `json:"policy_controls"`
+	Model           *runPlanModel     `json:"model,omitempty"`
 	Servers         []runPlanServer   `json:"servers"`
 	Skills          []runPlanSkill    `json:"skills"`
 	Env             []runPlanEnv      `json:"env"`
@@ -43,6 +50,7 @@ type runLaunchPlan struct {
 	PromptProvided  bool
 	PolicyRequired  bool
 	PolicyControls  runPolicyControls
+	Model           *runPlanModel
 	Servers         []runPlanServer
 	Skills          []runPlanSkill
 	Env             []runPlanEnv
@@ -61,6 +69,14 @@ type runPlanServer struct {
 	Issues     []string            `json:"issues"`
 	Policy     runPlanServerPolicy `json:"policy"`
 	Manifest   registry.Manifest   `json:"-"`
+}
+
+type runPlanModel struct {
+	ID                    string `json:"id,omitempty"`
+	Source                string `json:"source"`
+	ReasoningEffort       string `json:"reasoning_effort,omitempty"`
+	ReasoningEffortSource string `json:"reasoning_effort_source"`
+	ConfigPath            string `json:"config_path,omitempty"`
 }
 
 type runPolicyControls struct {
@@ -115,7 +131,9 @@ func (a cliApp) cmdRun(args []string) error {
 	var rings stringList
 	var dryRun bool
 	var jsonOutput bool
+	var model string
 	fs.Var(&rings, "ring", "Ring to include in the launch plan (repeatable)")
+	fs.StringVar(&model, "model", "", "Model the launched client should use")
 	fs.BoolVar(&dryRun, "dry-run", false, "Inspect the launch plan without starting the client")
 	fs.BoolVar(&jsonOutput, "json", false, "Emit JSON instead of text")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -129,6 +147,18 @@ func (a cliApp) cmdRun(args []string) error {
 	if target == "" {
 		return commandInputError("run", "client is required")
 	}
+	model = strings.TrimSpace(model)
+	modelSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "model" {
+			modelSet = true
+		}
+	})
+	if modelSet {
+		if err := validateRunModelID(model); err != nil {
+			return commandInputError("run", "invalid --model: "+err.Error())
+		}
+	}
 	if jsonOutput && !dryRun {
 		return commandInputError("run", "--json is only supported with --dry-run")
 	}
@@ -141,7 +171,7 @@ func (a cliApp) cmdRun(args []string) error {
 		return commandInputError("run", "prompt is required")
 	}
 
-	plan, err := a.buildRunPlan(target, normalizedRings, prompt)
+	plan, err := a.buildRunPlan(target, normalizedRings, prompt, model)
 	if err != nil {
 		return err
 	}
@@ -171,7 +201,7 @@ func (a cliApp) cmdRun(args []string) error {
 	return nil
 }
 
-func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (runLaunchPlan, error) {
+func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string, model string) (runLaunchPlan, error) {
 	plan := runLaunchPlan{
 		Target:          target,
 		Rings:           nonNilStrings(normalizedRingNames(ringNames)),
@@ -207,6 +237,13 @@ func (a cliApp) buildRunPlan(target string, ringNames []string, prompt string) (
 				addPlanError(err.Error())
 			}
 		}
+	}
+	if runnerImplemented && rt.planModel != nil {
+		selected, warnings := rt.planModel(model)
+		plan.Model = &selected
+		plan.Warnings = append(plan.Warnings, warnings...)
+	} else if model != "" {
+		plan.Warnings = append(plan.Warnings, fmt.Sprintf("%s run does not support model selection; --model is ignored", target))
 	}
 	for ring, count := range countStrings(plan.Rings) {
 		if count > 1 {
@@ -439,12 +476,26 @@ func (p runLaunchPlan) toJSON() runPlanJSON {
 		PromptProvided:  p.PromptProvided,
 		PolicyRequired:  p.PolicyRequired,
 		PolicyControls:  p.PolicyControls,
+		Model:           p.Model,
 		Servers:         nonNilRunPlanServers(p.Servers),
 		Skills:          nonNilRunPlanSkills(p.Skills),
 		Env:             nonNilRunPlanEnv(p.Env),
 		Warnings:        nonNilStrings(p.Warnings),
 		Errors:          nonNilStrings(p.Errors),
 	}
+}
+
+func validateRunModelID(id string) error {
+	if id == "" {
+		return errors.New("model id is empty")
+	}
+	if strings.HasPrefix(id, "-") {
+		return fmt.Errorf("model id %q must not start with '-'", id)
+	}
+	if strings.IndexFunc(id, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+		return fmt.Errorf("model id %q must not contain whitespace or control characters", id)
+	}
+	return nil
 }
 
 func runPlanAuth(manifest registry.Manifest) string {
@@ -638,6 +689,9 @@ func printRunPlan(out io.Writer, plan runLaunchPlan) {
 		plan.PolicyControls.Approvals,
 		plan.PolicyControls.Instructions,
 	)
+	if plan.Model != nil {
+		printRunPlanModel(out, *plan.Model)
+	}
 	fmt.Fprintln(out)
 
 	fmt.Fprintln(out, "servers:")
@@ -715,6 +769,14 @@ func printRunPlan(out io.Writer, plan runLaunchPlan) {
 		for _, issue := range plan.Errors {
 			fmt.Fprintf(out, "  %s\n", issue)
 		}
+	}
+}
+
+func printRunPlanModel(out io.Writer, model runPlanModel) {
+	fmt.Fprintf(out, "model: %s source=%s\n", formatOptionalEffectiveString(model.ID), model.Source)
+	fmt.Fprintf(out, "model reasoning effort: %s source=%s\n", formatOptionalEffectiveString(model.ReasoningEffort), model.ReasoningEffortSource)
+	if model.ConfigPath != "" {
+		fmt.Fprintf(out, "model config: %s\n", model.ConfigPath)
 	}
 }
 
@@ -804,10 +866,11 @@ func formatStringMap(values map[string]string) string {
 
 func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "Usage:")
-	fmt.Fprintln(out, "  madari run <client> --ring <ring> [--ring <ring> ...] [--dry-run] -- <prompt>")
+	fmt.Fprintln(out, "  madari run <client> --ring <ring> [--ring <ring> ...] [--model <id>] [--dry-run] -- <prompt>")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Options:")
 	fmt.Fprintln(out, "  --ring <ring>             Ring to include in the launch plan (repeatable)")
+	fmt.Fprintln(out, "  --model <id>              Model the launched client should use (Codex: codex exec -m)")
 	fmt.Fprintln(out, "  --dry-run                 Inspect the launch plan without starting the client")
 	fmt.Fprintln(out, "  --json                    Emit JSON instead of text (requires --dry-run)")
 	fmt.Fprintln(out)
@@ -821,6 +884,10 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  working directory and caller HOME/USERPROFILE; Codex gets temporary")
 	fmt.Fprintln(out, "  HOME/CODEX_HOME roots with auth copied in. Other clients are dry-run only")
 	fmt.Fprintln(out, "  for now.")
+	fmt.Fprintln(out, "  Codex runs use --model when given; otherwise they read only the top-level")
+	fmt.Fprintln(out, "  model and model_reasoning_effort keys from the caller's Codex config.toml")
+	fmt.Fprintln(out, "  and pass them as -m and -c overrides. Every other config key stays ignored;")
+	fmt.Fprintln(out, "  dry-run reports the selected model and its source.")
 	fmt.Fprintln(out, "  Access-bearing Codex runs add --strict-config; legacy no-access runs omit it.")
 	fmt.Fprintln(out, "  Codex policy runs require a validated stable CLI 0.139.x release; dry-run")
 	fmt.Fprintln(out, "  reports declared/effective policy separately from client enforcement and")
@@ -831,5 +898,6 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Examples:")
 	fmt.Fprintln(out, "  madari run codex --ring cloudsql-readonly -- \"Who are the top 5 ebook creators?\"")
+	fmt.Fprintln(out, "  madari run codex --ring cloudsql-readonly --model gpt-6-astra -- \"Summarize the schema\"")
 	fmt.Fprintln(out, "  madari run codex --ring cloudsql-readonly --ring research --dry-run --json -- \"Summarize the target plan\"")
 }

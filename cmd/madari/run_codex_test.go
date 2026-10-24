@@ -305,6 +305,69 @@ func TestRunWithStoreCodexRunPropagatesCodexFailure(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreCodexRunPassesSelectedModel(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake codex shell fixture is unix-specific")
+	}
+	const config = "model = \"gpt-config\"\nmodel_reasoning_effort = \"low\"\n\n[mcp_servers.personal]\ncommand = \"personal-mcp\"\n"
+	for _, tc := range []struct {
+		name      string
+		config    string
+		flags     []string
+		wantModel []string
+	}{
+		{name: "codex config", config: config, wantModel: []string{"-m", "gpt-config", "-c", `model_reasoning_effort="low"`}},
+		{name: "flag", config: config, flags: []string{"--model", "gpt-flag"}, wantModel: []string{"-m", "gpt-flag", "-c", `model_reasoning_effort="low"`}},
+		{name: "absent", wantModel: []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestStore(t)
+			logPath := installFakeCodex(t, 0)
+			codexHome := t.TempDir()
+			if tc.config != "" {
+				writeTextFile(t, codexHome, "config.toml", tc.config)
+			}
+			t.Setenv("CODEX_HOME", codexHome)
+			if err := store.Save(registry.Manifest{
+				Name:    "helper",
+				Command: mustCurrentExecutable(t),
+				Enabled: true,
+				Clients: []string{"codex"},
+			}); err != nil {
+				t.Fatalf("save helper: %v", err)
+			}
+			if err := store.SaveRing(registry.Ring{Name: "helpers", Members: []string{"helper"}}); err != nil {
+				t.Fatalf("save ring: %v", err)
+			}
+
+			cmdArgs := append([]string{"run", "codex", "--ring", "helpers"}, tc.flags...)
+			result := runCmd(store, append(cmdArgs, "--", "prompt")...)
+			if result.code != 0 {
+				t.Fatalf("codex run failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+			}
+
+			args := readNULArgs(t, logPath)
+			wantPrefix := []string{"exec", "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--cd"}
+			if len(args) <= len(wantPrefix) || !slices.Equal(args[:len(wantPrefix)], wantPrefix) {
+				t.Fatalf("unexpected codex args prefix:\n%#v", args)
+			}
+			rest := args[len(wantPrefix)+1:]
+			if len(rest) < len(tc.wantModel)+2 || !slices.Equal(rest[:len(tc.wantModel)], tc.wantModel) {
+				t.Fatalf("expected model args %#v after run root, got %#v", tc.wantModel, rest)
+			}
+			if next := rest[len(tc.wantModel)]; next != "-c" || !strings.HasPrefix(rest[len(tc.wantModel)+1], "mcp_servers=") {
+				t.Fatalf("expected mcp_servers override after model args, got %#v", rest)
+			}
+			if len(tc.wantModel) == 0 && slices.Contains(args, "-m") {
+				t.Fatalf("expected no -m without a selected model, got %#v", args)
+			}
+			if strings.Contains(strings.Join(args, "\n"), "personal-mcp") {
+				t.Fatalf("caller codex config MCP servers leaked into run args: %#v", args)
+			}
+		})
+	}
+}
+
 func TestRunWithStoreCodexRunRequiresCodexBinary(t *testing.T) {
 	store := newTestStore(t)
 	commandPath := mustCurrentExecutable(t)
@@ -527,6 +590,9 @@ func installFakeCodex(t *testing.T, exitCode int) string {
 		t.Fatalf("write fake codex: %v", err)
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// Keep the caller's real Codex config and auth out of fake runs; tests set
+	// CODEX_HOME afterwards when they need a populated one.
+	t.Setenv("CODEX_HOME", t.TempDir())
 	return logPath
 }
 

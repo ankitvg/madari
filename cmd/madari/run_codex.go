@@ -12,7 +12,10 @@ import (
 	codexclient "github.com/ankitvg/madari/internal/clients/codex"
 	"github.com/ankitvg/madari/internal/clients/syncshared"
 	"github.com/ankitvg/madari/internal/registry"
+	"github.com/pelletier/go-toml/v2"
 )
+
+const codexRunModelSourceConfig = "codex-config"
 
 type runExecutor func(cliApp, runLaunchPlan, string) error
 
@@ -59,6 +62,7 @@ func runCodex(a cliApp, plan runLaunchPlan, prompt string) error {
 		args = append(args, "--strict-config")
 	}
 	args = append(args, "--ephemeral", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "read-only", "--cd", runRoot)
+	args = append(args, codexRunModelArgs(plan.Model)...)
 	for _, override := range overrides {
 		args = append(args, "-c", override)
 	}
@@ -140,6 +144,66 @@ func codexRunSourceHome() (string, error) {
 		return "", fmt.Errorf("resolve current home directory: %w", err)
 	}
 	return filepath.Join(home, ".codex"), nil
+}
+
+// codexRunModel selects the model for an isolated run. --ignore-user-config
+// drops the caller's config.toml, so only its top-level model and
+// model_reasoning_effort keys are carried over; a model is not a capability.
+func codexRunModel(flagModel string) (runPlanModel, []string) {
+	model := runPlanModel{Source: runModelSourceTargetDefault, ReasoningEffortSource: runModelSourceTargetDefault}
+	if flagModel != "" {
+		model.ID = flagModel
+		model.Source = runModelSourceFlag
+	}
+	sourceCodexHome, err := codexRunSourceHome()
+	if err != nil {
+		return model, []string{fmt.Sprintf("codex config model defaults unavailable: %v", err)}
+	}
+	configPath := filepath.Join(sourceCodexHome, "config.toml")
+	payload, err := os.ReadFile(configPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return model, nil
+		}
+		return model, []string{fmt.Sprintf("read codex config %s for model defaults: %v", configPath, err)}
+	}
+	var config struct {
+		Model                string `toml:"model"`
+		ModelReasoningEffort string `toml:"model_reasoning_effort"`
+	}
+	if err := toml.Unmarshal(payload, &config); err != nil {
+		return model, []string{fmt.Sprintf("parse codex config %s for model defaults: %v", configPath, err)}
+	}
+	var warnings []string
+	if configModel := strings.TrimSpace(config.Model); configModel != "" && model.Source != runModelSourceFlag {
+		if err := validateRunModelID(configModel); err != nil {
+			warnings = append(warnings, fmt.Sprintf("ignoring codex config %s model: %v", configPath, err))
+		} else {
+			model.ID = configModel
+			model.Source = codexRunModelSourceConfig
+			model.ConfigPath = configPath
+		}
+	}
+	if effort := strings.TrimSpace(config.ModelReasoningEffort); effort != "" {
+		model.ReasoningEffort = effort
+		model.ReasoningEffortSource = codexRunModelSourceConfig
+		model.ConfigPath = configPath
+	}
+	return model, warnings
+}
+
+func codexRunModelArgs(model *runPlanModel) []string {
+	if model == nil {
+		return nil
+	}
+	var args []string
+	if model.ID != "" {
+		args = append(args, "-m", model.ID)
+	}
+	if model.ReasoningEffort != "" {
+		args = append(args, "-c", "model_reasoning_effort="+tomlString(model.ReasoningEffort))
+	}
+	return args
 }
 
 func copyCodexRunAuthState(sourceCodexHome, isolatedCodexHome string) error {

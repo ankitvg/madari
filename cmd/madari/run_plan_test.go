@@ -542,6 +542,179 @@ func TestRunWithStoreRunPlanBlocksDisabledServerAndDuplicateRing(t *testing.T) {
 	}
 }
 
+func TestRunWithStoreRunPlanReportsModelFromCodexConfig(t *testing.T) {
+	store := newTestStore(t)
+	installFakeCodex(t, 0)
+	saveModelPlanRing(t, store)
+	configPath := writeCodexModelConfig(t, "model = \"gpt-config\"\nmodel_reasoning_effort = \"low\"\napproval_policy = \"never\"\n\n[mcp_servers.personal]\ncommand = \"personal-mcp\"\n")
+
+	result := runCmd(store, "run", "codex", "--ring", "helpers", "--dry-run", "--json", "--", "prompt")
+	if result.code != 0 {
+		t.Fatalf("run plan failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	want := runPlanModel{
+		ID:                    "gpt-config",
+		Source:                "codex-config",
+		ReasoningEffort:       "low",
+		ReasoningEffortSource: "codex-config",
+		ConfigPath:            configPath,
+	}
+	if plan.Model == nil || *plan.Model != want {
+		t.Fatalf("expected config model %#v, got %#v", want, plan.Model)
+	}
+	if len(plan.Warnings) != 0 {
+		t.Fatalf("expected no warnings, got %#v", plan.Warnings)
+	}
+
+	textResult := runCmd(store, "run", "codex", "--ring", "helpers", "--dry-run", "--", "prompt")
+	for _, line := range []string{
+		"model: gpt-config source=codex-config\n",
+		"model reasoning effort: low source=codex-config\n",
+		"model config: " + configPath + "\n",
+	} {
+		if textResult.code != 0 || !strings.Contains(textResult.stdout, line) {
+			t.Fatalf("expected text dry-run to contain %q, code=%d stdout=%s stderr=%s", line, textResult.code, textResult.stdout, textResult.stderr)
+		}
+	}
+}
+
+func TestRunWithStoreRunPlanModelFlagOverridesCodexConfigModel(t *testing.T) {
+	store := newTestStore(t)
+	installFakeCodex(t, 0)
+	saveModelPlanRing(t, store)
+	configPath := writeCodexModelConfig(t, "model = \"gpt-config\"\nmodel_reasoning_effort = \"high\"\n")
+
+	result := runCmd(store, "run", "codex", "--ring", "helpers", "--model", " gpt-flag ", "--dry-run", "--json", "--", "prompt")
+	if result.code != 0 {
+		t.Fatalf("run plan failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	want := runPlanModel{
+		ID:                    "gpt-flag",
+		Source:                "flag",
+		ReasoningEffort:       "high",
+		ReasoningEffortSource: "codex-config",
+		ConfigPath:            configPath,
+	}
+	if plan.Model == nil || *plan.Model != want {
+		t.Fatalf("expected flag model with config effort %#v, got %#v", want, plan.Model)
+	}
+}
+
+func TestRunWithStoreRunPlanModelDefaultsWithoutFlagOrCodexConfig(t *testing.T) {
+	store := newTestStore(t)
+	installFakeCodex(t, 0)
+	saveModelPlanRing(t, store)
+	t.Setenv("CODEX_HOME", t.TempDir())
+
+	result := runCmd(store, "run", "codex", "--ring", "helpers", "--dry-run", "--json", "--", "prompt")
+	if result.code != 0 {
+		t.Fatalf("run plan failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	want := runPlanModel{Source: "target-default", ReasoningEffortSource: "target-default"}
+	if plan.Model == nil || *plan.Model != want {
+		t.Fatalf("expected target-default model %#v, got %#v", want, plan.Model)
+	}
+	var raw struct {
+		Model map[string]any `json:"model"`
+	}
+	if err := json.Unmarshal([]byte(result.stdout), &raw); err != nil {
+		t.Fatalf("decode raw plan: %v", err)
+	}
+	for _, key := range []string{"id", "reasoning_effort", "config_path"} {
+		if _, present := raw.Model[key]; present {
+			t.Fatalf("expected %s to be omitted for target-default model, got %#v", key, raw.Model)
+		}
+	}
+
+	textResult := runCmd(store, "run", "codex", "--ring", "helpers", "--dry-run", "--", "prompt")
+	if textResult.code != 0 ||
+		!strings.Contains(textResult.stdout, "model: target-default source=target-default\n") ||
+		strings.Contains(textResult.stdout, "model config:") {
+		t.Fatalf("expected text dry-run to report target-default model, code=%d stdout=%s stderr=%s", textResult.code, textResult.stdout, textResult.stderr)
+	}
+}
+
+func TestRunWithStoreRunPlanWarnsOnUnreadableCodexConfigModel(t *testing.T) {
+	store := newTestStore(t)
+	installFakeCodex(t, 0)
+	saveModelPlanRing(t, store)
+	writeCodexModelConfig(t, "model = [\n")
+
+	result := runCmd(store, "run", "codex", "--ring", "helpers", "--dry-run", "--json", "--", "prompt")
+	if result.code != 0 {
+		t.Fatalf("unreadable codex config should not block the plan: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	if plan.Model == nil || plan.Model.Source != "target-default" || plan.Model.ID != "" {
+		t.Fatalf("expected target-default model, got %#v", plan.Model)
+	}
+	if !strings.Contains(strings.Join(plan.Warnings, "\n"), "parse codex config") {
+		t.Fatalf("expected codex config parse warning, got %#v", plan.Warnings)
+	}
+}
+
+func TestRunWithStoreRunPlanRejectsInvalidModelFlag(t *testing.T) {
+	store := newTestStore(t)
+	installFakeCodex(t, 0)
+	saveModelPlanRing(t, store)
+
+	for _, model := range []string{"", "  ", "-x", "gpt 5"} {
+		result := runCmd(store, "run", "codex", "--ring", "helpers", "--model", model, "--dry-run", "--", "prompt")
+		if result.code == 0 || !strings.Contains(result.stderr, "invalid --model") {
+			t.Fatalf("expected invalid --model %q to fail, code=%d stdout=%s stderr=%s", model, result.code, result.stdout, result.stderr)
+		}
+	}
+}
+
+func TestRunWithStoreRunPlanIgnoresModelForDryRunOnlyTarget(t *testing.T) {
+	store := newTestStore(t)
+	commandPath := mustCurrentExecutable(t)
+	if result := runCmd(store, "add", "helper", "--command", commandPath, "--client", "claude-code"); result.code != 0 {
+		t.Fatalf("setup helper failed: %s", result.stderr)
+	}
+	if err := store.SaveRing(registry.Ring{Name: "helpers", Members: []string{"helper"}}); err != nil {
+		t.Fatalf("setup ring failed: %v", err)
+	}
+
+	result := runCmd(store, "run", "claude-code", "--ring", "helpers", "--model", "sonnet", "--dry-run", "--json", "--", "prompt")
+	if result.code != 0 {
+		t.Fatalf("run plan failed: stdout=%s stderr=%s", result.stdout, result.stderr)
+	}
+	plan := decodeRunPlan(t, result.stdout)
+	if plan.Model != nil {
+		t.Fatalf("expected no model for dry-run-only target, got %#v", plan.Model)
+	}
+	if !slices.Equal(plan.Warnings, []string{"claude-code run does not support model selection; --model is ignored"}) {
+		t.Fatalf("expected ignored --model warning, got %#v", plan.Warnings)
+	}
+}
+
+func saveModelPlanRing(t *testing.T, store *registry.Store) {
+	t.Helper()
+	if err := store.Save(registry.Manifest{
+		Name:    "helper",
+		Command: mustCurrentExecutable(t),
+		Enabled: true,
+		Clients: []string{"codex"},
+	}); err != nil {
+		t.Fatalf("setup helper failed: %v", err)
+	}
+	if err := store.SaveRing(registry.Ring{Name: "helpers", Members: []string{"helper"}}); err != nil {
+		t.Fatalf("setup ring failed: %v", err)
+	}
+}
+
+func writeCodexModelConfig(t *testing.T, payload string) string {
+	t.Helper()
+	codexHome := t.TempDir()
+	writeTextFile(t, codexHome, "config.toml", payload)
+	t.Setenv("CODEX_HOME", codexHome)
+	return filepath.Join(codexHome, "config.toml")
+}
+
 func decodeRunPlan(t *testing.T, payload string) runPlanJSON {
 	t.Helper()
 	var plan runPlanJSON
