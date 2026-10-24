@@ -28,9 +28,9 @@ too and report `execution: runner unavailable` until it is present. If an admin 
 because Madari cannot guarantee ring-only skill isolation. Inspect the named
 root and resolve it with its owner rather than deleting managed system skills.
 
-Access-bearing runs require a validated stable Codex CLI 0.139.x release. A newer
-or prerelease version may therefore be rejected. Use the validated client for
-that policy; removing a required policy changes the intended access guarantees.
+Access-bearing runs require a stable Codex CLI 0.139.0 or newer. Older and
+prerelease versions are rejected. Upgrade Codex rather than removing a required
+policy, which changes the intended access guarantees.
 See [Capability Policy V1](cli-reference.md#capability-policy-v1).
 
 ## The preview passes but execution fails or the answer is wrong

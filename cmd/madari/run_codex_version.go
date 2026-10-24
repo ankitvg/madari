@@ -6,9 +6,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	codexclient "github.com/ankitvg/madari/internal/clients/codex"
 )
 
-const minimumCodexPolicyRunVersion = "0.139.0"
+var minimumCodexPolicyRunVersion = codexclient.Compatibility().MinimumVersion
 
 var codexSemanticVersionPattern = regexp.MustCompile(`([0-9]+)\.([0-9]+)\.([0-9]+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?`)
 
@@ -26,7 +28,7 @@ func validateCodexPolicyRunCompatibility() error {
 func validateCodexPolicyRunVersion() error {
 	path, err := exec.LookPath("codex")
 	if err != nil {
-		return fmt.Errorf("codex executable not found in PATH; install a stable Codex CLI 0.139.x release (minimum %s) for capability policy runs", minimumCodexPolicyRunVersion)
+		return fmt.Errorf("codex executable not found in PATH; install a stable Codex CLI %s or newer for capability policy runs", minimumCodexPolicyRunVersion)
 	}
 	output, err := exec.Command(path, "--version").CombinedOutput()
 	if err != nil {
@@ -36,9 +38,13 @@ func validateCodexPolicyRunVersion() error {
 	if err != nil {
 		return fmt.Errorf("cannot verify Codex capability policy support from version output %q: %w", strings.TrimSpace(string(output)), err)
 	}
+	// The floor is the oldest release whose policy fields Madari has verified.
+	// Newer stable releases are accepted because access-bearing runs pass
+	// --strict-config, which makes Codex reject unknown config keys and values
+	// instead of silently dropping a restriction.
 	minimum, _ := parseCodexSemanticVersion(minimumCodexPolicyRunVersion)
-	if current.lessThan(minimum) || current.major != 0 || current.minor != 139 || current.prerelease != "" {
-		return fmt.Errorf("Codex %s is outside the validated capability policy run range; install a stable Codex CLI 0.139.x release (minimum %s)", current, minimumCodexPolicyRunVersion)
+	if current.lessThan(minimum) || current.prerelease != "" {
+		return fmt.Errorf("Codex %s is not supported for capability policy runs; install a stable Codex CLI %s or newer", current, minimumCodexPolicyRunVersion)
 	}
 	return nil
 }

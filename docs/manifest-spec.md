@@ -271,8 +271,8 @@ operation.
 
 Policy capability support is declared separately for persistent sync/attach,
 render, and run. Codex compiles every V1 access field on all three surfaces.
-Access-bearing Codex runs additionally require a validated stable CLI 0.139.x
-release. All other target policy surfaces remain unsupported. Any
+Access-bearing Codex runs additionally require a stable CLI 0.139.0 or newer.
+All other target policy surfaces remain unsupported. Any
 required operation that cannot compile exactly fails during preflight: sync and
 attach before config, state, or skills change; render before partial output; and
 run before skill materialization or client execution. Detach remains available

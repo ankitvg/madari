@@ -144,7 +144,8 @@ For remote endpoints and token references, see the
 A skill's instruction to avoid writes is not an access restriction. Configure
 server-side permissions and, where supported, explicit access profiles if the
 agent must be limited to particular tools. Required policies currently compile
-only for Codex, and access-bearing Codex runs require stable CLI 0.139.x.
+only for Codex, and access-bearing Codex runs require stable CLI 0.139.0 or
+newer.
 
 ## 7. Reuse the skill in an existing client
 

@@ -822,7 +822,7 @@ func printRunHelp(out io.Writer) {
 	fmt.Fprintln(out, "  HOME/CODEX_HOME roots with auth copied in. Other clients are dry-run only")
 	fmt.Fprintln(out, "  for now.")
 	fmt.Fprintln(out, "  Access-bearing Codex runs add --strict-config; legacy no-access runs omit it.")
-	fmt.Fprintln(out, "  Codex policy runs require a validated stable CLI 0.139.x release; dry-run")
+	fmt.Fprintln(out, "  Codex policy runs require a stable CLI 0.139.0 or newer; dry-run")
 	fmt.Fprintln(out, "  reports declared/effective policy separately from client enforcement and")
 	fmt.Fprintln(out, "  advisory instructions.")
 	fmt.Fprintln(out, "  Multiple rings configure one agent run, not separate subagents.")

@@ -145,7 +145,7 @@ remain pending or block a run. See [transport support](docs/manifest-spec.md).
 
 Codex supports exact capability-policy compilation for sync/attach, render, and
 run. Required policies block on other clients. Every access-bearing Codex run
-requires a validated stable Codex CLI **0.139.x** release. Runs with no server
+requires a stable Codex CLI **0.139.0 or newer**. Runs with no server
 `[access]` profiles and no required ring `[policy]` have no version gate. This
 applies to previews as well as execution. See the
 [policy contract](docs/adr/003-capability-policy-contract-v1.md).

@@ -64,6 +64,9 @@ This file guides coding agents working in this repository.
      standalone, and nothing ever adopts unmanaged entries
 5. Keep code cross-platform; gate OS-specific behavior with `runtime.GOOS` when required.
 6. Favor test-backed changes over speculative refactors.
+7. If a change adds, renames, or drops a Codex CLI flag or a Codex config key or
+   value Madari writes, update `internal/clients/codex/compat.toml`;
+   `cmd/madari/codex_compat_test.go` enforces it.
 
 ## PR Quality Bar
 

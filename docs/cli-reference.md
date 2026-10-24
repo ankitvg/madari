@@ -366,7 +366,7 @@ client config, creates managed state, or permanently materializes skill
 packages.
 
 When any selected server declares `[access]`, Codex execution also adds
-`--strict-config` and requires a stable Codex CLI 0.139.x release. This applies
+`--strict-config` and requires a stable Codex CLI 0.139.0 or newer. This applies
 to advisory profiles as well as policy-required rings so Madari never drops a
 declared restriction. Legacy runs with no access declarations omit the newer
 flag and version gate, preserving their existing compatibility behavior.
@@ -382,9 +382,14 @@ Policy-required run adds a stricter preflight boundary: every declared member
 restriction must compile exactly before any temporary skill package is
 materialized or the client starts. Codex maps every V1 access field into the
 single ephemeral `mcp_servers={...}` override. The plan and executor both check
-the bounded version range Madari has validated for this complete contract.
-`--strict-config` is an additional config-parser safeguard, not proof that
-nested MCP policy fields retain their semantics outside the validated range.
+that Codex meets the stable 0.139.0 floor recorded in
+`internal/clients/codex/compat.toml`. With `--strict-config`, Codex rejects
+unknown or misspelled keys, unknown values, and wrongly typed fields in that
+override, so a renamed or removed field fails the run instead of dropping a
+restriction. It does not detect a field that keeps its name and values but
+changes meaning. `compat.toml` records the newest Codex release checked against
+Madari's fields as `last_verified_version`; newer releases are accepted
+without that check.
 
 Dry-run text and JSON report each server's portable declared policy, the
 Codex-native effective policy, support state, and enforcement classification.

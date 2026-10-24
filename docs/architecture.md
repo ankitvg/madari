@@ -97,7 +97,7 @@ member profiles. `[contract]` and skill content remain advisory, while
 - An unspecified policy compiler is unsupported. Codex persistent sync/attach,
   render, and run opt into all five V1 access features; every other target
   policy surface remains fail-closed. Access-bearing Codex runs additionally
-  require a validated stable CLI 0.139.x release.
+  require a stable CLI 0.139.0 or newer.
 
 3. Sync Engine
 - Reads registry + client config.

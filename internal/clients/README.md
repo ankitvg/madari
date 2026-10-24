@@ -37,3 +37,15 @@ Minimum expected tests for each adapter:
    `errors.Is(err, clients.ErrConflict)` should be true.
 4. Unknown top-level config blocks are preserved after apply.
 5. Managed state is updated consistently with desired managed entries.
+
+## Client Compatibility Files
+
+An adapter whose output depends on client CLI behavior keeps a
+`compat.toml` in its package listing exactly what Madari relies on: CLI flags,
+config keys, accepted values, and the supported version floor. A test checks
+Madari's real output against that file in both directions, so adding,
+renaming, or dropping an emitted flag or key fails until the file is updated.
+When a client releases a new version, review its changes against this list.
+
+- Codex: `codex/compat.toml`, checked by `cmd/madari/codex_compat_test.go`.
+  Madari reads the policy-run version floor from this file.

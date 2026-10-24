@@ -187,3 +187,27 @@ write.
 - Environment sanitization, TTLs, receipts, credential brokers, audit,
   OpenCode support, production examples, and runtime `[policy.execution]`
   semantics remain outside this decision.
+
+## Amendments
+
+### 2026-10-24: Codex run version floor
+
+The stable 0.139.x bound on Codex run support is replaced by a floor: stable
+Codex CLI 0.139.0 or newer. Prereleases remain unsupported.
+
+The bound existed so Madari would not claim exact enforcement on a Codex
+release that might ignore a compiled field. Access-bearing runs already pass
+`--strict-config`, and Codex 0.164.0 rejects an unknown or misspelled key, an
+unknown approval value, and a wrongly typed field inside the
+`-c mcp_servers={...}` override before the session starts. Without that flag
+the same misspelled `enabled_tools` key is silently ignored. A floor therefore
+fails closed on the changes a version bound was meant to catch, without
+blocking every new Codex release. Codex 0.139.0 can also no longer run the
+models available to ChatGPT-account sign-ins, so the old bound left policy runs
+unusable.
+
+The remaining risk is a field that keeps its name and accepted values but
+changes meaning. Neither a floor nor a bound detects that by itself.
+`internal/clients/codex/compat.toml` lists every Codex flag, config key, and
+value Madari depends on, and a test keeps it in step with Madari's output, so
+each Codex release can be reviewed against that list.
