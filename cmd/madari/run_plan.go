@@ -699,6 +699,8 @@ func printRunPlan(out io.Writer, plan runLaunchPlan) {
 	fmt.Fprintln(out, "prompt: provided")
 	if plan.RunnerAvailable {
 		fmt.Fprintln(out, "execution: available when --dry-run is omitted")
+	} else if _, implemented := runTargetByName(plan.Target); implemented {
+		fmt.Fprintln(out, "execution: runner unavailable; resolve the launch plan errors")
 	} else {
 		fmt.Fprintln(out, "execution: not implemented for this target; dry-run only")
 	}

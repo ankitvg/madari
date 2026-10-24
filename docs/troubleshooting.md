@@ -24,7 +24,7 @@ than silently dropping a selected capability.
 
 For `codex executable not found in PATH`, install the Codex CLI and make it
 available to the shell running Madari. Codex previews check for the executable
-too. If an admin skill root contains skills, current Codex preflight blocks
+too and report `execution: runner unavailable` until it is present. If an admin skill root contains skills, current Codex preflight blocks
 because Madari cannot guarantee ring-only skill isolation. Inspect the named
 root and resolve it with its owner rather than deleting managed system skills.
 

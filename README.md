@@ -68,7 +68,8 @@ madari run codex --ring briefing -- \
 ```
 
 A dry run checks the launch plan without calling the model. It does not evaluate
-the agent's answer or prove that external services are reachable. A run uses
+the agent's answer or prove that external services are reachable. If Codex is
+missing, the preview reports its runner as unavailable and blocks the plan. A run uses
 temporary skill files and leaves client config and attachment state unchanged.
 
 For task contracts, multiple rings, and adding retrieval tools, follow the

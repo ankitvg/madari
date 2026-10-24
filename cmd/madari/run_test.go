@@ -5071,3 +5071,23 @@ func TestRunWithStoreRingStatusFlagsStaleAndScopedPending(t *testing.T) {
 	}
 	t.Fatalf("expected claude-code user target in: %s", result.stdout)
 }
+
+func TestRunPlanExecutionAvailabilityText(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		plan runLaunchPlan
+		want string
+	}{
+		{"installed", runLaunchPlan{Target: "codex", RunnerAvailable: true}, "execution: available when --dry-run is omitted"},
+		{"missing executable", runLaunchPlan{Target: "codex"}, "execution: runner unavailable; resolve the launch plan errors"},
+		{"unsupported runner", runLaunchPlan{Target: "claude-code"}, "execution: not implemented for this target; dry-run only"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			printRunPlan(&out, tt.plan)
+			if !strings.Contains(out.String(), tt.want) {
+				t.Fatalf("missing %q in plan: %s", tt.want, out.String())
+			}
+		})
+	}
+}
