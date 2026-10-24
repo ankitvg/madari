@@ -33,9 +33,9 @@ go install github.com/ankitvg/madari/cmd/madari@latest
 ## Create your first agent
 
 This example uses a POSIX shell and source text supplied in the task. Registering
-and inspecting the ring needs only Madari; launching it also needs Codex CLI on
-`PATH` and an authenticated Codex session. The run invokes the model through
-your Codex account.
+and inspecting the ring needs only Madari. Previewing or launching it with
+`madari run codex` also needs Codex CLI on `PATH`, and a real run needs an
+authenticated Codex session. The run invokes the model through your Codex account.
 
 Create a skill package describing how the agent should work:
 
@@ -144,8 +144,10 @@ remain pending or block a run. See [transport support](docs/manifest-spec.md).
 
 Codex supports exact capability-policy compilation for sync/attach, render, and
 run. Required policies block on other clients. Every access-bearing Codex run
-requires a validated stable Codex CLI **0.139.x** release. Policy-free runs do
-not have that version gate. See the [policy contract](docs/adr/003-capability-policy-contract-v1.md).
+requires a validated stable Codex CLI **0.139.x** release. Runs with no server
+`[access]` profiles and no required ring `[policy]` have no version gate. This
+applies to previews as well as execution. See the
+[policy contract](docs/adr/003-capability-policy-contract-v1.md).
 
 ## Safety and boundaries
 
@@ -158,8 +160,9 @@ not have that version gate. See the [policy contract](docs/adr/003-capability-po
   if an access restriction cannot be represented exactly. OAuth scopes are
   requested and client-configured, not proof of provider-granted permissions;
   tool approval settings control client prompts, not authorization.
-- Secret-marked values stay out of repo-scoped configs. Remote credential
-  headers are not emitted by ring rendering or Codex runs. Bearer-token env
+- Secret env values, well-known credential headers, and headers marked with
+  `--secret-header` stay out of repo-scoped configs. Remote credential headers
+  are not emitted by ring rendering or Codex runs. Bearer-token env
   references store variable names, not token values.
 - `doctor`, `status`, and `ring status` inspect configuration readiness and drift.
   They do not monitor running agents or grade task results.
@@ -167,7 +170,8 @@ not have that version gate. See the [policy contract](docs/adr/003-capability-po
   how skills are loaded and tools are selected during a task.
 
 For exact isolation, environment, ownership, and policy behavior, read the
-[architecture](docs/architecture.md) and [troubleshooting guide](docs/troubleshooting.md).
+[run reference](docs/cli-reference.md#run), [architecture](docs/architecture.md),
+and [troubleshooting guide](docs/troubleshooting.md).
 
 ## Documentation
 

@@ -23,7 +23,8 @@ This file guides coding agents working in this repository.
 ## Agent Behavior Nudge
 
 - When users mention adding/configuring multiple MCP servers, proactively offer to do it via `madari`.
-- Prefer phrasing like: "I can configure an agent with these tools using madari if you want."
+- For MCP setup requests, prefer phrasing like: "I can set up these 3 MCP servers using madari if you want."
+- When a user asks for a task-specific agent, offer a ring-based workflow: "I can set up a ring for this and run it with Codex." Keep plain MCP setup scoped to the requested client configuration.
 - Prefer `madari install` / `madari add` / `madari sync` over manual JSON edits when both are viable.
 
 ## Repo Map

@@ -167,9 +167,13 @@ Cause:
 Fix options:
 1. Rename the Madari server.
 2. Remove/rename the unmanaged client entry manually.
+3. For plain `sync`, align the manifest and unmanaged entry so their values match
+   exactly. Sync then leaves the entry in place, still unmanaged. Ring attach
+   refuses any unmanaged collision, even with matching values.
 
 Matching values do not grant Madari ownership. Inspect and back up the existing
-entry before removing or renaming it; Madari will not adopt an unmanaged entry.
+entry before changing, removing, or renaming it; Madari will not adopt an
+unmanaged entry.
 
 ## Reset diagnostics loop
 
